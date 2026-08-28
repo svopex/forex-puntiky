@@ -10,69 +10,6 @@
 #include <Sved\SvedTypes.mqh>
 #include <Sved\SvedSwings.mqh>
 
-//--- Minimalni odstup dvou zapocitanych dotyku tehoz okraje (v barech)
-#define SVED_TOUCH_GAP 3
-
-//+------------------------------------------------------------------+
-//| Test, zda kanal cenu obaluje a zda nebyl prorazen.               |
-//| Obe hrany se posuzuji ruzne, protoze maji jiny vyznam:           |
-//|                                                                  |
-//|  ZAKLADNI usecka (nese body A a C) nesmi byt proriznuta NIKDY -  |
-//|  ani za bodem C. Kdyz ji pozdejsi swing protne, neni to          |
-//|  invalidace kanalu, ale znameni, ze je usecka vedena spatne a    |
-//|  bod C patri prave na ten pozdejsi extrem. Kandidat proto        |
-//|  vypadne a projde jiny, se spravne posunutym C (a tedy i         |
-//|  odpovidajicim sklonem protejsi hrany).                          |
-//|                                                                  |
-//|  PROTEJSI hrana (rovnobezka bodem B) musi drzet jen mezi A a C.  |
-//|  Za bodem C se toleruje invalidTolFrac - vetsi prekroceni uz     |
-//|  znamena prorazeny, tedy neplatny kanal.                         |
-//|                                                                  |
-//| Zakladni usecka se navic kontroluje i backCheckBars svicek PRED  |
-//| bodem A. Kdyz tesne pred A lezi jeste vyraznejsi extrem, patri   |
-//| bod A na nej - jinak by usecka zacinala na druhem nejvyssim      |
-//| vrcholu a ten vyssi by ji zleva prorazel.                        |
-//+------------------------------------------------------------------+
-bool SvedChannelIsClean(const MqlRates &rates[], SChannel &ch,
-                        const double pierceTolFrac, const double invalidTolFrac,
-                        const int backCheckBars)
-  {
-   const int    n          = ArraySize(rates);
-   const double tolBase    = pierceTolFrac  * ch.width;
-   const double tolOutside = invalidTolFrac * ch.width;
-   const int    from       = MathMax(ch.iA - MathMax(backCheckBars, 0), 0);
-
-   for(int i = from; i < n; i++)
-     {
-      const datetime t = rates[i].time;
-
-      // Pred bodem A kanal jeste "neexistuje" - kontroluje se tam
-      // pouze zakladni usecka, protejsi hrana ne
-      const bool beforeA = (i < ch.iA);
-
-      // Protejsi hrana: mezi A a C prisne, za C volneji
-      const double tolOpp = (i <= ch.iC) ? tolBase : tolOutside;
-
-      if(ch.baseIsLow)
-        {
-         // Zakladni usecka je spodni hrana
-         if(rates[i].low < ch.LowerAt(t) - tolBase)
-            return(false);
-         if(!beforeA && rates[i].high > ch.UpperAt(t) + tolOpp)
-            return(false);
-        }
-      else
-        {
-         // Zakladni usecka je horni hrana
-         if(rates[i].high > ch.UpperAt(t) + tolBase)
-            return(false);
-         if(!beforeA && rates[i].low < ch.LowerAt(t) - tolOpp)
-            return(false);
-        }
-     }
-   return(true);
-  }
-
 //+------------------------------------------------------------------+
 //| Test, zda jsou opory A a C skutecne vyraznymi extremy.           |
 //| V okne +-window baru kolem nich nesmi lezet vyraznejsi extrem    |
@@ -83,6 +20,9 @@ bool SvedChannelIsClean(const MqlRates &rates[], SChannel &ch,
 //| pritom porad POD prodlouzenou carou. Bez teto kontroly by pak    |
 //| usecka zacinala na druhem nejvyssim vrcholu misto na tom         |
 //| nejvyssim - presne to je pripad z docs/abcd 5.png.               |
+//|  rates  - svicky TF kanalu (index 0 = nejstarsi)                 |
+//|  ch     - kandidatni kanal                                       |
+//|  window - polovicni sirka okna v barech (0 = test vypnuty)       |
 //+------------------------------------------------------------------+
 bool SvedAnchorsAreExtremes(const MqlRates &rates[], SChannel &ch, const int window)
   {
@@ -117,11 +57,136 @@ bool SvedAnchorsAreExtremes(const MqlRates &rates[], SChannel &ch, const int win
   }
 
 //+------------------------------------------------------------------+
+//| Jediny pruchod svickami kanalu: kontrola proriznuti, podil       |
+//| svicek uvnitr a pocet dotyku hran.                               |
+//|                                                                  |
+//| Obe hrany se pri kontrole proriznuti posuzuji ruzne, protoze     |
+//| maji jiny vyznam:                                                |
+//|                                                                  |
+//|  ZAKLADNI usecka (nese body A a C) nesmi byt proriznuta NIKDY -  |
+//|  ani za bodem C. Kdyz ji pozdejsi swing protne, neni to          |
+//|  invalidace kanalu, ale znameni, ze je usecka vedena spatne a    |
+//|  bod C patri prave na ten pozdejsi extrem. Kandidat proto        |
+//|  vypadne a projde jiny, se spravne posunutym C (a tedy i         |
+//|  odpovidajicim sklonem protejsi hrany).                          |
+//|                                                                  |
+//|  PROTEJSI hrana (rovnobezka bodem B) musi drzet jen mezi A a C.  |
+//|  Za bodem C se toleruje invalidTolFrac - vetsi prekroceni uz     |
+//|  znamena prorazeny, tedy neplatny kanal.                         |
+//|                                                                  |
+//| Zakladni usecka se navic kontroluje i backCheckBars svicek PRED  |
+//| bodem A. Kdyz tesne pred A lezi jeste vyraznejsi extrem, patri   |
+//| bod A na nej - jinak by usecka zacinala na druhem nejvyssim      |
+//| vrcholu a ten vyssi by ji zleva prorazel.                        |
+//|                                                                  |
+//| Kvalita (dotyky, containment) se pocita az od bodu A dal a bez   |
+//| oporovych baru A, B a C - ty na hranach lezi z definice, takze   |
+//| by kazdemu kanalu daly tri dotyky zadarmo a filtr minTouches by  |
+//| prakticky nic nefiltroval.                                       |
+//|  rates - svicky TF kanalu (index 0 = nejstarsi)                  |
+//|  ch    - kandidatni kanal; zapisuji se do nej touches a          |
+//|          containment                                             |
+//|  p     - parametry filtrovani (tolerance)                        |
+//| Vraci false, kdyz je kanal proriznuty nebo prorazeny.            |
+//+------------------------------------------------------------------+
+bool SvedChannelScan(const MqlRates &rates[], SChannel &ch, const SChannelParams &p)
+  {
+   const int    n          = ArraySize(rates);
+   const double tolBase    = p.pierceTolFrac  * ch.width;
+   const double tolOutside = p.invalidTolFrac * ch.width;
+   const double tolTouch   = p.touchTolFrac   * ch.width;
+   const double tolInside  = p.insideTolFrac  * ch.width;
+   const int    from       = MathMax(ch.iA - MathMax(p.backCheckBars, 0), 0);
+
+   int inside  = 0;
+   int total   = 0;
+   int touches = 0;
+
+   // Zadny dotyk zatim - prvni bar tak vzdy projde testem odstupu
+   int lastUpTouch = -SVED_TOUCH_GAP;
+   int lastLoTouch = -SVED_TOUCH_GAP;
+
+   for(int i = from; i < n; i++)
+     {
+      const datetime t = rates[i].time;
+
+      // Pred bodem A kanal jeste "neexistuje" - kontroluje se tam
+      // pouze zakladni usecka, protejsi hrana ne
+      const bool beforeA = (i < ch.iA);
+
+      // Protejsi hrana: mezi A a C prisne, za C volneji
+      const double tolOpp = (i <= ch.iC) ? tolBase : tolOutside;
+
+      if(ch.baseIsLow)
+        {
+         // Zakladni usecka je spodni hrana
+         if(rates[i].low < ch.LowerAt(t) - tolBase)
+            return(false);
+         if(!beforeA && rates[i].high > ch.UpperAt(t) + tolOpp)
+            return(false);
+        }
+      else
+        {
+         // Zakladni usecka je horni hrana
+         if(rates[i].high > ch.UpperAt(t) + tolBase)
+            return(false);
+         if(!beforeA && rates[i].low < ch.LowerAt(t) - tolOpp)
+            return(false);
+        }
+
+      if(beforeA)
+         continue;
+
+      total++;
+      if(ch.Contains(t, rates[i].close, tolInside))
+         inside++;
+
+      // Opory se jako dotyk nepocitaji (viz hlavicka), ale nastavuji zaraz
+      // epizody na sve hrane - bar tesne vedle opory patri do teze
+      // dotykove epizody a nesmi ji zdvojit. A a C lezi na zakladni
+      // usecce, B na protejsi.
+      if(i == ch.iA || i == ch.iC)
+        {
+         if(ch.baseIsLow)
+            lastLoTouch = i;
+         else
+            lastUpTouch = i;
+         continue;
+        }
+      if(i == ch.iB)
+        {
+         if(ch.baseIsLow)
+            lastUpTouch = i;
+         else
+            lastLoTouch = i;
+         continue;
+        }
+
+      if(ch.TouchesUpper(t, rates[i].high, tolTouch) && i - lastUpTouch >= SVED_TOUCH_GAP)
+        {
+         touches++;
+         lastUpTouch = i;
+        }
+      if(ch.TouchesLower(t, rates[i].low, tolTouch) && i - lastLoTouch >= SVED_TOUCH_GAP)
+        {
+         touches++;
+         lastLoTouch = i;
+        }
+     }
+
+   ch.touches     = touches;
+   ch.containment = (total > 0) ? (double)inside / (double)total : 0.0;
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
 //| Ohodnoti kandidatni kanal na useku od bodu A do posledni svicky. |
-//| Spocita pocet dotyku hran, podil svicek uzavrenych uvnitr kanalu |
-//| a vysledne skore. Vraci false, pokud kanal neprosel filtry.      |
-//|  rates - svicky kreslici TF (index 0 = nejstarsi)                |
+//| Filtry jsou serazene od nejlevnejsiho k nejdrazsimu, aby drahy   |
+//| pruchod svickami dostali jen kandidati, kteri maji sanci projit. |
+//| Vraci false, pokud kanal neprosel filtry.                        |
+//|  rates - svicky TF kanalu (index 0 = nejstarsi)                  |
 //|  ch    - kanal (in/out), p - parametry filtrovani                |
+//|  st    - statistika zamitnuti (in/out)                           |
 //+------------------------------------------------------------------+
 bool SvedEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChannelParams &p,
                          SChannelStats &st)
@@ -130,7 +195,7 @@ bool SvedEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChannelPa
    if(n <= 0 || ch.width <= 0.0)
       return(false);
 
-   //--- Tvrde geometricke filtry
+   //--- Tvrde geometricke filtry (O(1))
    ch.spanBars = ch.iC - ch.iA;
    ch.ageBars  = (n - 1) - ch.iC;
    if(ch.spanBars < p.minSpanBars)
@@ -154,61 +219,31 @@ bool SvedEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChannelPa
       return(false);
      }
 
-   //--- Opory A a C musi byt vyraznymi extremy sveho okoli
+   //--- Volitelny pozadavek: aktualni cena musi byt stale uvnitr kanalu.
+   //--- Je to test jedine svicky, proto bezi jeste pred pruchody polem.
+   if(p.requireInside)
+     {
+      const datetime tLast = rates[n - 1].time;
+      if(!ch.Contains(tLast, rates[n - 1].close, p.insideTolFrac * ch.width))
+        {
+         st.outside++;
+         return(false);
+        }
+     }
+
+   //--- Opory A a C musi byt vyraznymi extremy sveho okoli (O(okno))
    if(!SvedAnchorsAreExtremes(rates, ch, p.anchorWindow))
      {
       st.anchors++;
       return(false);
      }
 
-   //--- Kanal musi cenu obalovat a nesmi byt prorazen - jinak neplati
-   if(!SvedChannelIsClean(rates, ch, p.pierceTolFrac, p.invalidTolFrac, p.backCheckBars))
+   //--- Jediny pruchod svickami: proriznuti, dotyky, containment
+   if(!SvedChannelScan(rates, ch, p))
      {
       st.pierced++;
       return(false);
      }
-
-   const double tol = p.touchTolFrac * ch.width;
-
-   //--- Pruchod svickami od bodu A az po posledni uzavrenou svicku
-   int inside      = 0;
-   int total       = 0;
-   int touches     = 0;
-   int lastUpTouch = -1000;
-   int lastLoTouch = -1000;
-
-   for(int i = ch.iA; i < n; i++)
-     {
-      const datetime t  = rates[i].time;
-      const double   up = ch.UpperAt(t);
-      const double   lo = ch.LowerAt(t);
-
-      total++;
-      if(rates[i].close >= lo - tol && rates[i].close <= up + tol)
-         inside++;
-
-      // Dotyk horni hrany - high zasahl do tolerancniho pasma u hrany
-      if(rates[i].high >= up - tol && rates[i].high <= up + tol * 2.0)
-        {
-         if(i - lastUpTouch >= SVED_TOUCH_GAP)
-           {
-            touches++;
-            lastUpTouch = i;
-           }
-        }
-      // Dotyk spodni hrany
-      if(rates[i].low <= lo + tol && rates[i].low >= lo - tol * 2.0)
-        {
-         if(i - lastLoTouch >= SVED_TOUCH_GAP)
-           {
-            touches++;
-            lastLoTouch = i;
-           }
-        }
-     }
-
-   ch.touches     = touches;
-   ch.containment = (total > 0) ? (double)inside / (double)total : 0.0;
 
    if(ch.touches < p.minTouches)
      {
@@ -219,17 +254,6 @@ bool SvedEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChannelPa
      {
       st.containment++;
       return(false);
-     }
-
-   //--- Volitelny pozadavek: aktualni cena musi byt stale uvnitr kanalu
-   if(p.requireInside)
-     {
-      const datetime tLast = rates[n - 1].time;
-      if(!ch.Contains(tLast, rates[n - 1].close, tol))
-        {
-         st.outside++;
-         return(false);
-        }
      }
 
    //--- Skore rozhoduje, ktery kanal je "hlavni a dulezity".
@@ -258,6 +282,11 @@ bool SvedEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChannelPa
 //| Bod se zapisuje az ve chvili, kdy k dotyku skutecne doslo;       |
 //| nic se nepredikuje dopredu. Z jedne dotykove epizody se bere     |
 //| jeji nejzazsi svicka.                                            |
+//| Dotyk se testuje TYMZ predikatem jako pri pocitani skore, jinak  |
+//| by panel hlasil jiny pocet dotyku, nez kolik je v grafu pismen.  |
+//|  rates   - svicky TF kanalu (index 0 = nejstarsi)                |
+//|  ch      - kanal, do ktereho se body zapisou                     |
+//|  tolFrac - tolerance dotyku jako zlomek sirky kanalu             |
 //+------------------------------------------------------------------+
 void SvedCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const double tolFrac)
   {
@@ -272,13 +301,8 @@ void SvedCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const double 
    while(i < n && ch.extraCount < SVED_MAX_TOUCH_POINTS)
      {
       const datetime t = rates[i].time;
-      bool touched = false;
-
-      if(expectUpper)
-         touched = (rates[i].high >= ch.UpperAt(t) - tol);
-      else
-         touched = (rates[i].low <= ch.LowerAt(t) + tol);
-
+      const bool touched = expectUpper ? ch.TouchesUpper(t, rates[i].high, tol)
+                                       : ch.TouchesLower(t, rates[i].low,  tol);
       if(!touched)
         {
          i++;
@@ -293,8 +317,8 @@ void SvedCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const double 
       while(k < n)
         {
          const datetime tk = rates[k].time;
-         const bool still = expectUpper ? (rates[k].high >= ch.UpperAt(tk) - tol)
-                                        : (rates[k].low  <= ch.LowerAt(tk) + tol);
+         const bool still = expectUpper ? ch.TouchesUpper(tk, rates[k].high, tol)
+                                        : ch.TouchesLower(tk, rates[k].low,  tol);
          if(!still)
             break;
          if(expectUpper ? (rates[k].high > bestPrice) : (rates[k].low < bestPrice))
@@ -322,6 +346,9 @@ void SvedCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const double 
 //| porovnani jednim okamzikem by se chybne slily do jednoho         |
 //| (viz docs/iScreen ... 085407.png). Duplicita je jen tehdy,       |
 //| kdyz obe hrany souhlasi v obou casech.                           |
+//|  a, b   - porovnavane kanaly                                     |
+//|  t1, t2 - dva ruzne casove okamziky porovnani                    |
+//|  frac   - prah shody jako zlomek sirky sirsiho z kanalu          |
 //+------------------------------------------------------------------+
 bool SvedChannelsSimilar(SChannel &a, SChannel &b, const datetime t1, const datetime t2,
                          const double frac)
@@ -342,6 +369,21 @@ bool SvedChannelsSimilar(SChannel &a, SChannel &b, const datetime t1, const date
   }
 
 //+------------------------------------------------------------------+
+//| Je kandidat prakticky totozny s nekterym uz vybranym kanalem?    |
+//|  cand   - testovany kandidat                                     |
+//|  out    - dosud vybrane kanaly, taken - kolik jich je            |
+//|  t1, t2 - casy porovnani, frac - prah shody                      |
+//+------------------------------------------------------------------+
+bool SvedChannelIsDuplicate(SChannel &cand, SChannel &out[], const int taken,
+                            const datetime t1, const datetime t2, const double frac)
+  {
+   for(int j = 0; j < taken; j++)
+      if(SvedChannelsSimilar(cand, out[j], t1, t2, frac))
+         return(true);
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
 //| Vygeneruje kandidatni kanaly z jedne swingove kostry a pripoji   |
 //| je na konec pole cand[].                                         |
 //| Zakladni useckou je spojnice dvou swingu stejneho typu (A a C),  |
@@ -351,7 +393,12 @@ bool SvedChannelsSimilar(SChannel &a, SChannel &b, const datetime t1, const date
 //| zakladni usecky, takze kanal cenovou akci skutecne obali -       |
 //| stejne, jako kdyz se kresli rucne. Kandidaty, jejichz hrany      |
 //| cenu prorezavaji, zahodi az filtr v SvedEvaluateChannel.         |
+//|  rates    - svicky TF kanalu (index 0 = nejstarsi)               |
+//|  sw       - swingova kostra jednoho meritka                      |
+//|  p        - parametry filtrovani                                 |
 //|  scaleIdx - poradi meritka, ve kterem kandidati vznikaji         |
+//|  cand     - sberne pole kandidatu (in/out)                       |
+//|  st       - statistika zamitnuti (in/out)                        |
 //| Vraci celkovy pocet kandidatu v poli cand[].                     |
 //+------------------------------------------------------------------+
 int SvedCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const SChannelParams &p,
@@ -424,7 +471,9 @@ int SvedCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const SCh
          // ktery prosel filtry - zapisuji se jen skutecne probehle dotyky
          SvedCollectTouchPoints(rates, ch, p.touchTolFrac);
 
-         ArrayResize(cand, nc + 1);
+         // Rezerva pri zvetsovani - kandidatu byvaji stovky a kazda
+         // realokace kopiruje cele pole struktur
+         ArrayResize(cand, nc + 1, 256);
          cand[nc++] = ch;
         }
      }
@@ -437,6 +486,10 @@ int SvedCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const SCh
 //| odstrani prakticky totozne a ponecha nejvyse p.maxChannels.      |
 //| Kanal v kanalu zustava zachovan - zahazuji se jen kanaly,        |
 //| jejichz obe hrany lezi prakticky na sobe.                        |
+//|  rates - svicky TF kanalu (kvuli casum porovnani)                |
+//|  cand  - kandidati (pole se pri razeni prehazi)                  |
+//|  p     - parametry vyberu                                        |
+//|  out   - vystupni pole vybranych kanalu                          |
 //| Vraci pocet vybranych kanalu ulozenych do out[].                 |
 //+------------------------------------------------------------------+
 int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannelParams &p, SChannel &out[])
@@ -447,20 +500,13 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
    if(n < 10 || nc == 0)
       return(0);
 
-   //--- Serazeni podle skore sestupne (pole je male, staci prime razeni)
-   for(int a = 0; a < nc - 1; a++)
-      for(int b = a + 1; b < nc; b++)
-         if(cand[b].score > cand[a].score)
-           {
-            SChannel tmp = cand[a];
-            cand[a] = cand[b];
-            cand[b] = tmp;
-           }
+   SvedSortByScoreDesc(cand);
 
    const datetime tLast = rates[n - 1].time;
    // Druhy porovnavaci okamzik pro deduplikaci - dost daleko, aby se
    // projevil rozdilny sklon kanalu
-   const datetime tPast = rates[MathMax(n - 51, 0)].time;
+   const int      backBars = MathMin(SVED_DEDUP_BACK_BARS, n - 1);
+   const datetime tPast    = rates[n - 1 - backBars].time;
    int taken = 0;
    ArrayResize(out, p.maxChannels);
 
@@ -474,15 +520,7 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
         {
          if(cand[i].scaleIdx != s)
             continue;
-
-         bool dup = false;
-         for(int j = 0; j < taken; j++)
-            if(SvedChannelsSimilar(cand[i], out[j], tLast, tPast, p.dedupFrac))
-              {
-               dup = true;
-               break;
-              }
-         if(dup)
+         if(SvedChannelIsDuplicate(cand[i], out, taken, tLast, tPast, p.dedupFrac))
             continue;
 
          out[taken++] = cand[i];
@@ -493,14 +531,7 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
    //--- 2. faze: zbyla mista se doplni podle skore bez ohledu na meritko
    for(int i = 0; i < nc && taken < p.maxChannels; i++)
      {
-      bool dup = false;
-      for(int j = 0; j < taken; j++)
-         if(SvedChannelsSimilar(cand[i], out[j], tLast, tPast, p.dedupFrac))
-           {
-            dup = true;
-            break;
-           }
-      if(dup)
+      if(SvedChannelIsDuplicate(cand[i], out, taken, tLast, tPast, p.dedupFrac))
          continue;
       out[taken++] = cand[i];
      }
@@ -509,14 +540,7 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
 
    //--- Vysledek seradime podle skore, aby index 0 byl hlavni kanal
    //--- (kresli se silnejsi carou nez ostatni)
-   for(int a = 0; a < taken - 1; a++)
-      for(int b = a + 1; b < taken; b++)
-         if(out[b].score > out[a].score)
-           {
-            SChannel tmp = out[a];
-            out[a] = out[b];
-            out[b] = tmp;
-           }
+   SvedSortByScoreDesc(out);
 
    return(taken);
   }
@@ -529,24 +553,28 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
 //| Vysledne kandidaty ze vsech meritek hodnoti a vybira spolecne    |
 //| SvedSelectChannels, takze se meritka mezi sebou poctive porovnaji|
 //| a totozne nalezy se slouci.                                      |
+//| Pocet meritek se bere z p.scales - drive chodil jeste jednou     |
+//| zvlast argumentem a obe hodnoty se mohly rozejit (detekce podle  |
+//| jedne, vyber podle druhe).                                       |
+//|  rates     - svicky TF kanalu (index 0 = nejstarsi)              |
+//|  p         - parametry detekce a vyberu                          |
 //|  baseDepth - nejjemnejsi sirka pivot okna                        |
-//|  scales    - pocet meritek (1 = jen zakladni okno)               |
+//|  out       - vystupni pole vybranych kanalu                      |
+//|  st        - statistika detekce (in/out)                         |
 //| Vraci pocet vybranych kanalu ulozenych do out[].                 |
 //+------------------------------------------------------------------+
 int SvedBuildChannels(const MqlRates &rates[], const SChannelParams &p,
-                      const int baseDepth, const int scales, SChannel &out[],
-                      SChannelStats &st)
+                      const int baseDepth, SChannel &out[], SChannelStats &st)
   {
    st.Reset();
 
    SChannel cand[];
-   ArrayResize(cand, 0);
-
    const int n = ArraySize(rates);
-   for(int s = 0; s < MathMax(scales, 1); s++)
+
+   for(int s = 0; s < MathMax(p.scales, 1); s++)
      {
-      const int depth = baseDepth * (1 << s);
-      if(depth * 2 + 3 >= n)
+      const int depth = SvedScaleDepth(baseDepth, s);
+      if(!SvedScaleFits(depth, n))
          break;   // okno uz je sirsi nez dostupna historie
 
       SSwing sw[];
@@ -565,7 +593,14 @@ int SvedBuildChannels(const MqlRates &rates[], const SChannelParams &p,
 //| takze "dalsi hrana" muze patrit i mensimu kanalu uvnitr vetsiho. |
 //| Kvuli sklonu hran se bere konzervativnejsi hodnota z casu vstupu |
 //| a z casu projekce (tProj) - pro BUY nizsi, pro SELL vyssi.       |
-//|  price - vychozi cena (planovany vstup), isBuy - smer            |
+//| Kdyz sikma hrana do casu projekce klesne az za zadanou cenu,     |
+//| vraci se vzdalenost 0 (misto pro PT uz neni zadne) - zaporna     |
+//| delka by se jinak protlacila do panelu i do vypoctu.             |
+//|  ch        - aktivni kanaly                                      |
+//|  t         - cas, ke kteremu se hrany pocitaji                   |
+//|  tProj     - cas projekce hran dopredu                           |
+//|  price     - vychozi cena (referencni uroven obchodu)            |
+//|  isBuy     - smer obchodu                                        |
 //|  edgePrice - out: cena nalezene hrany                            |
 //| Vraci vzdalenost v cene, nebo -1 pokud zadna hrana ve smeru      |
 //| obchodu neexistuje.                                              |
@@ -585,29 +620,21 @@ double SvedDistanceToNextEdge(SChannel &ch[], const datetime t, const datetime t
          const double vNow  = (e == 0) ? ch[i].UpperAt(t)     : ch[i].LowerAt(t);
          const double vProj = (e == 0) ? ch[i].UpperAt(tProj) : ch[i].LowerAt(tProj);
 
-         if(isBuy)
+         // Hrana musi lezet ve smeru obchodu, jinak neni cilem
+         if(isBuy ? (vNow <= price) : (vNow >= price))
+            continue;
+
+         // Konzervativni odhad polohy hrany v case obchodu
+         const double v = isBuy ? MathMin(vNow, vProj) : MathMax(vNow, vProj);
+         const double d = isBuy ? (v - price) : (price - v);
+
+         const double dist = MathMax(d, 0.0);
+         const double edge = (d > 0.0) ? v : price;   // hrana uz je na urovni ceny
+
+         if(best < 0.0 || dist < best)
            {
-            if(vNow <= price)
-               continue;                            // hrana neni nad vstupem
-            const double v = MathMin(vNow, vProj);  // konzervativni odhad
-            const double d = MathMax(v - price, 0.0);
-            if(best < 0.0 || d < best)
-              {
-               best      = d;
-               edgePrice = v;
-              }
-           }
-         else
-           {
-            if(vNow >= price)
-               continue;                            // hrana neni pod vstupem
-            const double v = MathMax(vNow, vProj);
-            const double d = MathMax(price - v, 0.0);
-            if(best < 0.0 || d < best)
-              {
-               best      = d;
-               edgePrice = v;
-              }
+            best      = dist;
+            edgePrice = edge;
            }
         }
      }
@@ -619,6 +646,10 @@ double SvedDistanceToNextEdge(SChannel &ch[], const datetime t, const datetime t
 //| Vrati index kanalu, uvnitr ktereho lezi zadana cena v case t,    |
 //| nebo -1. Pri vice vyhovujicich kanalech vraci ten s nejlepsim    |
 //| skore (pole je jiz serazene sestupne).                           |
+//|  ch      - aktivni kanaly                                        |
+//|  t       - cas testu                                             |
+//|  price   - testovana cena                                        |
+//|  tolFrac - tolerance testu jako zlomek sirky kanalu              |
 //+------------------------------------------------------------------+
 int SvedFindContainingChannel(SChannel &ch[], const datetime t, const double price, const double tolFrac)
   {

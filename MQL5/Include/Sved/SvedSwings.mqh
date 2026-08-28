@@ -10,6 +10,29 @@
 #include <Sved\SvedTypes.mqh>
 
 //+------------------------------------------------------------------+
+//| Sirka pivot okna pro dane meritko detekce.                       |
+//| Kanaly i reliefni primky se hledaji ve vice meritkach - jemne    |
+//| okno najde male utvary, hrube ty velke. Vypocet je spolecny,     |
+//| aby se obe mista nerozesla.                                      |
+//|  baseDepth - nejjemnejsi sirka okna (meritko 0)                  |
+//|  scaleIdx  - poradi meritka (0 = zakladni, dal 2x, 4x, 8x ...)   |
+//+------------------------------------------------------------------+
+int SvedScaleDepth(const int baseDepth, const int scaleIdx)
+  {
+   return(MathMax(baseDepth, 1) * (1 << scaleIdx));
+  }
+
+//+------------------------------------------------------------------+
+//| Vejde se pivot okno dane sirky do historie n baru?               |
+//| Pivot potrebuje depth baru vlevo i vpravo, jinak nema co         |
+//| potvrdit a detekce v tomto meritku nema smysl.                   |
+//+------------------------------------------------------------------+
+bool SvedScaleFits(const int depth, const int n)
+  {
+   return(depth * 2 + 3 < n);
+  }
+
+//+------------------------------------------------------------------+
 //| Test lokalniho vrcholu: high[i] je nejvyssi v okne +-depth.      |
 //|  rates - pole svicek (index 0 = nejstarsi)                       |
 //|  i     - testovany index, depth - polovicni sirka okna           |
@@ -35,6 +58,8 @@ bool SvedIsPivotHigh(const MqlRates &rates[], const int i, const int depth)
 
 //+------------------------------------------------------------------+
 //| Test lokalniho dna: low[i] je nejnizsi v okne +-depth.           |
+//|  rates - pole svicek (index 0 = nejstarsi)                       |
+//|  i     - testovany index, depth - polovicni sirka okna           |
 //+------------------------------------------------------------------+
 bool SvedIsPivotLow(const MqlRates &rates[], const int i, const int depth)
   {
@@ -51,6 +76,42 @@ bool SvedIsPivotLow(const MqlRates &rates[], const int i, const int depth)
          return(false);
      }
    return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Prida jeden extrem do kostry swingu.                             |
+//| Kdyz je posledni ulozeny swing tehoz typu, ponecha se ten        |
+//| extremnejsi z obou (klasicke slouceni zig-zagu), jinak se novy   |
+//| swing pripoji na konec.                                          |
+//|  rates - pole svicek (index 0 = nejstarsi)                       |
+//|  i     - index baru s extremem                                   |
+//|  isHigh- typ ukladaneho extremu (true = vrchol)                  |
+//|  out   - vystupni pole swingu                                    |
+//|  count - pocet dosud ulozenych swingu (in/out)                   |
+//+------------------------------------------------------------------+
+void SvedPushSwing(const MqlRates &rates[], const int i, const bool isHigh,
+                   SSwing &out[], int &count)
+  {
+   SSwing s;
+   s.time   = rates[i].time;
+   s.index  = i;
+   s.isHigh = isHigh;
+   s.price  = isHigh ? rates[i].high : rates[i].low;
+
+   if(count > 0 && out[count - 1].isHigh == s.isHigh)
+     {
+      // Stejny typ dvakrat po sobe - ponechame extremnejsi z nich
+      const bool replace = s.isHigh ? (s.price > out[count - 1].price)
+                                    : (s.price < out[count - 1].price);
+      if(replace)
+         out[count - 1] = s;
+      return;
+     }
+
+   // Rezerva pri zvetsovani setri realokace u dlouhych historii
+   if(count >= ArraySize(out))
+      ArrayResize(out, count + 64, 256);
+   out[count++] = s;
   }
 
 //+------------------------------------------------------------------+
@@ -79,31 +140,19 @@ int SvedDetectSwings(const MqlRates &rates[], const int depth, SSwing &out[])
       if(!isHigh && !isLow)
          continue;
 
-      // Vnitrni svicka muze byt pivotem obou typu (outside bar) -
-      // rozhodne se podle toho, jaky typ jako posledni nechybi
-      bool takeHigh = isHigh;
+      // Vnitrni svicka muze byt pivotem obou typu naraz (outside bar).
+      // Ulozi se OBA extremy - kdyby se zapsal jen jeden, skutecny
+      // vrchol (nebo dno) by z kostry zmizel a uroven prurazu by pak
+      // sedla na nizsi swing, ktery uz cena davno prosla.
+      // Poradi urcuje stridani: nejdriv typ, ktery po poslednim
+      // ulozenem swingu ve stridani chybi.
+      bool firstHigh = isHigh;
       if(isHigh && isLow)
-         takeHigh = (count > 0 && out[count - 1].isHigh) ? false : true;
+         firstHigh = !(count > 0 && out[count - 1].isHigh);
 
-      SSwing s;
-      s.time   = rates[i].time;
-      s.index  = i;
-      s.isHigh = takeHigh;
-      s.price  = takeHigh ? rates[i].high : rates[i].low;
-
-      if(count > 0 && out[count - 1].isHigh == s.isHigh)
-        {
-         // Stejny typ dvakrat po sobe - ponechame extremnejsi z nich
-         const bool replace = s.isHigh ? (s.price > out[count - 1].price)
-                                       : (s.price < out[count - 1].price);
-         if(replace)
-            out[count - 1] = s;
-         continue;
-        }
-
-      if(count >= ArraySize(out))
-         ArrayResize(out, count + 16);
-      out[count++] = s;
+      SvedPushSwing(rates, i, firstHigh, out, count);
+      if(isHigh && isLow)
+         SvedPushSwing(rates, i, !firstHigh, out, count);
      }
 
    ArrayResize(out, count);

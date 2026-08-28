@@ -1,8 +1,11 @@
-﻿//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //|                                                    SvedDraw.mqh  |
-//|      Vykresleni kanalu a informaci o vstupu do grafu             |
-//|      Do grafu se kresli VYHRADNE kanaly (HIGH a LOW usecky),     |
-//|      jejich opory A-B-C-D a informacni panel o vstupu.           |
+//|      Vykresleni grafickych objektu strategie.                    |
+//|      Kresli se kanaly (HIGH a LOW usecky) a jejich opory         |
+//|      A-B-C-D, urovne prurazu, reliefni primky, urovne            |
+//|      planovaneho vstupu (vstup / SL / PT) a informacni panel.    |
+//|      Vsechny objekty nesou prefix SVED_, aby sly uklidit bez     |
+//|      dopadu na cizi grafiku v grafu.                             |
 //+------------------------------------------------------------------+
 #property copyright "Sved"
 
@@ -15,23 +18,40 @@
 #define SVED_PREFIX "SVED_"
 
 //+------------------------------------------------------------------+
-//| Smaze vsechny objekty strategie z grafu.                         |
+//| Smaze objekty strategie z grafu.                                 |
 //| Maze pouze objekty s vlastnim prefixem, cizi grafiku nechava.    |
+//| Pouziva se ObjectsDeleteAll - jedno volani terminalu misto       |
+//| rucniho pruchodu vsemi objekty grafu pro kazdy prefix zvlast.    |
+//|  sub - upresneni prefixu (napr. "REL_"), prazdne = vse strategie |
 //+------------------------------------------------------------------+
 void SvedDeleteObjects(const string sub = "")
   {
-   const string pref = SVED_PREFIX + sub;
-   for(int i = ObjectsTotal(0, -1, -1) - 1; i >= 0; i--)
-     {
-      const string name = ObjectName(0, i, -1, -1);
-      if(StringFind(name, pref, 0) == 0)
-         ObjectDelete(0, name);
-     }
+   ObjectsDeleteAll(0, SVED_PREFIX + sub, -1, -1);
+  }
+
+//+------------------------------------------------------------------+
+//| Smaze prebytecne objekty s cislovanym jmenem.                    |
+//| Objekty se pri prekresleni aktualizuji na miste, takze se maze   |
+//| jen to, co po zmenseni poctu utvaru zbylo navic - graf pak       |
+//| pri kazdem prekresleni nebliká.                                  |
+//|  sub  - upresneni prefixu (napr. "REL_")                         |
+//|  from - prvni mazany index, to - prvni uz nemazany index         |
+//+------------------------------------------------------------------+
+void SvedDeleteIndexed(const string sub, const int from, const int to)
+  {
+   for(int i = from; i < to; i++)
+      ObjectDelete(0, SVED_PREFIX + sub + IntegerToString(i));
   }
 
 //+------------------------------------------------------------------+
 //| Vytvori nebo aktualizuje usecku (trendline) mezi dvema body.     |
-//|  ray - prodlouzeni usecky doprava do budoucnosti                 |
+//|  name    - jmeno objektu (vcetne prefixu strategie)              |
+//|  t1, p1  - cas a cena prvniho bodu                               |
+//|  t2, p2  - cas a cena druheho bodu                               |
+//|  clr     - barva usecky, width - tloustka v pixelech             |
+//|  style   - styl cary (plna, carkovana, teckovana)                |
+//|  ray     - prodlouzeni usecky doprava do budoucnosti             |
+//|  tooltip - text bubliny po najeti mysi                           |
 //+------------------------------------------------------------------+
 void SvedTrendLine(const string name, const datetime t1, const double p1,
                    const datetime t2, const double p2,
@@ -55,17 +75,25 @@ void SvedTrendLine(const string name, const datetime t1, const double p1,
   }
 
 //+------------------------------------------------------------------+
-//| Vytvori nebo aktualizuje textovou znacku ukotvenou k cene a casu |
+//| Vytvori nebo aktualizuje textovou znacku ukotvenou k cene a casu.|
+//|  name     - jmeno objektu (vcetne prefixu strategie)             |
+//|  t, p     - cas a cena ukotveni                                  |
+//|  text     - vypisovany text                                      |
+//|  clr      - barva textu, fontSize - velikost pisma               |
+//|  anchor   - ke kteremu rohu textu se bod vztahuje                |
+//|  font     - nazev pisma (vychozi tucny Arial kvuli citelnosti    |
+//|             popisku opor pres svicky)                            |
 //+------------------------------------------------------------------+
 void SvedText(const string name, const datetime t, const double p, const string text,
-              const color clr, const int fontSize, const ENUM_ANCHOR_POINT anchor)
+              const color clr, const int fontSize, const ENUM_ANCHOR_POINT anchor,
+              const string font = "Arial Bold")
   {
    if(ObjectFind(0, name) < 0)
       ObjectCreate(0, name, OBJ_TEXT, 0, t, p);
 
    ObjectMove(0, name, 0, t, p);
    ObjectSetString(0, name, OBJPROP_TEXT, text);
-   ObjectSetString(0, name, OBJPROP_FONT, "Arial Bold");
+   ObjectSetString(0, name, OBJPROP_FONT, font);
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, anchor);
@@ -74,24 +102,34 @@ void SvedText(const string name, const datetime t, const double p, const string 
   }
 
 //+------------------------------------------------------------------+
-//| Vytvori nebo aktualizuje textovy popisek panelu (pixelove ukotveny)|
+//| Vytvori nebo aktualizuje textovy popisek panelu (pixelove        |
+//| ukotveny k levemu hornimu rohu grafu).                           |
+//|  name     - jmeno objektu (vcetne prefixu strategie)             |
+//|  x, y     - odsazeni od rohu v pixelech                          |
+//|  text     - vypisovany text                                      |
+//|  clr      - barva textu, fontSize - velikost pisma               |
+//|  font     - nazev pisma (panel pouziva neproporcionalni)         |
 //+------------------------------------------------------------------+
 void SvedLabel(const string name, const int x, const int y, const string text,
                const color clr, const int fontSize, const string font)
   {
+   // Staticke vlastnosti staci nastavit pri vzniku objektu - panel se
+   // prekresluje casto a kazdy ObjectSet* je volani do terminalu
    if(ObjectFind(0, name) < 0)
+     {
       ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetString(0, name, OBJPROP_FONT, font);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
+     }
 
-   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
    ObjectSetString(0, name, OBJPROP_TEXT, text);
-   ObjectSetString(0, name, OBJPROP_FONT, font);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, name, OBJPROP_BACK, false);
   }
 
 //+------------------------------------------------------------------+
@@ -110,10 +148,13 @@ struct SChannelLabel
 
 //+------------------------------------------------------------------+
 //| Vytvori nebo aktualizuje tlacitko ukotvene k rohu grafu.         |
+//|  name     - jmeno objektu (vcetne prefixu strategie)             |
 //|  x, y     - odsazeni od leveho horniho rohu v pixelech           |
 //|  w, h     - rozmery tlacitka v pixelech                          |
 //|  text     - popisek tlacitka                                     |
 //|  clr, bg  - barva textu a pozadi                                 |
+//|  fontSize - velikost pisma, font - nazev pisma                   |
+//|  tooltip  - text bubliny po najeti mysi                          |
 //| Tlacitko se po kliknuti vraci do nestisknuteho stavu az v        |
 //| obsluze udalosti - MT5 ho jinak necha "zamacknute".              |
 //+------------------------------------------------------------------+
@@ -125,30 +166,32 @@ void SvedButton(const string name, const int x, const int y, const int w, const 
      {
       ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(0, name, OBJPROP_STATE, false);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetString(0, name, OBJPROP_FONT, font);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+      ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, clr);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
+      ObjectSetString(0, name, OBJPROP_TEXT, text);
+      ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
      }
 
-   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
    ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
    ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
-   ObjectSetString(0, name, OBJPROP_TEXT, text);
-   ObjectSetString(0, name, OBJPROP_FONT, font);
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, name, OBJPROP_BACK, false);
-   ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
   }
 
 //+------------------------------------------------------------------+
 //| Vykresli jeden kanal: LOW usecku a HIGH usecku.                  |
 //| Popisky opor se kresli zvlast pres SvedDrawLabels.               |
-//|  idx  - poradi kanalu (0 = hlavni, vyssi = mene vyznamny)        |
-//|  tEnd - cas praveho konce usecek                                 |
+//|  ch      - kresleny kanal                                        |
+//|  idx     - poradi kanalu (0 = hlavni, vyssi = mene vyznamny)     |
+//|  tEnd    - cas praveho konce usecek                              |
+//|  clrHigh - barva HIGH usecky, clrLow - barva LOW usecky          |
 //+------------------------------------------------------------------+
 void SvedDrawChannel(SChannel &ch, const int idx, const datetime tEnd,
                      const color clrHigh, const color clrLow)
@@ -174,6 +217,9 @@ void SvedDrawChannel(SChannel &ch, const int idx, const datetime tEnd,
 //| Body se popisuji pismenem a cislem kanalu (A1, B1, C1, D1 ...),  |
 //| takze je na prvni pohled videt, co ke kteremu kanalu patri.      |
 //| Body D, E, F ... jsou skutecne probehle dotyky hran za bodem C.  |
+//|  ch  - kanal, jehoz opory se popisuji                            |
+//|  idx - poradi kanalu (cislo v popisku je idx + 1)                |
+//|  out - sberne pole popisku (in/out)                              |
 //+------------------------------------------------------------------+
 void SvedCollectChannelLabels(SChannel &ch, const int idx, SChannelLabel &out[])
   {
@@ -206,9 +252,13 @@ void SvedCollectChannelLabels(SChannel &ch, const int idx, SChannelLabel &out[])
 //| Popisky, ktere by padly na stejne misto (stejna svicka, stejna   |
 //| strana a cena blizsi nez mergeTol), se slouci do jednoho textu - |
 //| napr. "E1 E3". Jinak by se pri sdilene opore prepisovaly.        |
+//|  items    - sesbirane popisky vsech kanalu                       |
+//|  clr      - barva textu, fontSize - velikost pisma               |
+//|  mergeTol - tolerance slouceni v cene                            |
+//| Vraci pocet skutecne vykreslenych (slouceni) popisku.            |
 //+------------------------------------------------------------------+
-void SvedDrawLabels(SChannelLabel &items[], const color clr, const int fontSize,
-                    const double mergeTol)
+int SvedDrawLabels(SChannelLabel &items[], const color clr, const int fontSize,
+                   const double mergeTol)
   {
    const int cnt = ArraySize(items);
 
@@ -250,11 +300,19 @@ void SvedDrawLabels(SChannelLabel &items[], const color clr, const int fontSize,
       SvedText(SVED_PREFIX + "PT" + IntegerToString(i), merged[i].time, merged[i].price,
                merged[i].text, clr, fontSize,
                merged[i].above ? ANCHOR_LOWER : ANCHOR_UPPER);
+
+   return(m);
   }
 
 //+------------------------------------------------------------------+
-//| Vykresli urovne planovaneho vstupu (spoust, vstup, SL, PT).      |
-//| Usecky vedou od casu ta doprava, aby byly citelne i pri zoomu.   |
+//| Vykresli urovne planovaneho vstupu (vstup, SL, PT).              |
+//| Usecky vedou od casu tFrom doprava, aby byly citelne i pri zoomu.|
+//|  tag       - oznaceni smeru v nazvu objektu ("BUY" / "SELL")     |
+//|  plan      - navrh vstupu; neplatny navrh se jen smaze           |
+//|  tFrom     - levy konec usecek, tTo - pravy konec                |
+//|  clrEntry  - barva urovne vstupu                                 |
+//|  clrSL     - barva stop lossu, clrTP - barva take profitu        |
+//|  digits    - pocet desetinnych mist pro popisky                  |
 //+------------------------------------------------------------------+
 void SvedDrawEntryLevels(const string tag, SEntryPlan &plan, const datetime tFrom, const datetime tTo,
                          const color clrEntry, const color clrSL, const color clrTP, const int digits)

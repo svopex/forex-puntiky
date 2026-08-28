@@ -14,14 +14,12 @@ na mezery → další ověření. Číslo řádku = řádek v uvedeném souboru.
 Poznámka k defaultům: výchozí režim je `SVED_ENTRY_PENDING`, `InpBreakoutBuffer = 10 b`,
 `InpMaxPositions = 1`, `InpLotMode = FIXED`, `InpReliefMode = SKIP`, `InpUseSwingLevels = true`.
 
-> **Stav pro navázání (2026-08-28):** revidovaný kód odpovídá commitu `4e13aa9` (main) – oproti
-> `675d8df` se změnily jen výchozí hodnoty `InpLotMode = SVED_LOT_RISK` a `InpRiskPercent = 1.0`
-> (mq5:102–104) a README; čísla řádků v tomto souboru tedy stále platí. Rizikový režim objemu je
-> teď výchozí, takže nález 2.8 (`CalcLot`: `MathMax(lot, minLot)` tiše zvedne riziko nad limit,
-> `TICK_VALUE` místo `TICK_VALUE_LOSS`) se týká výchozí konfigurace. Doporučené pořadí oprav:
-> 2.1 → 2.2 → 2.3 → 2.4/2.5 (společná rekonciliace příkazů) → 2.6/2.11 → 2.8 → 2.9/2.14 → zbytek;
-> každou opravu samostatným commitem, kompilace přes `scripts\deploy.cmd`, komentáře česky,
-> identifikátory anglicky (viz `~/.claude/CLAUDE.md`).
+> **✅ VYŘEŠENO (2026-08-28), EA v1.12.** Všechny nálezy z kapitol 2–6 jsou opravené –
+> viz kapitola 7 „Stav oprav“ na konci dokumentu, kde je ke každému nálezu uvedeno, co se
+> změnilo a kde. Kód prošel kompilací přes `scripts\deploy.cmd` (0 errors, 0 warnings).
+> **Čísla řádků v kapitolách 1–6 už neplatí** – popisují stav před opravou (commit `4e13aa9`
+> plus `fb7499f`, který přidal upozornění Hue a posunul řádky mq5 o ~226 níž). Kapitoly 1–6
+> jsou ponechané beze změn jako záznam o tom, proč se co měnilo.
 
 ---
 
@@ -461,3 +459,139 @@ pro sjednocení.
 | SvedChannels.mqh:191 (59–70, 278, 627) | „Dotyk“, „proříznutí“, „uvnitř“ = čtyři ad-hoc nerovnosti. | Jedna signovaná vzdálenost od hrany na `SChannel` + predikáty `Touches/Pierces/Contains`. Dnes: při `touchTolFrac 0.05` / `invalidTolFrac 0.15` svíčka 0.08 w nad hranou projde IsClean, není dotyk (nad `2×tol`), ale `CollectTouchPoints` (bez horní meze) ji zapíše jako bod D → panel „dotyků N“ a písmena D/E/F si odporují; „uvnitř“ má dvě definice (0.15 w vs. `InpInsideTolFrac` 0.02 w). |
 | mq5:1003 (992, 1225, 1389) | Druh bariéry rekonstruován porovnáním doublů + přetížený `limitedByEdge`. | Enum bariéry (NONE/CHANNEL_EDGE/RELIEF) + cena v `SEntryPlan`; dnes v režimu SHORTEN panel i log hlásí „zkráceno hranou“, ačkoli bariérou byla přímka – obchodník ladí špatný parametr. |
 | mq5:630 (424, 45–46, 86–97) | Tolerance ve čtyřech jednotkách (zlomek šířky, body, násobek ATR, body + ATR u šířky), převod na cenu na místě použití. | Přesun na brokera s 3 desetinnými místy u XAUUSD zpřísní všech 6 reliéfních bodových tolerancí 10× (reliéf tiše zmizí – vše „proraženo“) a `InpMinWidthPoints` 10× uvolní; varování v `OnInit` (202–206) pokrývá jen `InpMaxEntryPoints` z ~13 bodových vstupů. Jedna cenová jednotka (násobek ATR / normalizace na digits) převedená jednou v `OnInit`. |
+
+---
+
+## 7. Stav oprav (2026-08-28, EA v1.12)
+
+Opraveno je **všech 15 hlavních nálezů**, všech 8 nálezů pod čarou, porušení konvencí
+z kapitoly 5 i cleanup z kapitoly 6. Kompilace: `scripts\deploy.cmd` → *0 errors, 0 warnings*.
+
+Změna se dotkla všech šesti souborů (`SvedChannelBreakout.mq5` 1 724 → 2 421 řádků,
+včetně nových komentářů; moduly přepsané po funkcích).
+
+### 7.1 Korektnost – kapitola 2
+
+| # | Co se změnilo | Kde |
+|---|---|---|
+| 2.1 | Cancel + re-place nahrazen **rekonciliací**: příkaz strategie se najde podle magic a typu a mění se jen při rozdílu ceny / SL / PT / objemu (`OrderModify`), jinak se nechá být. Výsledek `OrderDelete` se kontroluje a loguje; nový příkaz vzniká výhradně tehdy, když příkaz daného typu neexistuje, takže neúspěšné zrušení nemůže vyrobit duplikát. Přebytečný druhý příkaz téhož směru se ruší. Respektuje se `SYMBOL_TRADE_FREEZE_LEVEL`. Běží nejvýš **jednou za tick** přes příznak `g_ordersDirty`. | `SyncPendingOrders`, `SyncOneDirection`, `DeleteOrder`, `OrderIsFrozen`, `PlaceStopOrder` |
+| 2.2 | Průraz se posuzuje proti **exekuční ceně směru** (`ExecPrice`: BUY = bid + spread) jediným predikátem `PriceBeyondLevel`, který používají všechny detektory. Spotřebovaná úroveň se ukládá do globální proměnné terminálu, takže **přežije restart**. | `ExecPrice`, `PriceBeyondLevel`, `MarkLevelTaken`, `LevelWasTaken`, `ApplyBreakLevel` |
+| 2.3 | Hrana se hledá od **spouštěče** (stejná reference jako test „uvnitř kanálu“), volné místo se měří od vstupu a nikdy není záporné → hrana mezi spouštěčem a vstupem dá 0 b a obchod se zamítne. | `BuildPlan`, `SvedDistanceToNextEdge` |
+| 2.4 | Řeší rekonciliace z 2.1: každý přepočet návrhu (M1 svíčka, M15/H1 svíčka, změna úrovní) srovná ležící příkaz s návrhem. Nezadaný příkaz se zkusí znovu při dalším přepočtu (≤ 1 min místo 15 min) a důvod se objeví v panelu i v logu. | `RebuildPlans`, `SyncPendingOrders`, `PlaceStopOrder` |
+| 2.5 | „Nabito“ (`armed`) je součástí společné sady ochran, takže platí i v pending režimu. | `EntryBlockReason` |
+| 2.6 | `FindBreakoutSwings` vrací výsledek **po stranách** (`foundHi` / `foundLo`) a každá strana se aktualizuje samostatně; `RebuildPlans` se volá vždy, i když se žádná úroveň nenajde. | `FindBreakoutSwings`, `ApplyBreakLevel`, `RefreshBreakoutLevels` |
+| 2.7 | (a) Vstup v režimu M1_CLOSE se vyhodnocuje **před** přepočtem úrovní (nové bary se zjišťují na začátku `OnTick`). (b) Guardy se skládají – místo jednoho boolu je `atMarket`, který vypíná jen test dosažitelnosti a „proraženo“. (c) Nový vstup `InpMaxLevelOffset` (30 b) omezuje odstup tržního vstupu od úrovně. | `OnTick`, `EntryBlockReason`, `CheckEntryOnEntryTF` |
+| 2.8 | `MathFloor(lot / step + 1e-9)`, normalizace na počet desetinných míst **kroku objemu**, `SYMBOL_TRADE_TICK_VALUE_LOSS`, a v režimu RISK se obchod **odmítne**, když rizikový lot nedosáhne na `SYMBOL_VOLUME_MIN` (důvod včetně skutečného procenta jde do panelu). | `CalcLot`, `VolumeDigits` |
+| 2.9 | Po `DEAL_ENTRY_IN` se délka vezme z vyplněného příkazu (`ORDER_PRICE_OPEN − ORDER_SL`) a SL/PT se dorovnají na skutečnou plnicí cenu – i v pending režimu. | `OnTradeTransaction`, `AdjustPositionStops` |
+| 2.10 | Outside bar (pivot high i low) přispěje do kostry **oběma** extrémy; pořadí určuje střídání typů. | `SvedDetectSwings`, `SvedPushSwing` |
+| 2.11 | Do testu proražení vstupuje i **právě otevřená** svíčka TF průrazu, takže se další swing hledá skutečně hned. Zároveň odpadly dvě kopie M1 historie na každý přepočet (nález z 6.3). | `LevelBrokenNow`, `SwingBroken` |
+| 2.12 | Dotyky se počítají **bez oporových barů** – u kanálů bez A, B, C, u reliéfních přímek bez obou opor. Opora zároveň uzavírá dotykovou epizodu, takže se místo ní nezapočítá svíčka hned vedle. Výchozí prahy dorovnané tak, aby efektivní požadavek zůstal stejný jako dřív: `InpMinTouches` 4 → 1 (dřív 3 dotyky zadarmo, tedy 1 navíc) a `InpReliefMinTouches` 2 → **0** (dřív 2 zadarmo, tedy 0 navíc – čistá spojnice dvou swingů platí dál, viz 7.6). | `SvedChannelScan`, `SvedReliefScan` |
+| 2.13 | ATR se čte přes `BarsCalculated` a jen **jednou za přepočet** (`g_atr`); dokud data nejsou, první výpočet i první příkazy se odloží (`g_needInitCalc`, dopočet zkouší `OnTick` i `OnTimer`). | `RefreshATR`, `TryInitialCalc` |
+| 2.14 | `AdjustPositionStops` mění **jen zadanou pozici** (ID z výsledného obchodu). OCO plyne z platnosti návrhu, takže se ruší až při dosažení `InpMaxPositions` – s hodnotou 2 je druhý směr dosažitelný. | `AdjustPositionStops`, `ResultPositionId`, `EntryBlockReason`, `SyncPendingOrders` |
+| 2.15 | Containment i „cena uvnitř“ mají vlastní toleranci `insideTolFrac` (= `InpInsideTolFrac`, 2 %), která je menší než `pierceTolFrac` → filtry i skóre zase něco měří. Test „uvnitř“ navíc běží před drahými průchody polem. | `SChannelParams.insideTolFrac`, `SvedEvaluateChannel`, `SvedChannelScan` |
+
+### 7.2 Nálezy pod čarou – kapitola 3
+
+| # | Co se změnilo |
+|---|---|
+| 3.1 | Veškerá manipulace s příkazy je za `TradingEnabled()` (oprávnění, ne počet pozic). Instance jen pro kreslení nesahá na cizí příkazy ani v `OnInit`. |
+| 3.2 | Při nezměněné úrovni se příznak „proraženo“ drží a OR-uje se s novým zjištěním; test je O(1) nad otevřenou svíčkou, takže nezávisí na synchronizaci M1 historie. |
+| 3.3 | `ValidateInputs()` v `OnInit` → `INIT_PARAMETERS_INCORRECT` s výpisem konkrétních parametrů (hloubky, lookbacky, měřítka, meze, `MaxPositions ≥ 1`, `DedupFrac > 0`, `MinEntry ≤ MaxEntry`, `0 ≤ MidFrom < MidTo ≤ 1`, riziko/lot > 0 …). |
+| 3.4 | `InpAllowBuy` / `InpAllowSell` jsou první ochranou v `EntryBlockReason`, takže vypnutý směr se ani nekreslí a v panelu má důvod `směr vypnut`. |
+| 3.5 | `OnInit` ruší osiřelé příkazy, když režim není PENDING; `OnDeinit` je ruší při `REASON_REMOVE` (při změně parametrů zůstávají a srovná je následný `OnInit`). |
+| 3.6 | Předčasný návrat `RecalcChannels` / `RecalcRelief` vyprázdní pole, vynuluje statistiku a překreslí, takže v grafu nezůstanou utvary, které už nikdo nepočítá. |
+| 3.7 | Dedup reliéfních přímek porovnává ve **dvou** časech (`SvedReliefSimilar`), stejně jako kanály. |
+| 3.8 | `SvedDistanceToNextEdge` řeší případ `v <= price` explicitně: vzdálenost 0 a hrana na úrovni ceny; do panelu se nedostane záporná délka. |
+
+### 7.3 Konvence – kapitola 5
+
+Doplněné popisy parametrů u všech hlavičkách funkcí (včetně `SvedTrendLine`, `SvedText`,
+`SvedLabel`, `SvedButton`, `SvedDrawEntryLevels`, `SvedChannelsSimilar`, `IsNewBar`,
+`SwingBroken`, `StateText`, …), opravená hlavička `BuildPlan` („min(450 bodu)“ → skutečné
+`InpMaxEntryPoints`) i `SvedDraw.mqh` („VYHRADNE kanaly“ → co soubor opravdu kreslí),
+okomentovaný řetězec filtrů v `OnTradeTransaction` i podmínka stop-levelu, srovnané
+odsazení smyčky přes měřítka v `SvedRelief.mqh`, `SvedText` přijímá font parametrem
+a opravené překlepy `pruzaz` → `pruraz` ve všech vstupech a komentářích.
+
+### 7.4 Cleanup – kapitola 6
+
+- **Reuse:** `IsOurPosition()` / `IsOurOrder()`, `PriceBeyondLevel()`, `ExecPrice()`,
+  `FutureTime()`, `LoadClosedBars()`, `StopsLevelPrice()`, `g_breakBuffer`,
+  `SvedScaleDepth()` / `SvedScaleFits()` (společné pro kanály i reliéf),
+  `SvedSortByScoreDesc()` (šablona místo tří kopií řazení),
+  `SvedChannelIsDuplicate()`, `SReliefLine::GapFrom/GapTo/IsTouch`,
+  `SChannel::TouchesUpper/TouchesLower`, zrcadlové BUY/SELL bloky parametrizované přes
+  `isBuy` (`CheckEntryOnEntryTF`, `SvedDistanceToNextEdge`, `SvedNearestRelief`).
+  `SvedBuildChannels` už nedostává počet měřítek dvakrát. `SVED_RELIEF_TOUCH_GAP`
+  sloučeno se `SVED_TOUCH_GAP`. Parametry modulů se plní jednou v `OnInit` (`InitParams`).
+- **Zjednodušení:** čítače `g_channelCount` / `g_reliefCount` nahrazeny `ChannelCount()` /
+  `ReliefCount()` nad `ArraySize`, takže se nemají s čím rozejít; `limitedByEdge` +
+  porovnávání doublů nahrazeno enumem `ENUM_SVED_BARRIER` + `barrierPrice`
+  (panel i log teď hlásí správnou překážku); nepoužívané `blockedByRelief` odstraněno;
+  magická čísla pojmenovaná (`SVED_MIN_BARS`, `SVED_PANEL_MAX_LINES`,
+  `SVED_DEDUP_BACK_BARS`, `SVED_TOUCH_GAP`, …); odstraněny zbytečné `ArrayResize(…, 0)`
+  na čerstvých polích, dvojité `if(ok)` v `OpenMarket` i nedosažitelný test `used`.
+- **Efektivita:** panel se kreslí z timeru a jen v řádcích, jejichž text se změnil;
+  objekty se aktualizují na místě a maže se jen přebytek (`SvedDeleteIndexed`,
+  `ObjectsDeleteAll` místo ručního průchodu grafem); rekonciliace místo cancel+re-place;
+  `LevelAlreadyBroken` s kopiemi M1 historie nahrazen dvěma O(1) dotazy;
+  kontrola proříznutí, containment a dotyky kanálu v **jednom** průchodu
+  (`SvedChannelScan`), u reliéfu taktéž (`SvedReliefScan`) a levné filtry (délka, stáří,
+  drift, „cena uvnitř“) běží před nimi; řazení kandidátů přes pole indexů + rezerva
+  v `ArrayResize`; ATR se čte jednou za přepočet.
+- **Altitude:** rekonciliace příkazů z jednoho místa; „obchodováno na této úrovni“
+  odvozeno z perzistentní paměti místo prchavého příznaku; jedna sada ochran
+  (`EntryBlockReason`) pro oba režimy; jeden predikát průrazu nad všemi zdroji dat;
+  jedna `ValidateInputs()`; predikáty dotyku/„uvnitř“ jako metody `SChannel`;
+  enum bariéry. Převod bodových vstupů na cenu je soustředěný do `InitParams()`
+  a `PrintPointDiagnostics()` vypíše při startu **všechny** bodové tolerance v ceně –
+  přesun na brokera s jiným počtem desetinných míst je tak vidět hned. (Jednotná
+  cenová jednotka pro všechny tolerance by měnila smysl parametrů, proto zůstávají
+  v bodech; viditelnost problému ale řeší ten výpis.)
+
+### 7.5 Co ověřit v provozu
+
+Opravy mění chování v místech, kde se dřív tiše obchodovalo jinak, než README slibuje.
+Před ostrým nasazením stojí za kontrolu:
+
+1. **Počty kanálů a přímek** – filtry `InpMinContainment`, `InpRequireInside`
+   a `minTouches` teď skutečně filtrují. Diagnostika v logu ukáže, který práh bere
+   nejvíc kandidátů; případně povol `InpInsideTolFrac` nebo sniž `InpMinTouches` na 0.
+2. **Objem v režimu RISK** – při malém zůstatku se obchod nově neotevře místo toho,
+   aby se riziko překročilo. V panelu je vidět, jaké procento by minimální lot znamenal.
+3. **Arming v pending režimu** – po startu uprostřed pohybu (cena mezi úrovní
+   a úrovní + buffer) se příkaz zadá až po návratu ceny pod úroveň.
+
+### 7.6 Dodatek: zmizelé reliéfní podpory (2026-08-28, po nasazení)
+
+**Hlášení:** po opravách se přestaly kreslit reliéfní přímky pod cenou – v grafu
+zbylo 6 odporů a žádná podpora (`docs/iScreen Shoter … 134827.png`).
+
+**Diagnóza z Expert logu** (porovnání téhož dne před a po nasazení):
+
+```
+před 13:44  reliéf 2 (podpora) 4564.66 → 4571.23, dotyků 2
+            reliéf 4 (podpora) 4588.50 → 4574.71, dotyků 2
+            reliéf 6 (podpora) 4574.71 → 4571.23, dotyků 2
+po   13:44  6× odpor, žádná podpora
+```
+
+Podpory na tomto trhu měly „dotyky 2“ = přesně své dvě opory, tedy **nula
+nezávislých dotyků**. Po opravě 2.12 (opory se nepočítají) padly na prahu
+`InpReliefMinTouches = 1`. Chyba byla ve dvou věcech:
+
+1. **Špatně zvolený výchozí práh.** Efektivní požadavek se měl zachovat: u reliéfu
+   byl dřív 2 dotyky mínus 2 opory zadarmo = **0**, ne 1. Výchozí hodnota je nově
+   `InpReliefMinTouches = 0` – běžná trendlinie vedená dvěma swingy platí dál,
+   parametr ale konečně říká pravdu a kdo chce jen „osahané“ přímky, zvedne ho.
+   (U kanálů byl efektivní požadavek 4 − 3 = 1, proto tam `InpMinTouches = 1`
+   zůstává.)
+2. **Chyba v implementaci vynechání opor.** Opora se přeskočila, ale nenastavila
+   závoru dotykové epizody, takže se místo ní započítala svíčka hned vedle –
+   odpory proto hlásily 2–3 „nezávislé“ dotyky, přestože měly jeden. Opora teď
+   epizodu uzavírá (`lastTouch` / `lastUpTouch` / `lastLoTouch` se na ní nastaví,
+   jen se nezapočítá), takže sousední svíčka téže epizody dotyk nezdvojí.
+
+Opraveno v `SvedReliefScan` a `SvedChannelScan`; překompilováno a nasazeno.
+Čísla dotyků v panelu a v diagnostice jsou teď nižší než před opravou – ukazují
+dotyky **mimo opory**, ne včetně nich.

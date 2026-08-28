@@ -1,6 +1,6 @@
 # Sved Channel Breakout — strategie pro MetaTrader 5
 
-Expert Advisor pro MT5 (verze 1.10), který detekuje ABCD kanály na M15, kreslí je
+Expert Advisor pro MT5 (verze 1.12), který detekuje ABCD kanály na M15, kreslí je
 do grafu a obchoduje průrazy swingových H1 úrovní uvnitř těchto kanálů. Vstup se
 vyhodnocuje na M1. Do grafu vykresluje **pouze kanály, reliéfní přímky
 a informace o vstupu** — žádné jiné indikátory ani pomocnou grafiku.
@@ -15,7 +15,10 @@ Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
    kostra trhu — střídavé swingové vrcholy a dna. Pivot je svíčka, jejíž high
    (resp. low) je extrémem v okně `InpSwingDepth` svíček na každou stranu; levé
    rameno musí být striktně nižší, pravé smí být rovné, aby ploché vrcholy nedávaly
-   duplicitní pivoty. Dva stejné typy za sebou se sloučí do extrémnějšího. Kostra
+   duplicitní pivoty. Dva stejné typy za sebou se sloučí do extrémnějšího.
+   Svíčka, která je pivotem **obou** typů zároveň (outside bar), přispěje do kostry
+   **oběma** extrémy — dřív se zapsal jen jeden a skutečný vrchol (nebo dno) tak
+   z kostry zmizel, takže úroveň průrazu sedla na nižší swing. Kostra
    se hledá opakovaně v několika měřítkách (`InpSwingScales`) s postupně
    dvojnásobným oknem (3, 6, 12 svíček) — jemné okno najde malé kanály, hrubé velké.
    Právě tím vzniká **kanál v kanálu**.
@@ -61,9 +64,16 @@ Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
      `InpMinWidthATR`; ATR s periodou `InpATRPeriod` na TF kanálu),
    - minimální počet dotyků obou hran (`InpMinTouches`) — dotyk je high/low
      v pásmu `InpTouchTolFrac` × šířka kolem hrany, dotyky blíž než 3 svíčky
-     se počítají jako jeden,
-   - minimální podíl svíček uzavřených uvnitř kanálu (`InpMinContainment`),
-   - volitelně musí být aktuální close stále uvnitř kanálu (`InpRequireInside`).
+     se počítají jako jeden. **Opory A, B a C se nepočítají** — leží na hranách
+     z definice, takže by každý kanál dostal tři dotyky zadarmo; parametr tedy
+     říká, kolik dotyků má kanál mít *navíc* nad rámec vlastních opor. Opora
+     zároveň uzavírá dotykovou epizodu, takže se místo ní nezapočítá svíčka
+     hned vedle ní,
+   - minimální podíl svíček uzavřených uvnitř kanálu (`InpMinContainment`;
+     „uvnitř“ znamená close v pásmu `InpInsideTolFrac` × šířka kolem hran —
+     stejná tolerance jako u testu úrovně průrazu),
+   - volitelně musí být aktuální close stále uvnitř kanálu (`InpRequireInside`,
+     tatáž tolerance).
 7. Skóre kanálu: `containment × 6 + min(dotyky, 15) + min(délka / InpMinSpanBars, 6)
    + min(šířka / ATR, 6) × 0,6 − min(stáří / InpMaxAgeBars, 1) × 2`. Váhy jsou
    voleny tak, aby se složky rychle nesečetly do stropu — jinak by měly všechny
@@ -88,12 +98,19 @@ Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
 - Proražená úroveň je spotřebovaná, takže se pokračuje k předchozímu swingu —
   typicky výraznějšímu, který je pořád platnou hranicí. Průraz se hlídá na
   **každém ticku**; jakmile úroveň padne, hledá se další okamžitě, nečeká se na
-  otevření další H1 svíčky.
-- Po startu experta (nebo restartu) se z M1 historie zpětně dohledá, jestli cena
-  úroveň neprorazila už dřív — od konce swingové svíčky do současnosti. Bez toho
-  by expert oživil dávno spotřebované úrovně a zadal na ně příkazy.
-- Na jedné swingové úrovni se obchoduje **nejvýše jednou**; příznaky
-  „obchodováno“ a „proraženo“ se resetují až ve chvíli, kdy vznikne nový swing.
+  otevření další H1 svíčky — do testu proražení vstupuje i **právě otevřená**
+  H1 svíčka, ne jen ty uzavřené.
+- Průraz se posuzuje proti ceně, za kterou se daný směr **skutečně plní**: graf
+  i historie jsou v BID, ale BuyStop se plní za ASK, takže se u nákupu k ceně
+  přičítá spread. Bez toho se BUY při širokém spreadu plnil ještě *pod* úrovní
+  a žádná svíčka průraz nezaznamenala.
+- Obě strany se aktualizují **samostatně**: když se pro jeden směr žádný
+  neproražený swing nenajde (v silném trendu jsou všechny starší vrcholy
+  proražené), druhá strana se přesto přepočítá.
+- Na jedné swingové úrovni se obchoduje **nejvýše jednou**. Spotřebovaná úroveň
+  se ukládá do globální proměnné terminálu (`SVED_<symbol>_<magic>_BUY` / `_SELL`),
+  takže to přežije i restart terminálu — dřív se po restartu tatáž úroveň
+  obchodovala podruhé.
 - Směr je **zablokovaný**, dokud cena nebyla na správné straně úrovně (pod HIGH pro
   BUY, nad LOW pro SELL) — zabraňuje vstupu do už proběhlého pohybu (gap, start EA
   uprostřed pohybu).
@@ -108,34 +125,56 @@ jinak se signál zahodí. Režim vstupu určuje `InpEntryMode`:
 
 - **`SVED_ENTRY_PENDING` (výchozí)**: BuyStop a SellStop se umístí přímo na
   swingové úrovně (± `InpBreakoutBuffer`) se SL a PT z návrhu vstupu, platnost GTC.
-  Zadají se hned po nahození experta a přepočítají se (zrušit a zadat znovu)
-  s každou novou M15 svíčkou (posunuly se hrany kanálu, takže SL i PT už
-  neodpovídají), s každou novou H1 svíčkou a kdykoli se **změní platnost návrhu**
-  (např. do cesty vstoupila reliéfní přímka nebo naopak zmizela). Příkaz se zadá
-  jen tehdy, je-li úroveň dál od trhu než stop-level brokera. Po otevření pozice
-  se zbylý příkaz zruší (OCO).
+  Zadají se hned po nahození experta. Dál se **nerušily a nezadávaly znovu**, ale
+  srovnávají se s návrhem: expert najde svůj příkaz podle magic a typu a sáhne na
+  něj jen tehdy, když se liší cena, SL, PT nebo objem (`OrderModify`; při změně
+  objemu se příkaz zadá znovu). Rekonciliace běží nejvýš jednou za tick a jen po
+  přepočtu návrhu, tedy s každou M1 svíčkou, s novou M15/H1 svíčkou a při každé
+  změně úrovní. Tím se zároveň propíše každá změna SL/PT/objemu do už ležícího
+  příkazu — dřív se ležící příkaz aktualizoval jen tehdy, když návrh změnil
+  *platnost*, takže mohl nést PT za reliéfní přímkou, kterou měl obcházet.
+  Neúspěšné zrušení příkazu se loguje a nový příkaz se v takovém případě nezadá
+  (dřív vedle sebe mohly zůstat dva identické příkazy a expozice byla dvojnásobná);
+  příkaz uvnitř freeze zóny brokera se nechá být a zkusí se při dalším přepočtu.
+  Příkaz se zadá jen tehdy, je-li úroveň dál od trhu než stop-level brokera —
+  jinak je návrh označený jako neproveditelný a důvod je vidět v panelu.
+  Po otevření pozice se zbylý příkaz zruší (OCO), a to až při dosažení
+  `InpMaxPositions` — s `InpMaxPositions = 2` tedy může běžet i druhý směr.
 - **`SVED_ENTRY_M1_CLOSE`**: čeká na uzavření M1 svíčky za úrovní (o
   `InpBreakoutBuffer` bodů) a vstupuje tržním příkazem — v terminálu tedy do
   vstupu není vidět žádný příkaz. Vstupuje se jen na **skutečném přechodu** přes
   úroveň (předchozí M1 close musí být ještě na druhé straně), aby expert
   nevstoupil dlouho po průrazu — třeba až potom, co pominula překážka v podobě
-  reliéfní přímky. Po vyplnění se SL a PT dorovnají na skutečnou plnicí cenu,
-  aby poměr zůstal přesně 1:1.
+  reliéfní přímky. Vstup se vyhodnocuje **ještě před přepočtem úrovní**, aby se
+  na hodinové hranici neporovnával s úrovní, která platí až od další H1 svíčky.
+  Vstup dál od úrovně než `InpMaxLevelOffset` bodů se zamítne — po gapu nebo
+  dlouhé svíčce už s průrazem nemá nic společného.
 
 Společné pro oba režimy:
 
 - Vyplnění příkazu se zachytává v `OnTradeTransaction`, takže o něm expert ví
   i v případě, že pending příkaz vyplnil broker bez jeho přičinění; návrhy se
   hned přepočítají a druhý příkaz se zruší.
-- Návrh vstupu se přestane nabízet, jakmile **běží pozice** (`InpMaxPositions`),
-  když už se **na dané swingové úrovni obchodovalo**, nebo když **úroveň už byla
-  proražena**. Když cena úrovní právě prochází, není co prorazit a STOP příkaz
-  nad/pod trhem by stejně nešlo zadat — takový návrh se nekreslí do grafu ani
-  nenabízí v panelu (`průraz už proběhl`).
-- Směry lze jednotlivě vypnout (`InpAllowBuy`, `InpAllowSell`); `InpEnableTrading
-  = false` nechá experta jen kreslit. Při `InpAllowedAccount ≠ 0` a jiném čísle
-  účtu se obchodování vypne (kreslení zůstává). Obchoduje se jen při povoleném
-  algoritmickém obchodování v terminálu i na účtu.
+- **Po vyplnění se SL a PT dorovnají na skutečnou plnicí cenu** (v obou režimech),
+  aby poměr zůstal přesně 1:1 — pending příkaz nese absolutní SL a PT spočtené pro
+  nominální cenu, takže při plnění se skluzem by jinak byla jedna strana delší.
+  Upravuje se výhradně právě otevřená pozice (podle ID pozice z vyplněného
+  obchodu), ne všechny pozice strategie.
+- Ochrany vstupu jsou pro **oba režimy stejné**: běžící pozice (`InpMaxPositions`),
+  „na této úrovni už obchodováno“, vypnutý směr a **nabitost směru** (cena musela
+  být na správné straně úrovně). Pending režim navíc kontroluje, že úroveň ještě
+  není proražená a že je STOP příkaz proveditelný; tržní vstup místo toho hlídá
+  odstup od úrovně (`InpMaxLevelOffset`).
+- Směry lze jednotlivě vypnout (`InpAllowBuy`, `InpAllowSell`) — vypnutý směr se
+  přestane i kreslit a v panelu má důvod `směr vypnut`. `InpEnableTrading = false`
+  nechá experta jen kreslit; taková instance **nesahá ani na cizí příkazy** se
+  stejným magic (dřív je mazala při každém přepočtu). Při `InpAllowedAccount ≠ 0`
+  a jiném čísle účtu se obchodování vypne (kreslení zůstává). Obchoduje se jen při
+  povoleném algoritmickém obchodování v terminálu i na účtu.
+- Při odebrání experta z grafu se jeho pending příkazy zruší (jinak by ležely bez
+  dozoru a jejich vyplnění by otevřelo neřízenou pozici); při změně parametrů nebo
+  rekompilaci zůstávají a jen se srovnají s novým návrhem. Po přepnutí do režimu
+  `SVED_ENTRY_M1_CLOSE` se osiřelé příkazy zruší při startu.
 
 ### Reliéfní přímky (timeframe M1)
 
@@ -159,10 +198,15 @@ v cestě, takže ji strategie hlídá při plánování vstupu.
    kandidáty se nedostane.
 3. Musí mít délku aspoň `InpReliefMinSpan` svíček a aspoň `InpReliefMinTouches`
    potvrzených dotyků (tolerance `InpReliefTouchTol`, dotyky blíž než 3 svíčky se
-   počítají jako jeden). Volitelně (`InpReliefMidTouch`) se vyžaduje i dotyk
-   v prostřední části přímky (`InpReliefMidFrom`–`InpReliefMidTo` délky, tolerance
-   `InpReliefMidTol`) — krajní dotyky má z definice každá přímka, takže samy
-   o sobě nic nedokazují.
+   počítají jako jeden; opora epizodu uzavírá, takže se místo ní nezapočítá
+   svíčka hned vedle ní). **Vlastní opory přímky se do dotyků nepočítají** —
+   prochází jimi z definice, takže dřív měla každá čistá spojnice dvou swingů
+   „zadarmo“ dva dotyky a práh 2 nic nefiltroval. Výchozí hodnota je proto
+   **0** = platí i čistá spojnice dvou swingů bez dalšího dotyku (běžná
+   trendlinie, chování jako dřív); zvýšením na 1 a víc se drží jen přímky,
+   které si cena skutečně osahala i mimo své opory. Volitelně
+   (`InpReliefMidTouch`) se vyžaduje i dotyk v prostřední části přímky
+   (`InpReliefMidFrom`–`InpReliefMidTo` délky, tolerance `InpReliefMidTol`).
 4. Přímka nesmí od své druhé opory **ujet dál než `InpReliefMaxDrift`** a platí
    jen `InpReliefMaxAge` násobek vlastní délky za druhou oporou (0 = neomezeno).
    Strmá čára se jinak za pár hodin vzdálí desítky dolarů od ceny, kde už se
@@ -173,9 +217,11 @@ v cestě, takže ji strategie hlídá při plánování vstupu.
    záběr. Přímka klenoucí se přes údolí mezi dvěma vzdálenými swingy je přitom
    pořád platná — přilnutí není filtr, jen rozhodčí mezi variantami.
 6. Přímky se ohodnotí (`dotyky × 2 + délka / 100 − stáří / 200`) a ponechá se
-   nejvýše `InpMaxReliefLines` nejvýznamnějších; přímky stejného typu, které se na
-   poslední svíčce liší o méně než `InpReliefDedupTol`, se sloučí. Při výběru se
-   **střídají odpory a podpory**, aby jeden typ neobsadil všechny sloty.
+   nejvýše `InpMaxReliefLines` nejvýznamnějších; přímky stejného typu, které se
+   liší o méně než `InpReliefDedupTol`, se sloučí — porovnává se ve **dvou**
+   časech (poslední svíčka a 50 svíček zpět), aby se dvě různě skloněné přímky,
+   které se právě kříží, chybně nesloučily. Při výběru se **střídají odpory
+   a podpory**, aby jeden typ neobsadil všechny sloty.
 
 Když leží přímka ve směru obchodu **blíž než plánovaný PT**, rozhoduje
 `InpReliefMode`:
@@ -191,10 +237,15 @@ Přímky se přepočítávají s každou novou M1 svíčkou a kreslí se do graf
 ### Délka vstupu a stopy
 
 - Základní délka vstupu je **300 bodů** (`InpMaxEntryPoints`), SL : PT = **1 : 1**.
-  Zadání uvádí strop 450 bodů, výchozí hodnota je nastavená níž.
 - Pokud je nejbližší hrana kanálu ve směru obchodu blíž, PT se zkrátí tak, aby se
   před ni vešel (mínus rezerva `InpEdgeBuffer`), a SL se zkrátí stejně — **RRR
   zůstává 1:1**.
+- Hrana se hledá od **úrovně průrazu**, tedy od stejné ceny, proti které se
+  testovalo „průraz uvnitř kanálu“; volné místo se pak měří od skutečného vstupu.
+  Když hrana leží mezi úrovní a vstupem, je volného místa nula a obchod se
+  zamítne (`málo místa k hraně kanálu`). Dřív se hledalo až od vstupu a taková
+  hrana se považovala za neexistující — PT pak mířil v plné délce **za** hranu
+  kanálu, právě když swing seděl na hraně.
 - Hledají se hrany **všech** aktivních kanálů, takže cílem může být i hrana menšího
   kanálu vnořeného do většího.
 - Protože jsou hrany šikmé, bere se konzervativnější hodnota z času vstupu a z času
@@ -203,7 +254,14 @@ Přímky se přepočítávají s každou novou M1 svíčkou a kreslí se do graf
   brokera, obchod se neotevře a důvod se zobrazí v panelu.
 - Objem: výchozí je dopočet z rizika (`InpLotMode = SVED_LOT_RISK`: ztráta na SL
   = `InpRiskPercent` % zůstatku, výchozí 1 %) nebo pevný lot (`SVED_LOT_FIXED`, `InpFixedLot`).
-  Lot se zaokrouhlí dolů na krok objemu a ořízne do rozsahu symbolu.
+  Lot se zaokrouhlí dolů na krok objemu (s tolerancí proti chybě dělení
+  v plovoucí řadové čárce — `0.29 / 0.01` vyjde `28.999…` a bez ní by se
+  obchodovalo 0.28 místo zadaných 0.29), normalizuje na počet desetinných míst
+  **kroku objemu** (u kroku 0.001 tedy na tři místa) a ořízne do rozsahu symbolu.
+  Ztráta se počítá z `SYMBOL_TRADE_TICK_VALUE_LOSS`. Když riziko nestačí ani na
+  nejmenší dovolený lot, **obchod se neotevře** a v panelu je vidět, jaké procento
+  by minimální lot znamenal — dřív se lot zvedl na minimum a riziko tiše překročilo
+  zadaný limit (na malém účtu i několikanásobně).
 
 ### Stavy a důvody zamítnutí v panelu
 
@@ -212,16 +270,21 @@ na správné straně úrovně) / `obchodován` / `nelze (důvod)`. Možné důvo
 
 | Důvod | Význam |
 |---|---|
+| `směr vypnut` | směr je vypnutý (`InpAllowBuy` / `InpAllowSell`) |
 | `pozice již otevřena` | běží pozice strategie (`InpMaxPositions`) |
 | `tato úroveň už obchodována` | na aktuálním swingu už proběhl vstup |
+| `čeká na návrat pod úroveň` / `nad úroveň` | směr není nabitý — cena ještě nebyla na správné straně úrovně |
 | `úroveň už byla proražena` | cena úroveň prorazila (i intrabar), čeká se na nový swing |
 | `průraz už proběhl` | cena je právě za úrovní, STOP příkaz nelze zadat |
+| `blíž než stop-level brokera` | úroveň je k trhu blíž, než broker pro STOP příkaz dovolí |
+| `vstup N b od úrovně` | tržní vstup dál od úrovně než `InpMaxLevelOffset` (gap, dlouhá svíčka) |
 | `žádný platný kanál` | žádný kanál neprošel filtry |
 | `průraz mimo kanál` | úroveň neleží uvnitř žádného kanálu |
 | `v cestě reliéfní přímka (N b, cena)` | přímka blíž než PT, režim SKIP |
-| `málo místa k hraně / reliéfní přímce (N b)` | zbývá méně než `InpMinEntryPoints` |
+| `málo místa k hraně kanálu / reliéfní přímce (N b)` | zbývá méně než `InpMinEntryPoints` |
 | `délka pod stop-level brokera` | SL/PT by byly blíž, než broker dovolí |
-| `nelze určit objem` | výpočet lotu selhal |
+| `riziko N % nestačí ani na M lot` | v režimu RISK by minimální lot překročil zadané riziko |
+| `nelze určit objem` | výpočet lotu selhal (chybí data symbolu nebo účtu) |
 
 ### Co se kreslí do grafu
 
@@ -349,9 +412,9 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpMinWidthPoints` | 300 | minimální šířka kanálu v bodech |
 | `InpMinWidthATR` | 1.5 | minimální šířka v násobcích ATR |
 | `InpATRPeriod` | 14 | perioda ATR pro filtr šířky |
-| `InpMinTouches` | 4 | minimální počet dotyků hran |
+| `InpMinTouches` | 1 | minimální počet dotyků hran **mimo opory A, B, C** |
 | `InpTouchTolFrac` | 0.15 | tolerance dotyku jako zlomek šířky |
-| `InpMinContainment` | 0.85 | minimální podíl svíček uvnitř |
+| `InpMinContainment` | 0.85 | minimální podíl svíček uvnitř (tolerance `InpInsideTolFrac`) |
 | `InpMaxChannels` | 3 | kolik kanálů se ponechá |
 | `InpPierceTolFrac` | 0.05 | kolik smí cena prořezávat hranu (zlomek šířky) |
 | `InpInvalidTolFrac` | 0.15 | za jakým přesahem protější hrany za C je kanál invalidovaný |
@@ -368,6 +431,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpMaxEntryPoints` | 300 | maximální délka vstupu |
 | `InpMinEntryPoints` | 100 | pod touto délkou se nevstupuje |
 | `InpBreakoutBuffer` | 10 | buffer za úrovní průrazu |
+| `InpMaxLevelOffset` | 30 | max. odstup tržního vstupu od úrovně (režim M1_CLOSE) |
 | `InpEdgeBuffer` | 20 | rezerva PT před hranou kanálu |
 | `InpEdgeProjBars` | 12 | o kolik svíček dopředu se hrany promítají |
 | `InpInsideTolFrac` | 0.02 | tolerance testu „úroveň uvnitř kanálu“ (zlomek šířky) |
@@ -387,7 +451,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpReliefScales` | 4 | počet měřítek swingů (10/20/40/80) |
 | `InpReliefSwingGap` | 20 | max. odstup opor (počet swingů) |
 | `InpReliefMinSpan` | 30 | minimální délka přímky ve svíčkách |
-| `InpReliefMinTouches` | 2 | minimální počet dotyků |
+| `InpReliefMinTouches` | 0 | minimální počet dotyků **mimo vlastní opory přímky** (0 = stačí čistá spojnice) |
 | `InpReliefPierceTol` | 10 | proříznutí přímky tělem svíčky (body) |
 | `InpReliefWickTol` | 150 | povolený přesah přímky knotem mezi oporami (body) |
 | `InpReliefTouchTol` | 25 | tolerance dotyku (body) |
@@ -466,8 +530,9 @@ v timeru), uloží `MQL5\Files\SvedShot.png` a požadavek smaže.
   takže se uvnitř rozpracované svíčky nemění a nepřekreslují se zpětně. Jedinou
   výjimkou je hlídání průrazu úrovně, které běží na každém ticku.
 - Výchozí filtry jsou nastavené konzervativně, aby prošly opravdu jen výrazné
-  kanály. Pokud se na grafu nekreslí nic, sniž `InpMinTouches` na 3 nebo
-  `InpMinContainment` na 0.80 — diagnostika v logu ukáže, který filtr brzdí.
+  kanály. Pokud se na grafu nekreslí nic, sniž `InpMinTouches` na 0 nebo
+  `InpMinContainment` na 0.80, případně uvolni `InpInsideTolFrac` — diagnostika
+  v logu ukáže, který filtr brzdí.
 - Body se popisují písmenem a číslem kanálu (`A1`, `B1`, `C1`, `D1` … pro první
   kanál, `A2`, `B2` … pro druhý), takže je vidět, co ke kterému kanálu patří.
   Číslování odpovídá pořadí v panelu; kanál 1 je hlavní a kreslí se silnější čarou.
@@ -478,7 +543,19 @@ v timeru), uloží `MQL5\Files\SvedShot.png` a požadavek smaže.
   jednoho textu — např. `E1 E3`.
 - Panel se automaticky posune o `InpPanelOneClickShift` pixelů níž, pokud je
   v grafu zapnutý one-click SELL/BUY panel MetaTraderu, aby se s ním nepřekrýval.
-- Úrovně průrazu se aktualizují jen tehdy, když se podaří najít **oba** neproražené
-  swingy (vrchol i dno); jinak zůstávají poslední známé hodnoty.
+- Úrovně průrazu se aktualizují **po stranách**: strana, pro kterou se neproražený
+  swing najde, se přepočítá i tehdy, když ta druhá zůstane bez nálezu (tam platí
+  poslední známá hodnota).
+- Vstupní parametry se kontrolují při startu — nesmyslná kombinace (např.
+  `InpMaxPositions = 0` nebo `InpSwingDepth = 0`) skončí chybou
+  `INIT_PARAMETERS_INCORRECT` s výpisem toho, co je špatně, místo tichého
+  neobchodování.
+- Filtr šířky podle ATR potřebuje dopočítaný indikátor. ATR na jiném timeframu,
+  než má graf, se počítá asynchronně, takže první výpočet i první příkazy se
+  odloží na okamžik, kdy jsou data k dispozici (do logu jde hláška „čeká se na
+  dopočet ATR“). Dřív se v takové chvíli filtr šířky i složka skóre tiše vypnuly.
+- Panel se překresluje z timeru (jednou za sekundu) a jen v řádcích, jejichž text
+  se skutečně změnil; grafické objekty se aktualizují na místě a maže se jen to,
+  co po zmenšení počtu kanálů či přímek zbylo.
 - Strategie nemá časový filtr obchodních hodin ani filtr zpráv — pokud jsou
   potřeba, je to samostatné rozšíření.

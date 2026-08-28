@@ -16,9 +16,6 @@
 #include <Sved\SvedTypes.mqh>
 #include <Sved\SvedSwings.mqh>
 
-//--- Minimalni odstup dvou zapocitanych dotyku primky (v barech)
-#define SVED_RELIEF_TOUCH_GAP 3
-
 //+------------------------------------------------------------------+
 //| Reliefni primka                                                  |
 //+------------------------------------------------------------------+
@@ -29,7 +26,7 @@ struct SReliefLine
    double            p1, p2;
    int               i1, i2;    // indexy baru v analyzovanem poli
    double            slope;     // zmena ceny za 1 sekundu
-   int               touches;   // pocet potvrzenych dotyku
+   int               touches;   // pocet potvrzenych dotyku (bez opor primky)
    int               spanBars;  // delka primky v barech
    int               ageBars;   // stari druhe opory v barech
    double            meanGap;   // prumerny odstup od ceny mezi oporami
@@ -40,6 +37,24 @@ struct SReliefLine
    double            ValueAt(const datetime t)
      {
       return p1 + slope * (double)(t - t1);
+     }
+   //--- Odstup svicky od uz spoctene hodnoty primky: kladny = svicka
+   //--- primku nedosahla, zaporny = knot ji presahl. Jedna definice pro
+   //--- vsechny testy - driv byla tataz nerovnost opsana ve ctyrech
+   //--- funkcich a jejich kopie se rozesly.
+   double            GapFrom(const double v, const double high, const double low)
+     {
+      return isHigh ? (v - high) : (low - v);
+     }
+   //--- Odstup svicky od primky v case t
+   double            GapTo(const datetime t, const double high, const double low)
+     {
+      return GapFrom(ValueAt(t), high, low);
+     }
+   //--- Dotyk primky: svicka je v tolerancnim pasmu kolem ni
+   bool              IsTouch(const double gap, const double tol)
+     {
+      return (gap >= -tol && gap <= tol);
      }
   };
 
@@ -75,7 +90,7 @@ struct SReliefParams
    int               scales;       // pocet meritek detekce swingu
    int               maxSwingGap;  // max. odstup opor (v poctu swingu)
    int               minSpanBars;  // minimalni delka primky v barech
-   int               minTouches;   // minimalni pocet dotyku
+   int               minTouches;   // minimalni pocet dotyku (bez opor primky)
    double            pierceTol;    // povolene proriznuti primky TELEM svicky (v cene)
    double            wickTol;      // povoleny presah primky KNOTEM (v cene)
    double            touchTol;     // tolerance dotyku (v cene)
@@ -90,140 +105,126 @@ struct SReliefParams
   };
 
 //+------------------------------------------------------------------+
-//| Test, zda primka cenu obaluje a nebyla prorazena.                |
+//| Jediny pruchod svickami primky - kontrola prorazeni, dotyky,     |
+//| prilnuti a dotyk uprostred najednou.                             |
+//|                                                                  |
 //| Rozlisuji se tela a knoty - stejne, jako kdyz se trendline       |
 //| kresli rucne:                                                    |
 //|   - TELO svicky (open/close) nesmi primku prekrocit vubec        |
-//|     (tolerance bodyTol); telo za primkou = prorazeni,            |
+//|     (tolerance pierceTol); telo za primkou = prorazeni,          |
 //|   - KNOT smi primku presahnout az o wickTol, ale JEN MEZI        |
 //|     oporami - prostrel knotem uvnitr utvaru trendline nerusi.    |
 //|   - ZA druhou oporou je primka tvrda hranice: i knot pres ni     |
 //|     znamena novy extrem, primka prestava platit a kotva patri    |
 //|     na novou svicku (viz docs/iScreen ... 091142.png).           |
-//| Do maxOver se uklada nejvetsi zaznamenany presah knotu; nulovy   |
-//| presah znamena skutecnou tecnu vedenou pres spicky svicek.       |
+//|                                                                  |
+//| Dotyky se pocitaji BEZ oporovych baru: kazda primka svymi        |
+//| oporami prochazi z definice, takze by jinak mela dva dotyky      |
+//| zadarmo a filtr minTouches by nic nefiltroval (libovolna cista   |
+//| spojnice dvou swingu by pak v rezimu SKIP blokovala vstupy).     |
+//| Dotyky blize nez SVED_TOUCH_GAP baru se pocitaji jako jeden,     |
+//| aby jedna delsi epizoda nenafoukla skore.                        |
+//|  rates    - svicky vstupniho TF (index 0 = nejstarsi)            |
+//|  ln       - primka; zapisuji se do ni maxOver, touches, meanGap  |
+//|  p        - parametry (tolerance a stredni usek)                 |
+//|  midTouch - out: nasel se dotyk ve stredni casti primky?         |
+//| Vraci false, kdyz je primka prorazena.                           |
 //+------------------------------------------------------------------+
-bool SvedReliefIsClean(const MqlRates &rates[], SReliefLine &ln,
-                       const double bodyTol, const double wickTol)
+bool SvedReliefScan(const MqlRates &rates[], SReliefLine &ln, const SReliefParams &p,
+                    bool &midTouch)
   {
-   const int n = ArraySize(rates);
+   const int n     = ArraySize(rates);
+   const int from  = MathMax(ln.i1, 0);
+   const int toGap = MathMin(ln.i2, n - 1);
+
    ln.maxOver = 0.0;
+   ln.touches = 0;
+   ln.meanGap = 0.0;
 
-   for(int i = MathMax(ln.i1, 0); i < n; i++)
+   // Stredni usek primky - u velmi kratke primky nema smysl a bere se
+   // jako splneny
+   const int span    = ln.i2 - ln.i1;
+   const int midFrom = ln.i1 + (int)(p.midFrom * (double)span);
+   const int midTo   = ln.i1 + (int)(p.midTo   * (double)span);
+   midTouch = (span <= 2);
+
+   double gapSum    = 0.0;
+   int    gapCount  = 0;
+   int    lastTouch = -SVED_TOUCH_GAP;   // zadny dotyk zatim
+
+   for(int i = from; i < n; i++)
      {
-      const datetime t = rates[i].time;
-      const double   v = ln.ValueAt(t);
+      // Hodnota primky se pocita jednou za bar - je to nejcastejsi
+      // operace cele detekce
+      const double v   = ln.ValueAt(rates[i].time);
+      const double gap = ln.GapFrom(v, rates[i].high, rates[i].low);
 
-      // Mezi oporami je knotum povolen prostrel, za druhou oporou ne
-      const double tolWick = (i <= ln.i2) ? wickTol : bodyTol;
-
+      //--- Telo svicky nesmi primku prekrocit
       if(ln.isHigh)
         {
-         const double bodyTop = MathMax(rates[i].open, rates[i].close);
-         if(bodyTop > v + bodyTol)
+         if(MathMax(rates[i].open, rates[i].close) > v + p.pierceTol)
             return(false);
-         const double over = rates[i].high - v;
-         if(over > tolWick)
-            return(false);
-         if(over > ln.maxOver)
-            ln.maxOver = over;
         }
       else
         {
-         const double bodyBot = MathMin(rates[i].open, rates[i].close);
-         if(bodyBot < v - bodyTol)
+         if(MathMin(rates[i].open, rates[i].close) < v - p.pierceTol)
             return(false);
-         const double over = v - rates[i].low;
-         if(over > tolWick)
-            return(false);
-         if(over > ln.maxOver)
-            ln.maxOver = over;
+        }
+
+      //--- Knot smi presahnout jen mezi oporami, za druhou oporou ne
+      const double over    = -gap;
+      const double tolWick = (i <= ln.i2) ? p.wickTol : p.pierceTol;
+      if(over > tolWick)
+         return(false);
+      if(over > ln.maxOver)
+         ln.maxOver = over;
+
+      //--- Prilnuti primky k cene se meri jen mezi oporami
+      if(i <= toGap)
+        {
+         gapSum += MathMax(gap, 0.0);
+         gapCount++;
+        }
+
+      //--- Dotyk ve stredni casti primky
+      if(!midTouch && i >= midFrom && i <= midTo && ln.IsTouch(gap, p.midTol))
+         midTouch = true;
+
+      //--- Potvrzeny dotyk. Opory se nepocitaji (primka jimi prochazi
+      //--- z definice), ale zaraz epizody na nich nastavujeme - bar tesne
+      //--- vedle opory patri do teze dotykove epizody a nesmi ji zdvojit.
+      const bool isAnchor = (i == ln.i1 || i == ln.i2);
+      if(ln.IsTouch(gap, p.touchTol) && (isAnchor || i - lastTouch >= SVED_TOUCH_GAP))
+        {
+         if(!isAnchor)
+            ln.touches++;
+         lastTouch = i;
         }
      }
+
+   ln.meanGap = (gapCount > 0) ? gapSum / (double)gapCount : 0.0;
    return(true);
   }
 
 //+------------------------------------------------------------------+
-//| Spocita potvrzene dotyky primky na useku od prvni opory dal.     |
-//| Dotyky blize nez SVED_RELIEF_TOUCH_GAP baru se pocitaji jako     |
-//| jeden, aby jedna delsi epizoda nenafoukla skore.                 |
+//| Jsou dve primky prakticky totozne?                               |
+//| Porovnava se ve DVOU casech - dve primky s ruznym sklonem se u   |
+//| posledni svicky muzou zrovna krizit a pri porovnani jedinym      |
+//| okamzikem by se chybne slily (stejnou past resi i dedup kanalu). |
+//|  a, b   - porovnavane primky                                     |
+//|  t1, t2 - dva ruzne casove okamziky porovnani                    |
+//|  tol    - prah shody v cene                                      |
 //+------------------------------------------------------------------+
-int SvedReliefCountTouches(const MqlRates &rates[], SReliefLine &ln, const double tol)
+bool SvedReliefSimilar(SReliefLine &a, SReliefLine &b, const datetime t1, const datetime t2,
+                       const double tol)
   {
-   const int n = ArraySize(rates);
-   int touches = 0;
-   int last    = -1000;
-
-   for(int i = MathMax(ln.i1, 0); i < n; i++)
-     {
-      const datetime t = rates[i].time;
-      const double   v = ln.ValueAt(t);
-      const double   d = ln.isHigh ? (v - rates[i].high) : (rates[i].low - v);
-
-      // Zaporna vzdalenost = presah, ten uz osetril SvedReliefIsClean
-      if(d >= -tol && d <= tol)
-        {
-         if(i - last >= SVED_RELIEF_TOUCH_GAP)
-           {
-            touches++;
-            last = i;
-           }
-        }
-     }
-   return(touches);
-  }
-
-//+------------------------------------------------------------------+
-//| Prumerny odstup primky od cenove akce mezi oporami.              |
-//| Mala hodnota znamena, ze primka na cene "sedi"; velka, ze se     |
-//| klene pres udoli/vrchol. Neslouzi jako filtr - obe varianty jsou |
-//| platne reliefni primky - ale rozhoduje mezi variantami se        |
-//| stejnou prvni oporou (viz vyber nize).                           |
-//+------------------------------------------------------------------+
-double SvedReliefMeanGap(const MqlRates &rates[], SReliefLine &ln)
-  {
-   const int from = MathMax(ln.i1, 0);
-   const int to   = MathMin(ln.i2, ArraySize(rates) - 1);
-   if(to <= from)
-      return(0.0);
-
-   double sum = 0.0;
-   for(int i = from; i <= to; i++)
-     {
-      const double v = ln.ValueAt(rates[i].time);
-      const double d = ln.isHigh ? (v - rates[i].high) : (rates[i].low - v);
-      sum += MathMax(d, 0.0);
-     }
-   return(sum / (double)(to - from + 1));
-  }
-
-//+------------------------------------------------------------------+
-//| Test, zda se primka dotyka ceny i ve sve stredni casti.          |
-//| Kazda primka se z definice dotyka svych dvou opor, takze same    |
-//| krajni dotyky nic nedokazuji - primka muze mezi nimi "viset"     |
-//| daleko nad (resp. pod) cenovou akci a niceho se nedotykat.       |
-//| Vyzaduje se proto aspon jeden dotyk v prostredni casti useku.    |
-//+------------------------------------------------------------------+
-bool SvedReliefHasMidTouch(const MqlRates &rates[], SReliefLine &ln, const double tol,
-                           const double midFrom, const double midTo)
-  {
-   const int span = ln.i2 - ln.i1;
-   if(span <= 2)
-      return(true);
-
-   const int from = ln.i1 + (int)(midFrom * (double)span);
-   const int to   = ln.i1 + (int)(midTo   * (double)span);
-
-   for(int i = from; i <= to && i < ArraySize(rates); i++)
-     {
-      const datetime t = rates[i].time;
-      const double   v = ln.ValueAt(t);
-      const double   d = ln.isHigh ? (v - rates[i].high) : (rates[i].low - v);
-
-      if(d >= -tol && d <= tol)
-         return(true);
-     }
-   return(false);
+   if(a.isHigh != b.isHigh)
+      return(false);
+   if(MathAbs(a.ValueAt(t1) - b.ValueAt(t1)) >= tol)
+      return(false);
+   if(MathAbs(a.ValueAt(t2) - b.ValueAt(t2)) >= tol)
+      return(false);
+   return(true);
   }
 
 //+------------------------------------------------------------------+
@@ -231,6 +232,13 @@ bool SvedReliefHasMidTouch(const MqlRates &rates[], SReliefLine &ln, const doubl
 //| Kazda dvojice swingu stejneho typu dava kandidata; projdou jen   |
 //| primky, ktere cenu obaluji a maji dost dotyku. Vysledek je       |
 //| serazen podle vyznamnosti a zbaven duplicit.                     |
+//| Filtry jsou serazene od nejlevnejsiho k nejdrazsimu - pruchod    |
+//| svickami dostane az kandidat, ktery prosel testy delky, stari a  |
+//| driftu (drive bezel pruchod jako prvni pro kazdou dvojici).      |
+//|  rates - svicky vstupniho TF (index 0 = nejstarsi)               |
+//|  p     - parametry hledani                                       |
+//|  out   - vystupni pole vybranych primek                          |
+//|  st    - statistika zamitnuti (in/out)                           |
 //| Vraci pocet primek ulozenych do out[].                           |
 //+------------------------------------------------------------------+
 int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SReliefLine &out[],
@@ -243,7 +251,6 @@ int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRelie
       return(0);
 
    SReliefLine cand[];
-   ArrayResize(cand, 0);
    int nc = 0;
 
    const int maxGap = MathMax(p.maxSwingGap, 2);
@@ -256,153 +263,147 @@ int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRelie
    //--- pres vyber "nejlepsi primka na oporu" nize.
    for(int sc = 0; sc < MathMax(p.scales, 1); sc++)
      {
-   const int depth = p.swingDepth * (1 << sc);
-   if(depth * 2 + 3 >= n)
-      break;
+      const int depth = SvedScaleDepth(p.swingDepth, sc);
+      if(!SvedScaleFits(depth, n))
+         break;
 
-   SSwing sw[];
-   const int ns = SvedDetectSwings(rates, depth, sw);
-   if(ns < 2)
-      continue;
+      SSwing sw[];
+      const int ns = SvedDetectSwings(rates, depth, sw);
+      if(ns < 2)
+         continue;
 
-   //--- Kandidati ze vsech dvojic swingu stejneho typu
-   for(int i = 0; i < ns; i++)
-     {
-      for(int gap = 2; gap <= maxGap && i + gap < ns; gap += 2)
+      //--- Kandidati ze vsech dvojic swingu stejneho typu
+      for(int i = 0; i < ns; i++)
         {
-         const int j = i + gap;
-
-         st.pairs++;
-
-         SReliefLine ln;
-         ln.isHigh = sw[i].isHigh;
-         ln.t1 = sw[i].time; ln.p1 = sw[i].price; ln.i1 = sw[i].index;
-         ln.t2 = sw[j].time; ln.p2 = sw[j].price; ln.i2 = sw[j].index;
-         ln.touches = 0; ln.score = 0.0; ln.ageBars = 0;
-         ln.spanBars = ln.i2 - ln.i1;
-
-         if(ln.spanBars < p.minSpanBars)
+         for(int gap = 2; gap <= maxGap && i + gap < ns; gap += 2)
            {
-            st.span++;
-            continue;
-           }
+            const int j = i + gap;
 
-         // Primka plati jen omezenou dobu za svou druhou oporou.
-         // Bez toho se kratka strma cara prodlouzi do vzduchoprazdna
-         // stovky bodu od ceny, kde uz se niceho nedotyka.
-         ln.ageBars = (n - 1) - ln.i2;
-         if(p.maxAgeFactor > 0.0 &&
-            (double)ln.ageBars > p.maxAgeFactor * (double)ln.spanBars)
-           {
-            st.age++;
-            continue;
-           }
+            st.pairs++;
 
-         const double dt = (double)(ln.t2 - ln.t1);
-         if(dt <= 0.0)
-            continue;
-         ln.slope = (ln.p2 - ln.p1) / dt;
+            SReliefLine ln;
+            ln.isHigh = sw[i].isHigh;
+            ln.t1 = sw[i].time; ln.p1 = sw[i].price; ln.i1 = sw[i].index;
+            ln.t2 = sw[j].time; ln.p2 = sw[j].price; ln.i2 = sw[j].index;
+            ln.touches = 0; ln.score = 0.0; ln.ageBars = 0;
+            ln.maxOver = 0.0; ln.meanGap = 0.0;
+            ln.spanBars = ln.i2 - ln.i1;
 
-         if(!SvedReliefIsClean(rates, ln, p.pierceTol, p.wickTol))
-           {
-            st.pierced++;
-            continue;
-           }
-
-         // Jak daleko primka ujela od sve druhe opory. Strma cara se
-         // za par hodin vzdali desitky dolaru od ceny, kde uz se
-         // niceho nedotyka - takova primka neni reliefem, ale artefaktem.
-         if(p.maxDrift > 0.0)
-           {
-            const double drift = MathAbs(ln.ValueAt(rates[n - 1].time) - ln.p2);
-            if(drift > p.maxDrift)
+            if(ln.spanBars < p.minSpanBars)
               {
-               st.drift++;
+               st.span++;
                continue;
               }
-           }
 
-         // Primka musi sedet na cenove akci i mimo sve opory
-         if(p.needMidTouch &&
-            !SvedReliefHasMidTouch(rates, ln, p.midTol, p.midFrom, p.midTo))
-           {
-            st.midTouch++;
-            continue;
-           }
-
-         ln.touches = SvedReliefCountTouches(rates, ln, p.touchTol);
-         if(ln.touches < p.minTouches)
-           {
-            st.touches++;
-            continue;
-           }
-
-         st.passed++;
-
-         ln.meanGap = SvedReliefMeanGap(rates, ln);
-
-         // Vyznamnejsi je primka s vice dotyky a delsim zaberem;
-         // cim starsi je druha opora, tim mene je primka aktualni
-         ln.score = (double)ln.touches * 2.0
-                    + (double)ln.spanBars / 100.0
-                    - (double)ln.ageBars / 200.0;
-
-         // Z primek se stejnou prvni oporou a smerem se drzi jen ta
-         // nejlepsi: vic dotyku vitezi, pri shode rozhoduje mensi
-         // prumerny odstup od ceny (primka ma na cene "sedet", ne
-         // pod ni viset - viz docs/2.png), pak delsi zaber.
-         int same = -1;
-         for(int c = 0; c < nc; c++)
-            if(cand[c].i1 == ln.i1 && cand[c].isHigh == ln.isHigh)
+            // Primka plati jen omezenou dobu za svou druhou oporou.
+            // Bez toho se kratka strma cara prodlouzi do vzduchoprazdna
+            // stovky bodu od ceny, kde uz se niceho nedotyka.
+            ln.ageBars = (n - 1) - ln.i2;
+            if(p.maxAgeFactor > 0.0 &&
+               (double)ln.ageBars > p.maxAgeFactor * (double)ln.spanBars)
               {
-               same = c;
-               break;
+               st.age++;
+               continue;
               }
 
-         if(same >= 0)
-           {
-            // Skutecna tecna (mensi presah knotu) ma prednost - primka
-            // ma prochazet spickami svicek, ne je rezat. Teprve pri
-            // srovnatelnem presahu rozhoduji dotyky, prilnuti a zaber.
-            bool better = false;
-            if(MathAbs(ln.maxOver - cand[same].maxOver) > p.pierceTol)
-               better = (ln.maxOver < cand[same].maxOver);
-            else
-               if(ln.touches != cand[same].touches)
-                  better = (ln.touches > cand[same].touches);
-               else
-                  if(MathAbs(ln.meanGap - cand[same].meanGap) > 0.0001)
-                     better = (ln.meanGap < cand[same].meanGap);
-                  else
-                     better = (ln.spanBars > cand[same].spanBars);
-            if(better)
-               cand[same] = ln;
-            continue;
-           }
+            const double dt = (double)(ln.t2 - ln.t1);
+            if(dt <= 0.0)
+               continue;
+            ln.slope = (ln.p2 - ln.p1) / dt;
 
-         ArrayResize(cand, nc + 1);
-         cand[nc++] = ln;
+            // Jak daleko primka ujela od sve druhe opory. Strma cara se
+            // za par hodin vzdali desitky dolaru od ceny, kde uz se
+            // niceho nedotyka - takova primka neni reliefem, ale artefaktem.
+            // Test je O(1), proto bezi jeste pred pruchodem svickami.
+            if(p.maxDrift > 0.0)
+              {
+               const double drift = MathAbs(ln.ValueAt(rates[n - 1].time) - ln.p2);
+               if(drift > p.maxDrift)
+                 {
+                  st.drift++;
+                  continue;
+                 }
+              }
+
+            bool midTouch = false;
+            if(!SvedReliefScan(rates, ln, p, midTouch))
+              {
+               st.pierced++;
+               continue;
+              }
+
+            // Primka musi sedet na cenove akci i mimo sve opory
+            if(p.needMidTouch && !midTouch)
+              {
+               st.midTouch++;
+               continue;
+              }
+
+            if(ln.touches < p.minTouches)
+              {
+               st.touches++;
+               continue;
+              }
+
+            st.passed++;
+
+            // Vyznamnejsi je primka s vice dotyky a delsim zaberem;
+            // cim starsi je druha opora, tim mene je primka aktualni
+            ln.score = (double)ln.touches * 2.0
+                       + (double)ln.spanBars / 100.0
+                       - (double)ln.ageBars / 200.0;
+
+            // Z primek se stejnou prvni oporou a smerem se drzi jen ta
+            // nejlepsi: vic dotyku vitezi, pri shode rozhoduje mensi
+            // prumerny odstup od ceny (primka ma na cene "sedet", ne
+            // pod ni viset - viz docs/2.png), pak delsi zaber.
+            int same = -1;
+            for(int c = 0; c < nc; c++)
+               if(cand[c].i1 == ln.i1 && cand[c].isHigh == ln.isHigh)
+                 {
+                  same = c;
+                  break;
+                 }
+
+            if(same >= 0)
+              {
+               // Skutecna tecna (mensi presah knotu) ma prednost - primka
+               // ma prochazet spickami svicek, ne je rezat. Teprve pri
+               // srovnatelnem presahu rozhoduji dotyky, prilnuti a zaber.
+               bool better = false;
+               if(MathAbs(ln.maxOver - cand[same].maxOver) > p.pierceTol)
+                  better = (ln.maxOver < cand[same].maxOver);
+               else
+                  if(ln.touches != cand[same].touches)
+                     better = (ln.touches > cand[same].touches);
+                  else
+                     if(MathAbs(ln.meanGap - cand[same].meanGap) > 0.0001)
+                        better = (ln.meanGap < cand[same].meanGap);
+                     else
+                        better = (ln.spanBars > cand[same].spanBars);
+               if(better)
+                  cand[same] = ln;
+               continue;
+              }
+
+            ArrayResize(cand, nc + 1, 128);
+            cand[nc++] = ln;
+           }
         }
-     }
      }   // konec smycky pres meritka
 
    if(nc == 0)
       return(0);
 
    //--- Serazeni podle vyznamnosti
-   for(int a = 0; a < nc - 1; a++)
-      for(int b = a + 1; b < nc; b++)
-         if(cand[b].score > cand[a].score)
-           {
-            SReliefLine tmp = cand[a];
-            cand[a] = cand[b];
-            cand[b] = tmp;
-           }
+   SvedSortByScoreDesc(cand);
 
    //--- Vyber s odstranenim prakticky totoznych primek.
    //--- Odpory a podpory se stridaji, aby jeden typ neobsadil vsechny
    //--- sloty - jinak by silna serie podpor zastinila platny odpor.
-   const datetime tLast = rates[n - 1].time;
+   const datetime tLast    = rates[n - 1].time;
+   const int      backBars = MathMin(SVED_DEDUP_BACK_BARS, n - 1);
+   const datetime tPast    = rates[n - 1 - backBars].time;
    int taken = 0;
    ArrayResize(out, p.maxLines);
 
@@ -415,27 +416,13 @@ int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRelie
          if(cand[i].isHigh != wantHigh)
             continue;
 
-         bool used = false;
-         for(int j = 0; j < taken; j++)
-            if(out[j].i1 == cand[i].i1 && out[j].i2 == cand[i].i2)
-              {
-               used = true;
-               break;
-              }
-         if(used)
-            continue;
-
          bool dup = false;
          for(int j = 0; j < taken; j++)
-           {
-            if(out[j].isHigh != cand[i].isHigh)
-               continue;
-            if(MathAbs(out[j].ValueAt(tLast) - cand[i].ValueAt(tLast)) < p.dedupTol)
+            if(SvedReliefSimilar(out[j], cand[i], tLast, tPast, p.dedupTol))
               {
                dup = true;
                break;
               }
-           }
          if(dup)
             continue;
 
@@ -457,7 +444,11 @@ int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRelie
 //+------------------------------------------------------------------+
 //| Najde nejblizsi reliefni primku ve smeru obchodu.                |
 //| Pro nakup se hledaji primky nad cenou, pro prodej pod ni -       |
-//| tedy ty, ktere by prurazu stály v ceste.                         |
+//| tedy ty, ktere by prurazu staly v ceste.                         |
+//|  lines     - aktivni reliefni primky                             |
+//|  t         - cas, ke kteremu se primky pocitaji                  |
+//|  price     - vychozi cena (planovany vstup)                      |
+//|  isBuy     - smer obchodu                                        |
 //|  linePrice - out: cena nalezene primky v case t                  |
 //| Vraci vzdalenost v cene, nebo -1 pokud zadna primka nevadi.      |
 //+------------------------------------------------------------------+
@@ -472,27 +463,15 @@ double SvedNearestRelief(SReliefLine &lines[], const datetime t, const double pr
      {
       const double v = lines[i].ValueAt(t);
 
-      if(isBuy)
+      // Primka za zady obchodu nevadi - prekazkou je jen ta ve smeru
+      if(isBuy ? (v <= price) : (v >= price))
+         continue;
+
+      const double d = isBuy ? (v - price) : (price - v);
+      if(best < 0.0 || d < best)
         {
-         if(v <= price)
-            continue;              // primka je pod vstupem, necha nas projit
-         const double d = v - price;
-         if(best < 0.0 || d < best)
-           {
-            best = d;
-            linePrice = v;
-           }
-        }
-      else
-        {
-         if(v >= price)
-            continue;
-         const double d = price - v;
-         if(best < 0.0 || d < best)
-           {
-            best = d;
-            linePrice = v;
-           }
+         best      = d;
+         linePrice = v;
         }
      }
 
