@@ -228,8 +228,11 @@ Když leží přímka ve směru obchodu **blíž než plánovaný PT**, rozhoduj
 
 | Režim | Chování |
 |---|---|
-| `PUNTIKY_RELIEF_SKIP` (výchozí) | vstup se přeskočí, důvod se vypíše v panelu |
-| `PUNTIKY_RELIEF_SHORTEN` | PT se zkrátí před přímku (mínus `InpReliefBuffer`), SL stejně — RRR zůstává 1:1 |
+| `PUNTIKY_RELIEF_SHORTEN` (výchozí) | PT se zkrátí před přímku (mínus `InpReliefBuffer`), SL stejně — RRR zůstává 1:1 |
+| `PUNTIKY_RELIEF_SKIP` | vstup se přeskočí, důvod se vypíše v panelu |
+
+Zkrácení podléhá stejnému prahu jako hrana kanálu: když po odečtení
+`InpReliefBuffer` zbývá méně než `InpMinEntryPoints`, obchod se neotevře.
 
 Přímky se přepočítávají s každou novou M1 svíčkou a kreslí se do grafu tečkovaně
 (`InpColorRelief`), prodloužené o `InpReliefForwardBars` svíček doprava.
@@ -429,7 +432,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpEnableTrading` | true | false = jen kreslení bez obchodů |
 | `InpEntryMode` | PENDING | pending STOP příkazy vs. potvrzení uzavřením M1 |
 | `InpMaxEntryPoints` | 300 | maximální délka vstupu |
-| `InpMinEntryPoints` | 100 | pod touto délkou se nevstupuje |
+| `InpMinEntryPoints` | 150 | pod touto délkou se nevstupuje |
 | `InpBreakoutBuffer` | 10 | buffer za úrovní průrazu |
 | `InpMaxLevelOffset` | 30 | max. odstup tržního vstupu od úrovně (režim M1_CLOSE) |
 | `InpEdgeBuffer` | 20 | rezerva PT před hranou kanálu |
@@ -445,7 +448,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | Parametr | Výchozí | Význam |
 |---|---|---|
 | `InpUseRelief` | true | hlídat reliéfní přímky |
-| `InpReliefMode` | SKIP | přeskočit vstup / zkrátit PT |
+| `InpReliefMode` | SHORTEN | zkrátit PT / přeskočit vstup |
 | `InpReliefLookback` | 2400 | kolik M1 svíček se analyzuje |
 | `InpReliefSwingDepth` | 10 | šířka okna pro hlavní swingy |
 | `InpReliefScales` | 4 | počet měřítek swingů (10/20/40/80) |

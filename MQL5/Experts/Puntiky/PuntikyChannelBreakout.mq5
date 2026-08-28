@@ -62,7 +62,7 @@ input group "=== Vstup ==="
 input bool            InpEnableTrading    = true;         // Povolit obchodovani (false = jen kresleni)
 input ENUM_PUNTIKY_ENTRY InpEntryMode        = PUNTIKY_ENTRY_PENDING;  // Rezim vstupu
 input int             InpMaxEntryPoints   = 300;          // Maximalni delka vstupu (body)
-input int             InpMinEntryPoints   = 100;          // Minimalni delka vstupu (body)
+input int             InpMinEntryPoints   = 150;          // Minimalni delka vstupu (body)
 input int             InpBreakoutBuffer   = 10;           // Buffer nad/pod urovni prurazu (body)
 input int             InpMaxLevelOffset   = 30;           // Max. odstup trzniho vstupu od urovne (body)
 input int             InpEdgeBuffer       = 20;           // Rezerva PT pred hranou kanalu (body)
@@ -78,7 +78,7 @@ input long            InpAllowedAccount   = 0;            // Povoleny ucet (0 = 
 //--- Reliefni primky na vstupnim timeframu
 input group "=== Reliefni primky ==="
 input bool            InpUseRelief        = true;         // Hlidat reliefni primky na TF vstupu
-input ENUM_PUNTIKY_RELIEF InpReliefMode      = PUNTIKY_RELIEF_SKIP; // Co delat, kdyz primka vadi
+input ENUM_PUNTIKY_RELIEF InpReliefMode      = PUNTIKY_RELIEF_SHORTEN; // Co delat, kdyz primka vadi
 input int             InpReliefLookback   = 2400;         // Kolik svicek TF vstupu analyzovat
 input int             InpReliefSwingDepth = 10;           // Sirka okna pro hlavni swingy
 input int             InpReliefScales     = 4;            // Pocet meritek swingu (10/20/40/80)
