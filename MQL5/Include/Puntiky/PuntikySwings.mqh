@@ -1,13 +1,13 @@
 ﻿//+------------------------------------------------------------------+
-//|                                                  SvedSwings.mqh  |
+//|                                               PuntikySwings.mqh  |
 //|      Detekce swingovych bodu (zig-zag) z pole svicek             |
 //+------------------------------------------------------------------+
-#property copyright "Sved"
+#property copyright "Puntiky"
 
-#ifndef __SVED_SWINGS_MQH__
-#define __SVED_SWINGS_MQH__
+#ifndef __PUNTIKY_SWINGS_MQH__
+#define __PUNTIKY_SWINGS_MQH__
 
-#include <Sved\SvedTypes.mqh>
+#include <Puntiky\PuntikyTypes.mqh>
 
 //+------------------------------------------------------------------+
 //| Sirka pivot okna pro dane meritko detekce.                       |
@@ -17,7 +17,7 @@
 //|  baseDepth - nejjemnejsi sirka okna (meritko 0)                  |
 //|  scaleIdx  - poradi meritka (0 = zakladni, dal 2x, 4x, 8x ...)   |
 //+------------------------------------------------------------------+
-int SvedScaleDepth(const int baseDepth, const int scaleIdx)
+int PuntikyScaleDepth(const int baseDepth, const int scaleIdx)
   {
    return(MathMax(baseDepth, 1) * (1 << scaleIdx));
   }
@@ -27,7 +27,7 @@ int SvedScaleDepth(const int baseDepth, const int scaleIdx)
 //| Pivot potrebuje depth baru vlevo i vpravo, jinak nema co         |
 //| potvrdit a detekce v tomto meritku nema smysl.                   |
 //+------------------------------------------------------------------+
-bool SvedScaleFits(const int depth, const int n)
+bool PuntikyScaleFits(const int depth, const int n)
   {
    return(depth * 2 + 3 < n);
   }
@@ -37,7 +37,7 @@ bool SvedScaleFits(const int depth, const int n)
 //|  rates - pole svicek (index 0 = nejstarsi)                       |
 //|  i     - testovany index, depth - polovicni sirka okna           |
 //+------------------------------------------------------------------+
-bool SvedIsPivotHigh(const MqlRates &rates[], const int i, const int depth)
+bool PuntikyIsPivotHigh(const MqlRates &rates[], const int i, const int depth)
   {
    const int n = ArraySize(rates);
    if(i - depth < 0 || i + depth >= n)
@@ -61,7 +61,7 @@ bool SvedIsPivotHigh(const MqlRates &rates[], const int i, const int depth)
 //|  rates - pole svicek (index 0 = nejstarsi)                       |
 //|  i     - testovany index, depth - polovicni sirka okna           |
 //+------------------------------------------------------------------+
-bool SvedIsPivotLow(const MqlRates &rates[], const int i, const int depth)
+bool PuntikyIsPivotLow(const MqlRates &rates[], const int i, const int depth)
   {
    const int n = ArraySize(rates);
    if(i - depth < 0 || i + depth >= n)
@@ -89,7 +89,7 @@ bool SvedIsPivotLow(const MqlRates &rates[], const int i, const int depth)
 //|  out   - vystupni pole swingu                                    |
 //|  count - pocet dosud ulozenych swingu (in/out)                   |
 //+------------------------------------------------------------------+
-void SvedPushSwing(const MqlRates &rates[], const int i, const bool isHigh,
+void PuntikyPushSwing(const MqlRates &rates[], const int i, const bool isHigh,
                    SSwing &out[], int &count)
   {
    SSwing s;
@@ -123,7 +123,7 @@ void SvedPushSwing(const MqlRates &rates[], const int i, const bool isHigh,
 //|  out   - vystupni pole swingu serazene chronologicky             |
 //| Vraci pocet nalezenych swingu.                                   |
 //+------------------------------------------------------------------+
-int SvedDetectSwings(const MqlRates &rates[], const int depth, SSwing &out[])
+int PuntikyDetectSwings(const MqlRates &rates[], const int depth, SSwing &out[])
   {
    ArrayResize(out, 0);
    const int n = ArraySize(rates);
@@ -135,8 +135,8 @@ int SvedDetectSwings(const MqlRates &rates[], const int depth, SSwing &out[])
 
    for(int i = depth; i < n - depth; i++)
      {
-      const bool isHigh = SvedIsPivotHigh(rates, i, depth);
-      const bool isLow  = SvedIsPivotLow(rates, i, depth);
+      const bool isHigh = PuntikyIsPivotHigh(rates, i, depth);
+      const bool isLow  = PuntikyIsPivotLow(rates, i, depth);
       if(!isHigh && !isLow)
          continue;
 
@@ -150,14 +150,14 @@ int SvedDetectSwings(const MqlRates &rates[], const int depth, SSwing &out[])
       if(isHigh && isLow)
          firstHigh = !(count > 0 && out[count - 1].isHigh);
 
-      SvedPushSwing(rates, i, firstHigh, out, count);
+      PuntikyPushSwing(rates, i, firstHigh, out, count);
       if(isHigh && isLow)
-         SvedPushSwing(rates, i, !firstHigh, out, count);
+         PuntikyPushSwing(rates, i, !firstHigh, out, count);
      }
 
    ArrayResize(out, count);
    return(count);
   }
 
-#endif // __SVED_SWINGS_MQH__
+#endif // __PUNTIKY_SWINGS_MQH__
 //+------------------------------------------------------------------+

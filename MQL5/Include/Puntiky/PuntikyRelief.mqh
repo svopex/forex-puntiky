@@ -1,5 +1,5 @@
 ﻿//+------------------------------------------------------------------+
-//|                                                  SvedRelief.mqh  |
+//|                                               PuntikyRelief.mqh  |
 //|      Reliefni primky na vstupnim timeframu (M1)                  |
 //|                                                                  |
 //|  Reliefni primka je trendlinie vedena dvema hlavnimi swingy      |
@@ -8,13 +8,13 @@
 //|  uz prestala platit. Takova primka stoji prurazu v ceste a       |
 //|  strategie ji hlida pri planovani vstupu (viz docs/relief_1.png).|
 //+------------------------------------------------------------------+
-#property copyright "Sved"
+#property copyright "Puntiky"
 
-#ifndef __SVED_RELIEF_MQH__
-#define __SVED_RELIEF_MQH__
+#ifndef __PUNTIKY_RELIEF_MQH__
+#define __PUNTIKY_RELIEF_MQH__
 
-#include <Sved\SvedTypes.mqh>
-#include <Sved\SvedSwings.mqh>
+#include <Puntiky\PuntikyTypes.mqh>
+#include <Puntiky\PuntikySwings.mqh>
 
 //+------------------------------------------------------------------+
 //| Reliefni primka                                                  |
@@ -122,7 +122,7 @@ struct SReliefParams
 //| oporami prochazi z definice, takze by jinak mela dva dotyky      |
 //| zadarmo a filtr minTouches by nic nefiltroval (libovolna cista   |
 //| spojnice dvou swingu by pak v rezimu SKIP blokovala vstupy).     |
-//| Dotyky blize nez SVED_TOUCH_GAP baru se pocitaji jako jeden,     |
+//| Dotyky blize nez PUNTIKY_TOUCH_GAP baru se pocitaji jako jeden,  |
 //| aby jedna delsi epizoda nenafoukla skore.                        |
 //|  rates    - svicky vstupniho TF (index 0 = nejstarsi)            |
 //|  ln       - primka; zapisuji se do ni maxOver, touches, meanGap  |
@@ -130,7 +130,7 @@ struct SReliefParams
 //|  midTouch - out: nasel se dotyk ve stredni casti primky?         |
 //| Vraci false, kdyz je primka prorazena.                           |
 //+------------------------------------------------------------------+
-bool SvedReliefScan(const MqlRates &rates[], SReliefLine &ln, const SReliefParams &p,
+bool PuntikyReliefScan(const MqlRates &rates[], SReliefLine &ln, const SReliefParams &p,
                     bool &midTouch)
   {
    const int n     = ArraySize(rates);
@@ -150,7 +150,7 @@ bool SvedReliefScan(const MqlRates &rates[], SReliefLine &ln, const SReliefParam
 
    double gapSum    = 0.0;
    int    gapCount  = 0;
-   int    lastTouch = -SVED_TOUCH_GAP;   // zadny dotyk zatim
+   int    lastTouch = -PUNTIKY_TOUCH_GAP;   // zadny dotyk zatim
 
    for(int i = from; i < n; i++)
      {
@@ -194,7 +194,7 @@ bool SvedReliefScan(const MqlRates &rates[], SReliefLine &ln, const SReliefParam
       //--- z definice), ale zaraz epizody na nich nastavujeme - bar tesne
       //--- vedle opory patri do teze dotykove epizody a nesmi ji zdvojit.
       const bool isAnchor = (i == ln.i1 || i == ln.i2);
-      if(ln.IsTouch(gap, p.touchTol) && (isAnchor || i - lastTouch >= SVED_TOUCH_GAP))
+      if(ln.IsTouch(gap, p.touchTol) && (isAnchor || i - lastTouch >= PUNTIKY_TOUCH_GAP))
         {
          if(!isAnchor)
             ln.touches++;
@@ -215,7 +215,7 @@ bool SvedReliefScan(const MqlRates &rates[], SReliefLine &ln, const SReliefParam
 //|  t1, t2 - dva ruzne casove okamziky porovnani                    |
 //|  tol    - prah shody v cene                                      |
 //+------------------------------------------------------------------+
-bool SvedReliefSimilar(SReliefLine &a, SReliefLine &b, const datetime t1, const datetime t2,
+bool PuntikyReliefSimilar(SReliefLine &a, SReliefLine &b, const datetime t1, const datetime t2,
                        const double tol)
   {
    if(a.isHigh != b.isHigh)
@@ -241,7 +241,7 @@ bool SvedReliefSimilar(SReliefLine &a, SReliefLine &b, const datetime t1, const 
 //|  st    - statistika zamitnuti (in/out)                           |
 //| Vraci pocet primek ulozenych do out[].                           |
 //+------------------------------------------------------------------+
-int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SReliefLine &out[],
+int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SReliefLine &out[],
                          SReliefStats &st)
   {
    st.Reset();
@@ -263,12 +263,12 @@ int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRelie
    //--- pres vyber "nejlepsi primka na oporu" nize.
    for(int sc = 0; sc < MathMax(p.scales, 1); sc++)
      {
-      const int depth = SvedScaleDepth(p.swingDepth, sc);
-      if(!SvedScaleFits(depth, n))
+      const int depth = PuntikyScaleDepth(p.swingDepth, sc);
+      if(!PuntikyScaleFits(depth, n))
          break;
 
       SSwing sw[];
-      const int ns = SvedDetectSwings(rates, depth, sw);
+      const int ns = PuntikyDetectSwings(rates, depth, sw);
       if(ns < 2)
          continue;
 
@@ -326,7 +326,7 @@ int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRelie
               }
 
             bool midTouch = false;
-            if(!SvedReliefScan(rates, ln, p, midTouch))
+            if(!PuntikyReliefScan(rates, ln, p, midTouch))
               {
                st.pierced++;
                continue;
@@ -396,13 +396,13 @@ int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRelie
       return(0);
 
    //--- Serazeni podle vyznamnosti
-   SvedSortByScoreDesc(cand);
+   PuntikySortByScoreDesc(cand);
 
    //--- Vyber s odstranenim prakticky totoznych primek.
    //--- Odpory a podpory se stridaji, aby jeden typ neobsadil vsechny
    //--- sloty - jinak by silna serie podpor zastinila platny odpor.
    const datetime tLast    = rates[n - 1].time;
-   const int      backBars = MathMin(SVED_DEDUP_BACK_BARS, n - 1);
+   const int      backBars = MathMin(PUNTIKY_DEDUP_BACK_BARS, n - 1);
    const datetime tPast    = rates[n - 1 - backBars].time;
    int taken = 0;
    ArrayResize(out, p.maxLines);
@@ -418,7 +418,7 @@ int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRelie
 
          bool dup = false;
          for(int j = 0; j < taken; j++)
-            if(SvedReliefSimilar(out[j], cand[i], tLast, tPast, p.dedupTol))
+            if(PuntikyReliefSimilar(out[j], cand[i], tLast, tPast, p.dedupTol))
               {
                dup = true;
                break;
@@ -452,7 +452,7 @@ int SvedBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRelie
 //|  linePrice - out: cena nalezene primky v case t                  |
 //| Vraci vzdalenost v cene, nebo -1 pokud zadna primka nevadi.      |
 //+------------------------------------------------------------------+
-double SvedNearestRelief(SReliefLine &lines[], const datetime t, const double price,
+double PuntikyNearestRelief(SReliefLine &lines[], const datetime t, const double price,
                          const bool isBuy, double &linePrice)
   {
    const int cnt = ArraySize(lines);
@@ -478,5 +478,5 @@ double SvedNearestRelief(SReliefLine &lines[], const datetime t, const double pr
    return(best);
   }
 
-#endif // __SVED_RELIEF_MQH__
+#endif // __PUNTIKY_RELIEF_MQH__
 //+------------------------------------------------------------------+

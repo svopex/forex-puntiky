@@ -1,21 +1,21 @@
-//+------------------------------------------------------------------+
-//|                                                    SvedDraw.mqh  |
+﻿//+------------------------------------------------------------------+
+//|                                                 PuntikyDraw.mqh  |
 //|      Vykresleni grafickych objektu strategie.                    |
 //|      Kresli se kanaly (HIGH a LOW usecky) a jejich opory         |
 //|      A-B-C-D, urovne prurazu, reliefni primky, urovne            |
 //|      planovaneho vstupu (vstup / SL / PT) a informacni panel.    |
-//|      Vsechny objekty nesou prefix SVED_, aby sly uklidit bez     |
+//|      Vsechny objekty nesou prefix PUNTIKY_, aby sly uklidit bez  |
 //|      dopadu na cizi grafiku v grafu.                             |
 //+------------------------------------------------------------------+
-#property copyright "Sved"
+#property copyright "Puntiky"
 
-#ifndef __SVED_DRAW_MQH__
-#define __SVED_DRAW_MQH__
+#ifndef __PUNTIKY_DRAW_MQH__
+#define __PUNTIKY_DRAW_MQH__
 
-#include <Sved\SvedTypes.mqh>
+#include <Puntiky\PuntikyTypes.mqh>
 
 //--- Spolecny prefix vsech objektu strategie (kvuli uklidu grafu)
-#define SVED_PREFIX "SVED_"
+#define PUNTIKY_PREFIX "PUNTIKY_"
 
 //+------------------------------------------------------------------+
 //| Smaze objekty strategie z grafu.                                 |
@@ -24,9 +24,9 @@
 //| rucniho pruchodu vsemi objekty grafu pro kazdy prefix zvlast.    |
 //|  sub - upresneni prefixu (napr. "REL_"), prazdne = vse strategie |
 //+------------------------------------------------------------------+
-void SvedDeleteObjects(const string sub = "")
+void PuntikyDeleteObjects(const string sub = "")
   {
-   ObjectsDeleteAll(0, SVED_PREFIX + sub, -1, -1);
+   ObjectsDeleteAll(0, PUNTIKY_PREFIX + sub, -1, -1);
   }
 
 //+------------------------------------------------------------------+
@@ -37,10 +37,10 @@ void SvedDeleteObjects(const string sub = "")
 //|  sub  - upresneni prefixu (napr. "REL_")                         |
 //|  from - prvni mazany index, to - prvni uz nemazany index         |
 //+------------------------------------------------------------------+
-void SvedDeleteIndexed(const string sub, const int from, const int to)
+void PuntikyDeleteIndexed(const string sub, const int from, const int to)
   {
    for(int i = from; i < to; i++)
-      ObjectDelete(0, SVED_PREFIX + sub + IntegerToString(i));
+      ObjectDelete(0, PUNTIKY_PREFIX + sub + IntegerToString(i));
   }
 
 //+------------------------------------------------------------------+
@@ -53,7 +53,7 @@ void SvedDeleteIndexed(const string sub, const int from, const int to)
 //|  ray     - prodlouzeni usecky doprava do budoucnosti             |
 //|  tooltip - text bubliny po najeti mysi                           |
 //+------------------------------------------------------------------+
-void SvedTrendLine(const string name, const datetime t1, const double p1,
+void PuntikyTrendLine(const string name, const datetime t1, const double p1,
                    const datetime t2, const double p2,
                    const color clr, const int width, const ENUM_LINE_STYLE style,
                    const bool ray, const string tooltip)
@@ -84,7 +84,7 @@ void SvedTrendLine(const string name, const datetime t1, const double p1,
 //|  font     - nazev pisma (vychozi tucny Arial kvuli citelnosti    |
 //|             popisku opor pres svicky)                            |
 //+------------------------------------------------------------------+
-void SvedText(const string name, const datetime t, const double p, const string text,
+void PuntikyText(const string name, const datetime t, const double p, const string text,
               const color clr, const int fontSize, const ENUM_ANCHOR_POINT anchor,
               const string font = "Arial Bold")
   {
@@ -110,7 +110,7 @@ void SvedText(const string name, const datetime t, const double p, const string 
 //|  clr      - barva textu, fontSize - velikost pisma               |
 //|  font     - nazev pisma (panel pouziva neproporcionalni)         |
 //+------------------------------------------------------------------+
-void SvedLabel(const string name, const int x, const int y, const string text,
+void PuntikyLabel(const string name, const int x, const int y, const string text,
                const color clr, const int fontSize, const string font)
   {
    // Staticke vlastnosti staci nastavit pri vzniku objektu - panel se
@@ -158,7 +158,7 @@ struct SChannelLabel
 //| Tlacitko se po kliknuti vraci do nestisknuteho stavu az v        |
 //| obsluze udalosti - MT5 ho jinak necha "zamacknute".              |
 //+------------------------------------------------------------------+
-void SvedButton(const string name, const int x, const int y, const int w, const int h,
+void PuntikyButton(const string name, const int x, const int y, const int w, const int h,
                 const string text, const color clr, const color bg,
                 const int fontSize, const string font, const string tooltip)
   {
@@ -187,27 +187,27 @@ void SvedButton(const string name, const int x, const int y, const int w, const 
 
 //+------------------------------------------------------------------+
 //| Vykresli jeden kanal: LOW usecku a HIGH usecku.                  |
-//| Popisky opor se kresli zvlast pres SvedDrawLabels.               |
+//| Popisky opor se kresli zvlast pres PuntikyDrawLabels.            |
 //|  ch      - kresleny kanal                                        |
 //|  idx     - poradi kanalu (0 = hlavni, vyssi = mene vyznamny)     |
 //|  tEnd    - cas praveho konce usecek                              |
 //|  clrHigh - barva HIGH usecky, clrLow - barva LOW usecky          |
 //+------------------------------------------------------------------+
-void SvedDrawChannel(SChannel &ch, const int idx, const datetime tEnd,
+void PuntikyDrawChannel(SChannel &ch, const int idx, const datetime tEnd,
                      const color clrHigh, const color clrLow)
   {
-   const string id  = SVED_PREFIX + "CH" + IntegerToString(idx) + "_";
+   const string id  = PUNTIKY_PREFIX + "CH" + IntegerToString(idx) + "_";
    const string num = IntegerToString(idx + 1);   // kanaly cislujeme od 1
    // Hlavni kanal kreslime silneji nez vnorene / mene vyznamne
    const int    w   = (idx == 0) ? 2 : 1;
 
    //--- HIGH usecka (horni hrana kanalu)
-   SvedTrendLine(id + "HIGH", ch.tA, ch.UpperAt(ch.tA), tEnd, ch.UpperAt(tEnd),
+   PuntikyTrendLine(id + "HIGH", ch.tA, ch.UpperAt(ch.tA), tEnd, ch.UpperAt(tEnd),
                  clrHigh, w, STYLE_SOLID, true,
                  "Kanál " + num + " - HIGH úsečka");
 
    //--- LOW usecka (spodni hrana kanalu)
-   SvedTrendLine(id + "LOW", ch.tA, ch.LowerAt(ch.tA), tEnd, ch.LowerAt(tEnd),
+   PuntikyTrendLine(id + "LOW", ch.tA, ch.LowerAt(ch.tA), tEnd, ch.LowerAt(tEnd),
                  clrLow, w, STYLE_SOLID, true,
                  "Kanál " + num + " - LOW úsečka");
   }
@@ -221,7 +221,7 @@ void SvedDrawChannel(SChannel &ch, const int idx, const datetime tEnd,
 //|  idx - poradi kanalu (cislo v popisku je idx + 1)                |
 //|  out - sberne pole popisku (in/out)                              |
 //+------------------------------------------------------------------+
-void SvedCollectChannelLabels(SChannel &ch, const int idx, SChannelLabel &out[])
+void PuntikyCollectChannelLabels(SChannel &ch, const int idx, SChannelLabel &out[])
   {
    const string num = IntegerToString(idx + 1);
    int n = ArraySize(out);
@@ -235,7 +235,7 @@ void SvedCollectChannelLabels(SChannel &ch, const int idx, SChannelLabel &out[])
    out[n].time = ch.tB; out[n].price = ch.pB; out[n].text = "B" + num; out[n].above = !aboveBase; n++;
    out[n].time = ch.tC; out[n].price = ch.pC; out[n].text = "C" + num; out[n].above = aboveBase;  n++;
 
-   for(int k = 0; k < ch.extraCount && k < SVED_MAX_TOUCH_POINTS; k++)
+   for(int k = 0; k < ch.extraCount && k < PUNTIKY_MAX_TOUCH_POINTS; k++)
      {
       out[n].time  = ch.tExtra[k];
       out[n].price = ch.pExtra[k];
@@ -257,7 +257,7 @@ void SvedCollectChannelLabels(SChannel &ch, const int idx, SChannelLabel &out[])
 //|  mergeTol - tolerance slouceni v cene                            |
 //| Vraci pocet skutecne vykreslenych (slouceni) popisku.            |
 //+------------------------------------------------------------------+
-int SvedDrawLabels(SChannelLabel &items[], const color clr, const int fontSize,
+int PuntikyDrawLabels(SChannelLabel &items[], const color clr, const int fontSize,
                    const double mergeTol)
   {
    const int cnt = ArraySize(items);
@@ -297,7 +297,7 @@ int SvedDrawLabels(SChannelLabel &items[], const color clr, const int fontSize,
      }
 
    for(int i = 0; i < m; i++)
-      SvedText(SVED_PREFIX + "PT" + IntegerToString(i), merged[i].time, merged[i].price,
+      PuntikyText(PUNTIKY_PREFIX + "PT" + IntegerToString(i), merged[i].time, merged[i].price,
                merged[i].text, clr, fontSize,
                merged[i].above ? ANCHOR_LOWER : ANCHOR_UPPER);
 
@@ -314,29 +314,29 @@ int SvedDrawLabels(SChannelLabel &items[], const color clr, const int fontSize,
 //|  clrSL     - barva stop lossu, clrTP - barva take profitu        |
 //|  digits    - pocet desetinnych mist pro popisky                  |
 //+------------------------------------------------------------------+
-void SvedDrawEntryLevels(const string tag, SEntryPlan &plan, const datetime tFrom, const datetime tTo,
+void PuntikyDrawEntryLevels(const string tag, SEntryPlan &plan, const datetime tFrom, const datetime tTo,
                          const color clrEntry, const color clrSL, const color clrTP, const int digits)
   {
-   const string id = SVED_PREFIX + "ENT_" + tag + "_";
+   const string id = PUNTIKY_PREFIX + "ENT_" + tag + "_";
    if(!plan.valid)
      {
-      SvedDeleteObjects("ENT_" + tag + "_");
+      PuntikyDeleteObjects("ENT_" + tag + "_");
       return;
      }
 
    const string dir = plan.isBuy ? "BUY" : "SELL";
 
-   SvedTrendLine(id + "E", tFrom, plan.entry, tTo, plan.entry, clrEntry, 1, STYLE_DOT, false,
+   PuntikyTrendLine(id + "E", tFrom, plan.entry, tTo, plan.entry, clrEntry, 1, STYLE_DOT, false,
                  dir + " vstup " + DoubleToString(plan.entry, digits));
-   SvedTrendLine(id + "SL", tFrom, plan.sl, tTo, plan.sl, clrSL, 1, STYLE_DOT, false,
+   PuntikyTrendLine(id + "SL", tFrom, plan.sl, tTo, plan.sl, clrSL, 1, STYLE_DOT, false,
                  dir + " SL " + DoubleToString(plan.sl, digits));
-   SvedTrendLine(id + "TP", tFrom, plan.tp, tTo, plan.tp, clrTP, 1, STYLE_DOT, false,
+   PuntikyTrendLine(id + "TP", tFrom, plan.tp, tTo, plan.tp, clrTP, 1, STYLE_DOT, false,
                  dir + " PT " + DoubleToString(plan.tp, digits));
 
    // Popisky primo u urovni: PT na cilove, SL na stopove care
-   SvedText(id + "TXT", tTo, plan.tp, "PT", clrTP, 8, ANCHOR_RIGHT_LOWER);
-   SvedText(id + "TXT2", tTo, plan.sl, "SL", clrSL, 8, ANCHOR_RIGHT_LOWER);
+   PuntikyText(id + "TXT", tTo, plan.tp, "PT", clrTP, 8, ANCHOR_RIGHT_LOWER);
+   PuntikyText(id + "TXT2", tTo, plan.sl, "SL", clrSL, 8, ANCHOR_RIGHT_LOWER);
   }
 
-#endif // __SVED_DRAW_MQH__
+#endif // __PUNTIKY_DRAW_MQH__
 //+------------------------------------------------------------------+

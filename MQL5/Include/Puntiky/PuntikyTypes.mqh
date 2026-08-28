@@ -1,33 +1,33 @@
 ﻿//+------------------------------------------------------------------+
-//|                                                   SvedTypes.mqh  |
+//|                                                PuntikyTypes.mqh  |
 //|          Spolecne datove struktury a vyctove typy strategie      |
-//|          "Sved Channel Breakout" (ABCD kanaly + prurazy H1)      |
+//|          "Puntiky Channel Breakout" (ABCD kanaly + prurazy H1)   |
 //+------------------------------------------------------------------+
-#property copyright "Sved"
+#property copyright "Puntiky"
 #property link      ""
 
-#ifndef __SVED_TYPES_MQH__
-#define __SVED_TYPES_MQH__
+#ifndef __PUNTIKY_TYPES_MQH__
+#define __PUNTIKY_TYPES_MQH__
 
 //--- Rezim vstupu do obchodu
-enum ENUM_SVED_ENTRY
+enum ENUM_PUNTIKY_ENTRY
   {
-   SVED_ENTRY_M1_CLOSE = 0, // Potvrzeni uzavrenim svicky vstupniho TF (M1)
-   SVED_ENTRY_PENDING  = 1  // Pending STOP prikazy na urovnich TF prurazu (H1)
+   PUNTIKY_ENTRY_M1_CLOSE = 0, // Potvrzeni uzavrenim svicky vstupniho TF (M1)
+   PUNTIKY_ENTRY_PENDING  = 1  // Pending STOP prikazy na urovnich TF prurazu (H1)
   };
 
 //--- Co delat, kdyz prurazu stoji v ceste reliefni primka
-enum ENUM_SVED_RELIEF
+enum ENUM_PUNTIKY_RELIEF
   {
-   SVED_RELIEF_SKIP    = 0, // Vstup preskocit
-   SVED_RELIEF_SHORTEN = 1  // Zkratit PT k primce (SL stejne, RRR 1:1)
+   PUNTIKY_RELIEF_SKIP    = 0, // Vstup preskocit
+   PUNTIKY_RELIEF_SHORTEN = 1  // Zkratit PT k primce (SL stejne, RRR 1:1)
   };
 
 //--- Rezim vypoctu objemu pozice
-enum ENUM_SVED_LOT
+enum ENUM_PUNTIKY_LOT
   {
-   SVED_LOT_FIXED = 0,      // Pevny lot
-   SVED_LOT_RISK  = 1       // Lot dopocteny z % rizika uctu
+   PUNTIKY_LOT_FIXED = 0,      // Pevny lot
+   PUNTIKY_LOT_RISK  = 1       // Lot dopocteny z % rizika uctu
   };
 
 //+------------------------------------------------------------------+
@@ -36,11 +36,11 @@ enum ENUM_SVED_LOT
 //| doublu (edgePrice == reliefPrice) a panel by hlasil "zkraceno    |
 //| hranou" i tam, kde PT zkratila reliefni primka.                  |
 //+------------------------------------------------------------------+
-enum ENUM_SVED_BARRIER
+enum ENUM_PUNTIKY_BARRIER
   {
-   SVED_BARRIER_NONE   = 0, // PT je v plne delce
-   SVED_BARRIER_EDGE   = 1, // PT zkracen hranou kanalu
-   SVED_BARRIER_RELIEF = 2  // PT zkracen reliefni primkou
+   PUNTIKY_BARRIER_NONE   = 0, // PT je v plne delce
+   PUNTIKY_BARRIER_EDGE   = 1, // PT zkracen hranou kanalu
+   PUNTIKY_BARRIER_RELIEF = 2  // PT zkracen reliefni primkou
   };
 
 //+------------------------------------------------------------------+
@@ -59,28 +59,28 @@ struct SSwing
   };
 
 //--- Maximalni pocet potvrzenych dotyku za bodem C (D, E, F, ...)
-#define SVED_MAX_TOUCH_POINTS 8
+#define PUNTIKY_MAX_TOUCH_POINTS 8
 
 //--- Minimalni odstup dvou zapocitanych dotyku teze hrany / primky
 //--- (v barech). Jedna delsi dotykova epizoda se tak pocita jako
 //--- jeden dotyk a nenafoukne skore.
-#define SVED_TOUCH_GAP 3
+#define PUNTIKY_TOUCH_GAP 3
 
 //--- O kolik baru zpet lezi druhy porovnavaci okamzik pri deduplikaci.
 //--- Musi byt dost daleko, aby se projevil rozdilny sklon dvou utvaru,
 //--- ktere se prave ted krizi.
-#define SVED_DEDUP_BACK_BARS 50
+#define PUNTIKY_DEDUP_BACK_BARS 50
 
 //+------------------------------------------------------------------+
 //| Seradi pole struktur sestupne podle pole .score.                 |
-//| Radi se pole indexu, ne samotne struktury - prohozeni indexu je   |
-//| par bajtu, kdezto SChannel ma pres 300 B a prime razeni prehazelo |
-//| pri stovkach kandidatu desitky MB. Razeni je stabilni, takze pri  |
-//| shode skore rozhoduje poradi vzniku kandidata.                    |
-//|  arr - razene pole (in/out); typ musi mit clen score              |
+//| Radi se pole indexu, ne samotne struktury - prohozeni indexu je  |
+//| par bajtu, kdezto SChannel ma pres 300 B a prime razeni prehazelo|
+//| pri stovkach kandidatu desitky MB. Razeni je stabilni, takze pri |
+//| shode skore rozhoduje poradi vzniku kandidata.                   |
+//|  arr - razene pole (in/out); typ musi mit clen score             |
 //+------------------------------------------------------------------+
 template<typename T>
-void SvedSortByScoreDesc(T &arr[])
+void PuntikySortByScoreDesc(T &arr[])
   {
    const int n = ArraySize(arr);
    if(n < 2)
@@ -145,9 +145,9 @@ struct SChannel
 
    //--- dalsi potvrzene dotyky hran za bodem C (D, E, F, ...)
    int               extraCount;
-   datetime          tExtra[SVED_MAX_TOUCH_POINTS];
-   double            pExtra[SVED_MAX_TOUCH_POINTS];
-   bool              extraUpper[SVED_MAX_TOUCH_POINTS];   // dotyk horni hrany?
+   datetime          tExtra[PUNTIKY_MAX_TOUCH_POINTS];
+   double            pExtra[PUNTIKY_MAX_TOUCH_POINTS];
+   bool              extraUpper[PUNTIKY_MAX_TOUCH_POINTS];   // dotyk horni hrany?
 
    //--- geometrie
    double            slope;        // zmena ceny za 1 sekundu na zakladni usecce
@@ -263,11 +263,11 @@ struct SEntryPlan
    double            tp;           // take profit
    double            distance;     // delka vstupu v cene (SL i PT maji tuto delku)
    double            lots;         // navrzeny objem
-   ENUM_SVED_BARRIER barrier;      // co PT zkratilo (hrana kanalu / reliefni primka)
+   ENUM_PUNTIKY_BARRIER barrier;      // co PT zkratilo (hrana kanalu / reliefni primka)
    double            barrierPrice; // cena teto prekazky
    int               channelIdx;   // index kanalu, uvnitr ktereho vstupujeme
    string            reason;       // duvod pripadneho zamitnuti
   };
 
-#endif // __SVED_TYPES_MQH__
+#endif // __PUNTIKY_TYPES_MQH__
 //+------------------------------------------------------------------+

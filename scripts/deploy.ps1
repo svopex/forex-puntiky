@@ -1,4 +1,4 @@
-# Nasazeni strategie Sved Channel Breakout do MetaTraderu 5.
+# Nasazeni strategie Puntiky Channel Breakout do MetaTraderu 5.
 #
 # Skript zkopiruje zdrojove soubory z repozitare do datoveho adresare
 # terminalu a nasledne je zkompiluje pres MetaEditor.
@@ -45,12 +45,12 @@ Write-Output "Terminal:  $installPath"
 Write-Output "Data:      $termRoot"
 
 # Kopie zdrojovych souboru do datoveho adresare terminalu
-$dstExperts = Join-Path $termRoot "MQL5\Experts\Sved"
-$dstInclude = Join-Path $termRoot "MQL5\Include\Sved"
+$dstExperts = Join-Path $termRoot "MQL5\Experts\Puntiky"
+$dstInclude = Join-Path $termRoot "MQL5\Include\Puntiky"
 New-Item -ItemType Directory -Force -Path $dstExperts, $dstInclude | Out-Null
 
-Copy-Item (Join-Path $srcRoot "Experts\Sved\*.mq5") $dstExperts -Force
-Copy-Item (Join-Path $srcRoot "Include\Sved\*.mqh") $dstInclude -Force
+Copy-Item (Join-Path $srcRoot "Experts\Puntiky\*.mq5") $dstExperts -Force
+Copy-Item (Join-Path $srcRoot "Include\Puntiky\*.mqh") $dstInclude -Force
 Write-Output "Zkopirovano do $dstExperts a $dstInclude"
 
 if ($NoCompile) { return }
@@ -59,8 +59,8 @@ if ($NoCompile) { return }
 $editor = Join-Path $installPath "MetaEditor64.exe"
 if (-not (Test-Path $editor)) { throw "MetaEditor64.exe nenalezen v $installPath" }
 
-$source = Join-Path $dstExperts "SvedChannelBreakout.mq5"
-$log    = Join-Path $env:TEMP "sved_compile.log"
+$source = Join-Path $dstExperts "PuntikyChannelBreakout.mq5"
+$log    = Join-Path $env:TEMP "puntiky_compile.log"
 if (Test-Path $log) { Remove-Item $log -Force }
 
 Start-Process -FilePath $editor `
@@ -74,7 +74,7 @@ if (Test-Path $log) {
     Write-Output "Log kompilace nebyl vytvoren."
 }
 
-$ex5 = Join-Path $dstExperts "SvedChannelBreakout.ex5"
+$ex5 = Join-Path $dstExperts "PuntikyChannelBreakout.ex5"
 if (Test-Path $ex5) {
     Write-Output "Hotovo: $ex5"
 } else {

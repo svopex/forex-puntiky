@@ -1,14 +1,14 @@
 ﻿//+------------------------------------------------------------------+
-//|                                                SvedChannels.mqh  |
+//|                                             PuntikyChannels.mqh  |
 //|      Sestaveni, ohodnoceni a vyber hlavnich ABCD kanalu          |
 //+------------------------------------------------------------------+
-#property copyright "Sved"
+#property copyright "Puntiky"
 
-#ifndef __SVED_CHANNELS_MQH__
-#define __SVED_CHANNELS_MQH__
+#ifndef __PUNTIKY_CHANNELS_MQH__
+#define __PUNTIKY_CHANNELS_MQH__
 
-#include <Sved\SvedTypes.mqh>
-#include <Sved\SvedSwings.mqh>
+#include <Puntiky\PuntikyTypes.mqh>
+#include <Puntiky\PuntikySwings.mqh>
 
 //+------------------------------------------------------------------+
 //| Test, zda jsou opory A a C skutecne vyraznymi extremy.           |
@@ -24,7 +24,7 @@
 //|  ch     - kandidatni kanal                                       |
 //|  window - polovicni sirka okna v barech (0 = test vypnuty)       |
 //+------------------------------------------------------------------+
-bool SvedAnchorsAreExtremes(const MqlRates &rates[], SChannel &ch, const int window)
+bool PuntikyAnchorsAreExtremes(const MqlRates &rates[], SChannel &ch, const int window)
   {
    if(window <= 0)
       return(true);
@@ -89,7 +89,7 @@ bool SvedAnchorsAreExtremes(const MqlRates &rates[], SChannel &ch, const int win
 //|  p     - parametry filtrovani (tolerance)                        |
 //| Vraci false, kdyz je kanal proriznuty nebo prorazeny.            |
 //+------------------------------------------------------------------+
-bool SvedChannelScan(const MqlRates &rates[], SChannel &ch, const SChannelParams &p)
+bool PuntikyChannelScan(const MqlRates &rates[], SChannel &ch, const SChannelParams &p)
   {
    const int    n          = ArraySize(rates);
    const double tolBase    = p.pierceTolFrac  * ch.width;
@@ -103,8 +103,8 @@ bool SvedChannelScan(const MqlRates &rates[], SChannel &ch, const SChannelParams
    int touches = 0;
 
    // Zadny dotyk zatim - prvni bar tak vzdy projde testem odstupu
-   int lastUpTouch = -SVED_TOUCH_GAP;
-   int lastLoTouch = -SVED_TOUCH_GAP;
+   int lastUpTouch = -PUNTIKY_TOUCH_GAP;
+   int lastLoTouch = -PUNTIKY_TOUCH_GAP;
 
    for(int i = from; i < n; i++)
      {
@@ -162,12 +162,12 @@ bool SvedChannelScan(const MqlRates &rates[], SChannel &ch, const SChannelParams
          continue;
         }
 
-      if(ch.TouchesUpper(t, rates[i].high, tolTouch) && i - lastUpTouch >= SVED_TOUCH_GAP)
+      if(ch.TouchesUpper(t, rates[i].high, tolTouch) && i - lastUpTouch >= PUNTIKY_TOUCH_GAP)
         {
          touches++;
          lastUpTouch = i;
         }
-      if(ch.TouchesLower(t, rates[i].low, tolTouch) && i - lastLoTouch >= SVED_TOUCH_GAP)
+      if(ch.TouchesLower(t, rates[i].low, tolTouch) && i - lastLoTouch >= PUNTIKY_TOUCH_GAP)
         {
          touches++;
          lastLoTouch = i;
@@ -188,7 +188,7 @@ bool SvedChannelScan(const MqlRates &rates[], SChannel &ch, const SChannelParams
 //|  ch    - kanal (in/out), p - parametry filtrovani                |
 //|  st    - statistika zamitnuti (in/out)                           |
 //+------------------------------------------------------------------+
-bool SvedEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChannelParams &p,
+bool PuntikyEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChannelParams &p,
                          SChannelStats &st)
   {
    const int n = ArraySize(rates);
@@ -232,14 +232,14 @@ bool SvedEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChannelPa
      }
 
    //--- Opory A a C musi byt vyraznymi extremy sveho okoli (O(okno))
-   if(!SvedAnchorsAreExtremes(rates, ch, p.anchorWindow))
+   if(!PuntikyAnchorsAreExtremes(rates, ch, p.anchorWindow))
      {
       st.anchors++;
       return(false);
      }
 
    //--- Jediny pruchod svickami: proriznuti, dotyky, containment
-   if(!SvedChannelScan(rates, ch, p))
+   if(!PuntikyChannelScan(rates, ch, p))
      {
       st.pierced++;
       return(false);
@@ -288,7 +288,7 @@ bool SvedEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChannelPa
 //|  ch      - kanal, do ktereho se body zapisou                     |
 //|  tolFrac - tolerance dotyku jako zlomek sirky kanalu             |
 //+------------------------------------------------------------------+
-void SvedCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const double tolFrac)
+void PuntikyCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const double tolFrac)
   {
    ch.extraCount = 0;
    const int    n   = ArraySize(rates);
@@ -298,7 +298,7 @@ void SvedCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const double 
    bool expectUpper = ch.baseIsLow;
 
    int i = ch.iC + 1;
-   while(i < n && ch.extraCount < SVED_MAX_TOUCH_POINTS)
+   while(i < n && ch.extraCount < PUNTIKY_MAX_TOUCH_POINTS)
      {
       const datetime t = rates[i].time;
       const bool touched = expectUpper ? ch.TouchesUpper(t, rates[i].high, tol)
@@ -350,7 +350,7 @@ void SvedCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const double 
 //|  t1, t2 - dva ruzne casove okamziky porovnani                    |
 //|  frac   - prah shody jako zlomek sirky sirsiho z kanalu          |
 //+------------------------------------------------------------------+
-bool SvedChannelsSimilar(SChannel &a, SChannel &b, const datetime t1, const datetime t2,
+bool PuntikyChannelsSimilar(SChannel &a, SChannel &b, const datetime t1, const datetime t2,
                          const double frac)
   {
    const double w = MathMax(a.width, b.width);
@@ -374,11 +374,11 @@ bool SvedChannelsSimilar(SChannel &a, SChannel &b, const datetime t1, const date
 //|  out    - dosud vybrane kanaly, taken - kolik jich je            |
 //|  t1, t2 - casy porovnani, frac - prah shody                      |
 //+------------------------------------------------------------------+
-bool SvedChannelIsDuplicate(SChannel &cand, SChannel &out[], const int taken,
+bool PuntikyChannelIsDuplicate(SChannel &cand, SChannel &out[], const int taken,
                             const datetime t1, const datetime t2, const double frac)
   {
    for(int j = 0; j < taken; j++)
-      if(SvedChannelsSimilar(cand, out[j], t1, t2, frac))
+      if(PuntikyChannelsSimilar(cand, out[j], t1, t2, frac))
          return(true);
    return(false);
   }
@@ -392,7 +392,7 @@ bool SvedChannelIsDuplicate(SChannel &cand, SChannel &out[], const int taken,
 //| az do p.maxSwingGap. Jako B se bere protilehly swing nejdal od   |
 //| zakladni usecky, takze kanal cenovou akci skutecne obali -       |
 //| stejne, jako kdyz se kresli rucne. Kandidaty, jejichz hrany      |
-//| cenu prorezavaji, zahodi az filtr v SvedEvaluateChannel.         |
+//| cenu prorezavaji, zahodi az filtr v PuntikyEvaluateChannel.      |
 //|  rates    - svicky TF kanalu (index 0 = nejstarsi)               |
 //|  sw       - swingova kostra jednoho meritka                      |
 //|  p        - parametry filtrovani                                 |
@@ -401,7 +401,7 @@ bool SvedChannelIsDuplicate(SChannel &cand, SChannel &out[], const int taken,
 //|  st       - statistika zamitnuti (in/out)                        |
 //| Vraci celkovy pocet kandidatu v poli cand[].                     |
 //+------------------------------------------------------------------+
-int SvedCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const SChannelParams &p,
+int PuntikyCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const SChannelParams &p,
                           const int scaleIdx, SChannel &cand[], SChannelStats &st)
   {
    const int n  = ArraySize(rates);
@@ -464,12 +464,12 @@ int SvedCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const SCh
          ch.tB = sw[bIdx].time; ch.pB = sw[bIdx].price; ch.iB = sw[bIdx].index;
          ch.width = bDist;      // sirka kanalu = odstup bodu B od zakladni usecky
 
-         if(!SvedEvaluateChannel(rates, ch, p, st))
+         if(!PuntikyEvaluateChannel(rates, ch, p, st))
             continue;
 
          // Dalsi dotyky hran (D, E, F, ...) se dohledavaji az u kandidata,
          // ktery prosel filtry - zapisuji se jen skutecne probehle dotyky
-         SvedCollectTouchPoints(rates, ch, p.touchTolFrac);
+         PuntikyCollectTouchPoints(rates, ch, p.touchTolFrac);
 
          // Rezerva pri zvetsovani - kandidatu byvaji stovky a kazda
          // realokace kopiruje cele pole struktur
@@ -492,7 +492,7 @@ int SvedCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const SCh
 //|  out   - vystupni pole vybranych kanalu                          |
 //| Vraci pocet vybranych kanalu ulozenych do out[].                 |
 //+------------------------------------------------------------------+
-int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannelParams &p, SChannel &out[])
+int PuntikySelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannelParams &p, SChannel &out[])
   {
    ArrayResize(out, 0);
    const int n  = ArraySize(rates);
@@ -500,12 +500,12 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
    if(n < 10 || nc == 0)
       return(0);
 
-   SvedSortByScoreDesc(cand);
+   PuntikySortByScoreDesc(cand);
 
    const datetime tLast = rates[n - 1].time;
    // Druhy porovnavaci okamzik pro deduplikaci - dost daleko, aby se
    // projevil rozdilny sklon kanalu
-   const int      backBars = MathMin(SVED_DEDUP_BACK_BARS, n - 1);
+   const int      backBars = MathMin(PUNTIKY_DEDUP_BACK_BARS, n - 1);
    const datetime tPast    = rates[n - 1 - backBars].time;
    int taken = 0;
    ArrayResize(out, p.maxChannels);
@@ -520,7 +520,7 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
         {
          if(cand[i].scaleIdx != s)
             continue;
-         if(SvedChannelIsDuplicate(cand[i], out, taken, tLast, tPast, p.dedupFrac))
+         if(PuntikyChannelIsDuplicate(cand[i], out, taken, tLast, tPast, p.dedupFrac))
             continue;
 
          out[taken++] = cand[i];
@@ -531,7 +531,7 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
    //--- 2. faze: zbyla mista se doplni podle skore bez ohledu na meritko
    for(int i = 0; i < nc && taken < p.maxChannels; i++)
      {
-      if(SvedChannelIsDuplicate(cand[i], out, taken, tLast, tPast, p.dedupFrac))
+      if(PuntikyChannelIsDuplicate(cand[i], out, taken, tLast, tPast, p.dedupFrac))
          continue;
       out[taken++] = cand[i];
      }
@@ -540,7 +540,7 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
 
    //--- Vysledek seradime podle skore, aby index 0 byl hlavni kanal
    //--- (kresli se silnejsi carou nez ostatni)
-   SvedSortByScoreDesc(out);
+   PuntikySortByScoreDesc(out);
 
    return(taken);
   }
@@ -551,7 +551,7 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
 //| (baseDepth, 2x, 4x ...) - jemne okno najde male kanaly, hrube    |
 //| okno velke. Prave diky tomu vznika i "kanal v kanalu".           |
 //| Vysledne kandidaty ze vsech meritek hodnoti a vybira spolecne    |
-//| SvedSelectChannels, takze se meritka mezi sebou poctive porovnaji|
+//| PuntikySelectChannels, takze se meritka poctive porovnaji        |
 //| a totozne nalezy se slouci.                                      |
 //| Pocet meritek se bere z p.scales - drive chodil jeste jednou     |
 //| zvlast argumentem a obe hodnoty se mohly rozejit (detekce podle  |
@@ -563,7 +563,7 @@ int SvedSelectChannels(const MqlRates &rates[], SChannel &cand[], const SChannel
 //|  st        - statistika detekce (in/out)                         |
 //| Vraci pocet vybranych kanalu ulozenych do out[].                 |
 //+------------------------------------------------------------------+
-int SvedBuildChannels(const MqlRates &rates[], const SChannelParams &p,
+int PuntikyBuildChannels(const MqlRates &rates[], const SChannelParams &p,
                       const int baseDepth, SChannel &out[], SChannelStats &st)
   {
    st.Reset();
@@ -573,16 +573,16 @@ int SvedBuildChannels(const MqlRates &rates[], const SChannelParams &p,
 
    for(int s = 0; s < MathMax(p.scales, 1); s++)
      {
-      const int depth = SvedScaleDepth(baseDepth, s);
-      if(!SvedScaleFits(depth, n))
+      const int depth = PuntikyScaleDepth(baseDepth, s);
+      if(!PuntikyScaleFits(depth, n))
          break;   // okno uz je sirsi nez dostupna historie
 
       SSwing sw[];
-      SvedDetectSwings(rates, depth, sw);
-      SvedCollectCandidates(rates, sw, p, s, cand, st);
+      PuntikyDetectSwings(rates, depth, sw);
+      PuntikyCollectCandidates(rates, sw, p, s, cand, st);
      }
 
-   st.selected = SvedSelectChannels(rates, cand, p, out);
+   st.selected = PuntikySelectChannels(rates, cand, p, out);
    return(st.selected);
   }
 
@@ -605,7 +605,7 @@ int SvedBuildChannels(const MqlRates &rates[], const SChannelParams &p,
 //| Vraci vzdalenost v cene, nebo -1 pokud zadna hrana ve smeru      |
 //| obchodu neexistuje.                                              |
 //+------------------------------------------------------------------+
-double SvedDistanceToNextEdge(SChannel &ch[], const datetime t, const datetime tProj,
+double PuntikyDistanceToNextEdge(SChannel &ch[], const datetime t, const datetime tProj,
                               const double price, const bool isBuy, double &edgePrice)
   {
    const int cnt = ArraySize(ch);
@@ -651,7 +651,7 @@ double SvedDistanceToNextEdge(SChannel &ch[], const datetime t, const datetime t
 //|  price   - testovana cena                                        |
 //|  tolFrac - tolerance testu jako zlomek sirky kanalu              |
 //+------------------------------------------------------------------+
-int SvedFindContainingChannel(SChannel &ch[], const datetime t, const double price, const double tolFrac)
+int PuntikyFindContainingChannel(SChannel &ch[], const datetime t, const double price, const double tolFrac)
   {
    const int cnt = ArraySize(ch);
    for(int i = 0; i < cnt; i++)
@@ -660,5 +660,5 @@ int SvedFindContainingChannel(SChannel &ch[], const datetime t, const double pri
    return(-1);
   }
 
-#endif // __SVED_CHANNELS_MQH__
+#endif // __PUNTIKY_CHANNELS_MQH__
 //+------------------------------------------------------------------+

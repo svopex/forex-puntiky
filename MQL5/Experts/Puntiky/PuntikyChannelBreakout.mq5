@@ -1,7 +1,7 @@
 ﻿//+------------------------------------------------------------------+
-//|                                        SvedChannelBreakout.mq5   |
+//|                                      PuntikyChannelBreakout.mq5  |
 //|                                                                  |
-//|  Strategie "Sved Channel Breakout":                              |
+//|  Strategie "Puntiky Channel Breakout":                           |
 //|   - kanaly ABCD se detekuji a kresli na M15, vcetne vnorenych    |
 //|   - urovne prurazu jsou HIGH / LOW swingove H1 svicky            |
 //|     (bezna hodinova svicka signal nedava)                        |
@@ -12,16 +12,16 @@
 //|   - do grafu se kresli kanaly, urovne prurazu, reliefni primky,  |
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
-#property copyright "Sved"
-#property version   "1.12"
+#property copyright "Puntiky"
+#property version   "1.13"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
-#include <Sved\SvedTypes.mqh>
-#include <Sved\SvedSwings.mqh>
-#include <Sved\SvedChannels.mqh>
-#include <Sved\SvedRelief.mqh>
-#include <Sved\SvedDraw.mqh>
+#include <Puntiky\PuntikyTypes.mqh>
+#include <Puntiky\PuntikySwings.mqh>
+#include <Puntiky\PuntikyChannels.mqh>
+#include <Puntiky\PuntikyRelief.mqh>
+#include <Puntiky\PuntikyDraw.mqh>
 
 //--- Timeframy
 input group "=== Timeframy ==="
@@ -60,7 +60,7 @@ input bool            InpRequireInside    = true;         // Vyzadovat cenu uvni
 //--- Vstup a rizeni obchodu
 input group "=== Vstup ==="
 input bool            InpEnableTrading    = true;         // Povolit obchodovani (false = jen kresleni)
-input ENUM_SVED_ENTRY InpEntryMode        = SVED_ENTRY_PENDING;  // Rezim vstupu
+input ENUM_PUNTIKY_ENTRY InpEntryMode        = PUNTIKY_ENTRY_PENDING;  // Rezim vstupu
 input int             InpMaxEntryPoints   = 300;          // Maximalni delka vstupu (body)
 input int             InpMinEntryPoints   = 100;          // Minimalni delka vstupu (body)
 input int             InpBreakoutBuffer   = 10;           // Buffer nad/pod urovni prurazu (body)
@@ -78,7 +78,7 @@ input long            InpAllowedAccount   = 0;            // Povoleny ucet (0 = 
 //--- Reliefni primky na vstupnim timeframu
 input group "=== Reliefni primky ==="
 input bool            InpUseRelief        = true;         // Hlidat reliefni primky na TF vstupu
-input ENUM_SVED_RELIEF InpReliefMode      = SVED_RELIEF_SKIP; // Co delat, kdyz primka vadi
+input ENUM_PUNTIKY_RELIEF InpReliefMode      = PUNTIKY_RELIEF_SKIP; // Co delat, kdyz primka vadi
 input int             InpReliefLookback   = 2400;         // Kolik svicek TF vstupu analyzovat
 input int             InpReliefSwingDepth = 10;           // Sirka okna pro hlavni swingy
 input int             InpReliefScales     = 4;            // Pocet meritek swingu (10/20/40/80)
@@ -101,7 +101,7 @@ input int             InpReliefForwardBars = 120;         // Prodlouzeni primek 
 
 //--- Rizeni objemu
 input group "=== Objem ==="
-input ENUM_SVED_LOT   InpLotMode          = SVED_LOT_RISK;  // Rezim vypoctu objemu (vychozi: dopocet z rizika)
+input ENUM_PUNTIKY_LOT   InpLotMode          = PUNTIKY_LOT_RISK;  // Rezim vypoctu objemu (vychozi: dopocet z rizika)
 input double          InpFixedLot         = 0.10;         // Pevny lot
 input double          InpRiskPercent      = 1.0;          // Riziko na obchod (% uctu)
 
@@ -145,17 +145,17 @@ input group "=== Diagnostika ==="
 input bool            InpDiagnostics      = true;         // Vypisovat diagnostiku detekce do logu
 input bool            InpShotOnRequest    = true;         // Ulozit snimek grafu na vyzadani
 input int             InpShotEveryBars    = 0;            // Snimek kazdych N baru TF kanalu (0 = ne)
-input string          InpShotFileName     = "SvedShot.png";      // Soubor snimku (MQL5/Files)
-input string          InpShotRequestFile  = "SvedShot.request";  // Soubor pozadavku o snimek
+input string          InpShotFileName     = "PuntikyShot.png";      // Soubor snimku (MQL5/Files)
+input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor pozadavku o snimek
 
 //--- Pojmenovane konstanty misto magickych cisel v kodu
-#define SVED_MIN_BARS        50    // minimum svicek pro smysluplnou detekci
-#define SVED_PANEL_MAX_LINES 24    // kapacita panelu (radku)
-#define SVED_PANEL_MAX_CH    12    // po kolikaty radek se vypisuji kanaly
-#define SVED_PANEL_BTN_GAP   6     // mezera mezi panelem a tlacitkem (px)
-#define SVED_LABEL_FALLBACK  10.0  // nahradni tolerance slouceni popisku (body)
-#define SVED_VOLUME_EPS      1e-8  // tolerance porovnani objemu
-#define SVED_LOTSTEP_EPS     1e-9  // tolerance deleni objemu krokem
+#define PUNTIKY_MIN_BARS        50    // minimum svicek pro smysluplnou detekci
+#define PUNTIKY_PANEL_MAX_LINES 24    // kapacita panelu (radku)
+#define PUNTIKY_PANEL_MAX_CH    12    // po kolikaty radek se vypisuji kanaly
+#define PUNTIKY_PANEL_BTN_GAP   6     // mezera mezi panelem a tlacitkem (px)
+#define PUNTIKY_LABEL_FALLBACK  10.0  // nahradni tolerance slouceni popisku (body)
+#define PUNTIKY_VOLUME_EPS      1e-8  // tolerance porovnani objemu
+#define PUNTIKY_LOTSTEP_EPS     1e-9  // tolerance deleni objemu krokem
 
 //--- Globalni stav
 CTrade        g_trade;                 // obchodni rozhrani
@@ -202,7 +202,7 @@ int           g_drawnLabels   = 0;
 int           g_drawnRelief   = 0;
 
 //--- Cache panelu - prekresluje se jen to, co se skutecne zmenilo
-string        g_panelText[SVED_PANEL_MAX_LINES];
+string        g_panelText[PUNTIKY_PANEL_MAX_LINES];
 int           g_panelShown = 0;
 int           g_panelY     = -1;
 
@@ -232,7 +232,7 @@ int OnInit()
    if(InpAllowedAccount != 0 && AccountInfoInteger(ACCOUNT_LOGIN) != InpAllowedAccount)
      {
       g_tradingAllowed = false;
-      Print("SVED: účet ", AccountInfoInteger(ACCOUNT_LOGIN),
+      Print("PUNTIKY: účet ", AccountInfoInteger(ACCOUNT_LOGIN),
             " neodpovídá povolenému účtu ", InpAllowedAccount, " - obchodování vypnuto.");
      }
 
@@ -240,7 +240,7 @@ int OnInit()
    g_atrHandle = iATR(_Symbol, InpChannelTF, InpATRPeriod);
    if(g_atrHandle == INVALID_HANDLE)
      {
-      Print("SVED: nepodařilo se vytvořit ATR handle.");
+      Print("PUNTIKY: nepodařilo se vytvořit ATR handle.");
       return(INIT_FAILED);
      }
 
@@ -255,21 +255,21 @@ int OnInit()
    // Bez povoleni adresy v nastaveni terminalu skonci WebRequest chybou 4014,
    // proto se URL vypise hned pri startu
    if(InpHueEnabled)
-      PrintFormat("SVED: upozornění Hue zapnuto - %d b od úrovně vstupu, %s "
+      PrintFormat("PUNTIKY: upozornění Hue zapnuto - %d b od úrovně vstupu, %s "
                   "(adresu povol v Nástroje > Nastavení > Expert Advisors > Povolit WebRequest)",
                   InpHueNearPoints, InpHueUrl);
 
    // Po prepnuti z pending rezimu by na urovnich zustaly lezet GTC
    // prikazy se starym SL/PT - jejich plneni by otevrelo pozici, kterou
    // uz zadny rezim neridi
-   if(InpEntryMode != SVED_ENTRY_PENDING && TradingEnabled())
+   if(InpEntryMode != PUNTIKY_ENTRY_PENDING && TradingEnabled())
       CancelPendingOrders();
 
    //--- Prvni vypocet hned pri startu, aby byl graf ihned popsany.
    //--- Kdyz jeste nejsou data indikatoru, odlozi se na prvni tick.
    g_needInitCalc = true;
    if(!TryInitialCalc())
-      Print("SVED: čeká se na dopočet ATR, první výpočet proběhne s prvními daty.");
+      Print("PUNTIKY: čeká se na dopočet ATR, první výpočet proběhne s prvními daty.");
 
    UpdatePanel();
    ChartRedraw();
@@ -294,7 +294,7 @@ void OnDeinit(const int reason)
    if(reason == REASON_REMOVE && TradingEnabled())
       CancelPendingOrders();
 
-   SvedDeleteObjects();
+   PuntikyDeleteObjects();
    ChartRedraw();
   }
 
@@ -318,7 +318,7 @@ void OnTick()
    //---    Kdyby se urovne prepocitaly driv, na hodinove hranici by se
    //---    prechod pres uroven meril proti uz jine (starsi) urovni a
    //---    platny signal by zmizel.
-   if(InpEntryMode == SVED_ENTRY_M1_CLOSE && newEntryBar)
+   if(InpEntryMode == PUNTIKY_ENTRY_M1_CLOSE && newEntryBar)
       CheckEntryOnEntryTF();
 
    //--- 2) Novy bar TF kanalu -> prepocet a prekresleni kanalu.
@@ -354,7 +354,7 @@ void OnTick()
          RebuildPlans();
 
    //--- 6) Skutecne prikazy se srovnaji s navrhy nejvyse jednou za tick
-   if(InpEntryMode == SVED_ENTRY_PENDING && g_ordersDirty)
+   if(InpEntryMode == PUNTIKY_ENTRY_PENDING && g_ordersDirty)
       SyncPendingOrders();
 
    //--- 7) Priblizeni k urovni vstupu rozblika zarovky Hue
@@ -410,7 +410,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
    g_lastEvent = StringFormat("%s vyplněn @ %s", isBuy ? "BUY" : "SELL",
                               DoubleToString(dealPrice, _Digits));
-   Print("SVED: ", g_lastEvent);
+   Print("PUNTIKY: ", g_lastEvent);
 
    // Pending prikaz nese absolutni SL a PT spoctene pro nominalni
    // vstupni cenu. Pri plneni se skluzem by pak SL a PT nemely stejnou
@@ -430,7 +430,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    // Navrh s otevrenou pozici prestane byt platny, takze rekonciliace
    // zrusi zbyly prikaz druheho smeru (OCO)
    RebuildPlans();
-   if(InpEntryMode == SVED_ENTRY_PENDING)
+   if(InpEntryMode == PUNTIKY_ENTRY_PENDING)
       SyncPendingOrders();
    UpdatePanel();
   }
@@ -465,7 +465,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
   {
    if(id != CHARTEVENT_OBJECT_CLICK)
       return;
-   if(sparam != SVED_PREFIX + "BTN_HUETEST")
+   if(sparam != PUNTIKY_PREFIX + "BTN_HUETEST")
       return;
 
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
@@ -493,9 +493,9 @@ bool ValidateInputs()
    if(InpReliefScales < 1)       err += "InpReliefScales >= 1; ";
    if(InpMaxSwingGap < 2)        err += "InpMaxSwingGap >= 2; ";
    if(InpReliefSwingGap < 2)     err += "InpReliefSwingGap >= 2; ";
-   if(InpLookbackBars < SVED_MIN_BARS)   err += "InpLookbackBars >= 50; ";
-   if(InpBreakLookback < SVED_MIN_BARS)  err += "InpBreakLookback >= 50; ";
-   if(InpReliefLookback < SVED_MIN_BARS) err += "InpReliefLookback >= 50; ";
+   if(InpLookbackBars < PUNTIKY_MIN_BARS)   err += "InpLookbackBars >= 50; ";
+   if(InpBreakLookback < PUNTIKY_MIN_BARS)  err += "InpBreakLookback >= 50; ";
+   if(InpReliefLookback < PUNTIKY_MIN_BARS) err += "InpReliefLookback >= 50; ";
    if(InpMinSpanBars < 1)        err += "InpMinSpanBars >= 1; ";
    if(InpMaxAgeBars < 1)         err += "InpMaxAgeBars >= 1; ";
    if(InpReliefMinSpan < 1)      err += "InpReliefMinSpan >= 1; ";
@@ -527,15 +527,15 @@ bool ValidateInputs()
    if(InpReliefMidFrom < 0.0 || InpReliefMidTo > 1.0 || InpReliefMidFrom >= InpReliefMidTo)
       err += "0 <= InpReliefMidFrom < InpReliefMidTo <= 1; ";
 
-   if(InpLotMode == SVED_LOT_RISK && InpRiskPercent <= 0.0)
+   if(InpLotMode == PUNTIKY_LOT_RISK && InpRiskPercent <= 0.0)
       err += "InpRiskPercent > 0; ";
-   if(InpLotMode == SVED_LOT_FIXED && InpFixedLot <= 0.0)
+   if(InpLotMode == PUNTIKY_LOT_FIXED && InpFixedLot <= 0.0)
       err += "InpFixedLot > 0; ";
 
    if(err == "")
       return(true);
 
-   Print("SVED: chybné vstupní parametry - ", err);
+   Print("PUNTIKY: chybné vstupní parametry - ", err);
    return(false);
   }
 
@@ -594,20 +594,20 @@ void InitParams()
 //+------------------------------------------------------------------+
 void PrintPointDiagnostics()
   {
-   PrintFormat("SVED: %s  digits=%d  point=%s", _Symbol, _Digits,
+   PrintFormat("PUNTIKY: %s  digits=%d  point=%s", _Symbol, _Digits,
                DoubleToString(_Point, _Digits));
-   PrintFormat("SVED: vstup max %d b = %s, min %d b = %s, buffer %d b = %s, "
+   PrintFormat("PUNTIKY: vstup max %d b = %s, min %d b = %s, buffer %d b = %s, "
                "odstup trzniho vstupu %d b = %s",
                InpMaxEntryPoints, DoubleToString(InpMaxEntryPoints * _Point, _Digits),
                InpMinEntryPoints, DoubleToString(InpMinEntryPoints * _Point, _Digits),
                InpBreakoutBuffer, DoubleToString(InpBreakoutBuffer * _Point, _Digits),
                InpMaxLevelOffset, DoubleToString(InpMaxLevelOffset * _Point, _Digits));
-   PrintFormat("SVED: rezerva k hraně %d b = %s, k přímce %d b = %s, "
+   PrintFormat("PUNTIKY: rezerva k hraně %d b = %s, k přímce %d b = %s, "
                "min. šířka kanálu %d b = %s",
                InpEdgeBuffer, DoubleToString(InpEdgeBuffer * _Point, _Digits),
                InpReliefBuffer, DoubleToString(InpReliefBuffer * _Point, _Digits),
                InpMinWidthPoints, DoubleToString(InpMinWidthPoints * _Point, _Digits));
-   PrintFormat("SVED: reliéf - proříznutí %d b = %s, knot %d b = %s, dotyk %d b = %s, "
+   PrintFormat("PUNTIKY: reliéf - proříznutí %d b = %s, knot %d b = %s, dotyk %d b = %s, "
                "shoda %d b = %s, drift %d b = %s, střed %d b = %s",
                InpReliefPierceTol, DoubleToString(InpReliefPierceTol * _Point, _Digits),
                InpReliefWickTol, DoubleToString(InpReliefWickTol * _Point, _Digits),
@@ -668,7 +668,7 @@ bool TryInitialCalc()
 
    // V pending rezimu se prikazy zadaji hned - jinak by se cekalo
    // az na otevreni dalsi svicky TF prurazu
-   if(InpEntryMode == SVED_ENTRY_PENDING)
+   if(InpEntryMode == PUNTIKY_ENTRY_PENDING)
       SyncPendingOrders();
 
    return(true);
@@ -796,18 +796,18 @@ void ResetPlan(SEntryPlan &pl, const bool isBuy)
    pl.tp           = 0.0;
    pl.distance     = 0.0;
    pl.lots         = 0.0;
-   pl.barrier      = SVED_BARRIER_NONE;
+   pl.barrier      = PUNTIKY_BARRIER_NONE;
    pl.barrierPrice = 0.0;
    pl.channelIdx   = -1;
    pl.reason       = "";
   }
 
 //--- Nazev prekazky pro texty panelu a logu
-string BarrierText(const ENUM_SVED_BARRIER barrier)
+string BarrierText(const ENUM_PUNTIKY_BARRIER barrier)
   {
-   if(barrier == SVED_BARRIER_EDGE)
+   if(barrier == PUNTIKY_BARRIER_EDGE)
       return("hraně kanálu");
-   if(barrier == SVED_BARRIER_RELIEF)
+   if(barrier == PUNTIKY_BARRIER_RELIEF)
       return("reliéfní přímce");
    return("cíli");
   }
@@ -876,7 +876,7 @@ bool PriceBeyondLevel(const bool isBuy, const double bidPrice,
 //+------------------------------------------------------------------+
 string TakenVarName(const bool isBuy)
   {
-   return("SVED_" + _Symbol + "_" + IntegerToString(InpMagic) +
+   return("PUNTIKY_" + _Symbol + "_" + IntegerToString(InpMagic) +
           (isBuy ? "_BUY" : "_SELL"));
   }
 
@@ -908,7 +908,7 @@ void RecalcChannels()
   {
    MqlRates rates[];
    const int copied = LoadClosedBars(InpChannelTF, InpLookbackBars, rates);
-   if(copied < SVED_MIN_BARS)
+   if(copied < PUNTIKY_MIN_BARS)
      {
       // Bez dat se stary vysledek zahodi. Kdyby v poli zustal, kreslily
       // by se v grafu kanaly, ktere uz nikdo nepocita, a panel by k nim
@@ -916,7 +916,7 @@ void RecalcChannels()
       ArrayResize(g_channels, 0);
       g_stats.Reset();
       RedrawChannels();
-      PrintFormat("SVED: málo dat %s (%d svíček), kanály zrušeny.",
+      PrintFormat("PUNTIKY: málo dat %s (%d svíček), kanály zrušeny.",
                   EnumToString(InpChannelTF), copied);
       return;
      }
@@ -926,7 +926,7 @@ void RecalcChannels()
    RefreshATR();
 
    // Kanaly se hledaji ve vice meritkach, aby vznikl i kanal v kanalu
-   SvedBuildChannels(rates, g_chParams, InpSwingDepth, g_channels, g_stats);
+   PuntikyBuildChannels(rates, g_chParams, InpSwingDepth, g_channels, g_stats);
 
    PrintDiagnostics(copied);
    RedrawChannels();
@@ -954,28 +954,28 @@ void PrintDiagnostics(const int bars)
    if(!InpDiagnostics)
       return;
 
-   PrintFormat("SVED diag: %d svíček %s, ATR %.2f, kombinací A-C %d",
+   PrintFormat("PUNTIKY diag: %d svíček %s, ATR %.2f, kombinací A-C %d",
                bars, EnumToString(InpChannelTF), g_atr, g_stats.generated);
 
-   PrintFormat("SVED diag: zamítnuto - bod B %d, délka %d, stáří %d, šířka %d, "
+   PrintFormat("PUNTIKY diag: zamítnuto - bod B %d, délka %d, stáří %d, šířka %d, "
                "cena mimo %d, opory %d, proříznuto/proraženo %d, dotyky %d, uvnitř %d",
                g_stats.noB, g_stats.span, g_stats.age, g_stats.width,
                g_stats.outside, g_stats.anchors, g_stats.pierced, g_stats.touches,
                g_stats.containment);
 
-   PrintFormat("SVED diag: prošlo %d, vybráno %d", g_stats.passed, g_stats.selected);
+   PrintFormat("PUNTIKY diag: prošlo %d, vybráno %d", g_stats.passed, g_stats.selected);
 
    if(InpUseRelief)
      {
-      PrintFormat("SVED diag: reliéfních přímek %s: %d",
+      PrintFormat("PUNTIKY diag: reliéfních přímek %s: %d",
                   EnumToString(InpEntryTF), ReliefCount());
-      PrintFormat("SVED diag: reliéf filtr - dvojic %d, délka %d, stáří %d, drift %d, "
+      PrintFormat("PUNTIKY diag: reliéf filtr - dvojic %d, délka %d, stáří %d, drift %d, "
                   "proraženo %d, střed %d, dotyky %d -> prošlo %d, vybráno %d",
                   g_reliefStats.pairs, g_reliefStats.span, g_reliefStats.age,
                   g_reliefStats.drift, g_reliefStats.pierced, g_reliefStats.midTouch,
                   g_reliefStats.touches, g_reliefStats.passed, g_reliefStats.selected);
       for(int i = 0; i < ReliefCount(); i++)
-         PrintFormat("SVED diag: reliéf %d (%s) %s @ %s -> %s @ %s, dotyků %d, "
+         PrintFormat("PUNTIKY diag: reliéf %d (%s) %s @ %s -> %s @ %s, dotyků %d, "
                      "záběr %d barů, stáří %d barů, přilnutí %.0f b, přesah %.0f b, nyní %s",
                      i + 1, g_relief[i].isHigh ? "odpor" : "podpora",
                      DoubleToString(g_relief[i].p1, _Digits),
@@ -990,7 +990,7 @@ void PrintDiagnostics(const int bars)
 
    for(int i = 0; i < ChannelCount(); i++)
      {
-      PrintFormat("SVED diag: kanál %d (měřítko %d, %s) A %s @ %s | B %s @ %s | C %s @ %s",
+      PrintFormat("PUNTIKY diag: kanál %d (měřítko %d, %s) A %s @ %s | B %s @ %s | C %s @ %s",
                   i + 1, g_channels[i].scaleIdx,
                   g_channels[i].baseIsLow ? "LOW základna" : "HIGH základna",
                   DoubleToString(g_channels[i].pA, _Digits),
@@ -1000,7 +1000,7 @@ void PrintDiagnostics(const int bars)
                   DoubleToString(g_channels[i].pC, _Digits),
                   TimeToString(g_channels[i].tC, TIME_DATE | TIME_MINUTES));
 
-      PrintFormat("SVED diag: kanál %d - šířka %.0f b, dotyků mimo opory %d, uvnitř %.0f %%, "
+      PrintFormat("PUNTIKY diag: kanál %d - šířka %.0f b, dotyků mimo opory %d, uvnitř %.0f %%, "
                   "délka %d barů, stáří %d barů, skóre %.2f, body po C %d",
                   i + 1, g_channels[i].width / _Point, g_channels[i].touches,
                   g_channels[i].containment * 100.0, g_channels[i].spanBars,
@@ -1020,10 +1020,10 @@ void SaveScreenshot(const string reason)
       return;
 
    if(ChartScreenShot(0, InpShotFileName, w, h, ALIGN_RIGHT))
-      PrintFormat("SVED: snímek grafu uložen (%s) -> MQL5/Files/%s  [%dx%d]",
+      PrintFormat("PUNTIKY: snímek grafu uložen (%s) -> MQL5/Files/%s  [%dx%d]",
                   reason, InpShotFileName, w, h);
    else
-      PrintFormat("SVED: snímek grafu se nepodařilo uložit, chyba %d", GetLastError());
+      PrintFormat("PUNTIKY: snímek grafu se nepodařilo uložit, chyba %d", GetLastError());
   }
 
 //+------------------------------------------------------------------+
@@ -1058,11 +1058,11 @@ void RedrawChannels()
 
    //--- Nejprve usecky vsech kanalu
    for(int i = 0; i < count; i++)
-      SvedDrawChannel(g_channels[i], i, tEnd, InpColorHigh, InpColorLow);
+      PuntikyDrawChannel(g_channels[i], i, tEnd, InpColorHigh, InpColorLow);
 
    //--- Prebytecne kanaly z minuleho prekresleni
    for(int i = count; i < g_drawnChannels; i++)
-      SvedDeleteObjects("CH" + IntegerToString(i) + "_");
+      PuntikyDeleteObjects("CH" + IntegerToString(i) + "_");
    g_drawnChannels = count;
 
    //--- Popisky opor se sesbiraji ze vsech kanalu najednou a teprve pak
@@ -1073,15 +1073,15 @@ void RedrawChannels()
      {
       SChannelLabel items[];
       for(int i = 0; i < count; i++)
-         SvedCollectChannelLabels(g_channels[i], i, items);
+         PuntikyCollectChannelLabels(g_channels[i], i, items);
 
       // Tolerance slucovani vychazi z ATR, aby sedela na volatilite trhu
       const double mergeTol = (g_atr > 0.0) ? g_atr * InpLabelMergeATR
-                                            : SVED_LABEL_FALLBACK * _Point;
-      labels = SvedDrawLabels(items, InpColorPoint, InpPointFontSize, mergeTol);
+                                            : PUNTIKY_LABEL_FALLBACK * _Point;
+      labels = PuntikyDrawLabels(items, InpColorPoint, InpPointFontSize, mergeTol);
      }
 
-   SvedDeleteIndexed("PT", labels, g_drawnLabels);
+   PuntikyDeleteIndexed("PT", labels, g_drawnLabels);
    g_drawnLabels = labels;
 
    ChartRedraw();
@@ -1104,7 +1104,7 @@ void RecalcRelief()
 
    MqlRates rates[];
    const int copied = LoadClosedBars(InpEntryTF, InpReliefLookback, rates);
-   if(copied < SVED_MIN_BARS)
+   if(copied < PUNTIKY_MIN_BARS)
      {
       // Stejne jako u kanalu: bez dat se stary vysledek zahodi, jinak
       // by v grafu zustaly primky, ktere uz nikdo neprepocitava
@@ -1114,7 +1114,7 @@ void RecalcRelief()
       return;
      }
 
-   SvedBuildReliefLines(rates, g_reliefParams, g_relief, g_reliefStats);
+   PuntikyBuildReliefLines(rates, g_reliefParams, g_relief, g_reliefStats);
    DrawRelief();
   }
 
@@ -1127,14 +1127,14 @@ void DrawRelief()
    const datetime tEnd = FutureTime(InpEntryTF, InpReliefForwardBars);
 
    for(int i = 0; i < count; i++)
-      SvedTrendLine(SVED_PREFIX + "REL_" + IntegerToString(i),
+      PuntikyTrendLine(PUNTIKY_PREFIX + "REL_" + IntegerToString(i),
                     g_relief[i].t1, g_relief[i].p1, tEnd, g_relief[i].ValueAt(tEnd),
                     InpColorRelief, 1, STYLE_DOT, true,
                     StringFormat("Reliéfní přímka (%s), dotyků %d",
                                  g_relief[i].isHigh ? "odpor" : "podpora",
                                  g_relief[i].touches));
 
-   SvedDeleteIndexed("REL_", count, g_drawnRelief);
+   PuntikyDeleteIndexed("REL_", count, g_drawnRelief);
    g_drawnRelief = count;
 
    ChartRedraw();
@@ -1147,7 +1147,7 @@ void DrawBreakoutLevels()
   {
    if(!InpShowBreakLevels || g_breakHigh <= 0.0 || g_breakLow <= 0.0)
      {
-      SvedDeleteObjects("BRK_");
+      PuntikyDeleteObjects("BRK_");
       return;
      }
 
@@ -1155,10 +1155,10 @@ void DrawBreakoutLevels()
 
    // Cara zacina u svicky, ze ktere uroven pochazi - u swingoveho
    // rezimu je tak na prvni pohled videt, ktery swing se prorazi
-   SvedTrendLine(SVED_PREFIX + "BRK_H", g_breakHighTime, g_breakHigh, tTo, g_breakHigh,
+   PuntikyTrendLine(PUNTIKY_PREFIX + "BRK_H", g_breakHighTime, g_breakHigh, tTo, g_breakHigh,
                  InpColorBreak, 1, STYLE_DASH, false,
                  "Úroveň průrazu HIGH " + DoubleToString(g_breakHigh, _Digits));
-   SvedTrendLine(SVED_PREFIX + "BRK_L", g_breakLowTime, g_breakLow, tTo, g_breakLow,
+   PuntikyTrendLine(PUNTIKY_PREFIX + "BRK_L", g_breakLowTime, g_breakLow, tTo, g_breakLow,
                  InpColorBreak, 1, STYLE_DASH, false,
                  "Úroveň průrazu LOW " + DoubleToString(g_breakLow, _Digits));
    ChartRedraw();
@@ -1171,16 +1171,16 @@ void DrawEntryLevels()
   {
    if(!InpShowEntryLevels)
      {
-      SvedDeleteObjects("ENT_");
+      PuntikyDeleteObjects("ENT_");
       return;
      }
 
    const datetime tFrom = iTime(_Symbol, InpBreakoutTF, 0);
    const datetime tTo   = FutureTime(InpBreakoutTF, 3);
 
-   SvedDrawEntryLevels("BUY",  g_planBuy,  tFrom, tTo,
+   PuntikyDrawEntryLevels("BUY",  g_planBuy,  tFrom, tTo,
                        InpColorEntry, InpColorSL, InpColorTP, _Digits);
-   SvedDrawEntryLevels("SELL", g_planSell, tFrom, tTo,
+   PuntikyDrawEntryLevels("SELL", g_planSell, tFrom, tTo,
                        InpColorEntry, InpColorSL, InpColorTP, _Digits);
    ChartRedraw();
   }
@@ -1253,7 +1253,7 @@ void FindBreakoutSwings(double &hi, datetime &hiTime, bool &foundHi,
       return;
 
    SSwing sw[];
-   const int ns = SvedDetectSwings(rates, InpBreakSwingDepth, sw);
+   const int ns = PuntikyDetectSwings(rates, InpBreakSwingDepth, sw);
    if(ns < 1)
       return;
 
@@ -1521,7 +1521,7 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
    const datetime tNow = TimeCurrent();
 
    //--- Pruraz musi nastat uvnitr kanalu
-   const int ci = SvedFindContainingChannel(g_channels, tNow, trigger, InpInsideTolFrac);
+   const int ci = PuntikyFindContainingChannel(g_channels, tNow, trigger, InpInsideTolFrac);
    if(ci < 0)
      {
       pl.reason = "průraz mimo kanál";
@@ -1541,7 +1541,7 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
    //--- presne v pripade, kdy swing sedi na hrane.
    const datetime tProj = FutureTime(InpChannelTF, InpEdgeProjBars);
    double edge = 0.0;
-   const double edgeGap = SvedDistanceToNextEdge(g_channels, tNow, tProj, trigger, isBuy, edge);
+   const double edgeGap = PuntikyDistanceToNextEdge(g_channels, tNow, tProj, trigger, isBuy, edge);
    if(edgeGap >= 0.0)
      {
       // Misto pro PT se ale meri od skutecneho vstupu
@@ -1550,7 +1550,7 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
       if(avail < dist)
         {
          dist            = MathMax(avail, 0.0);
-         pl.barrier      = SVED_BARRIER_EDGE;
+         pl.barrier      = PUNTIKY_BARRIER_EDGE;
          pl.barrierPrice = edge;
         }
      }
@@ -1561,16 +1561,16 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
    if(InpUseRelief && ReliefCount() > 0)
      {
       double relPrice = 0.0;
-      const double relGap = SvedNearestRelief(g_relief, tNow, trigger, isBuy, relPrice);
+      const double relGap = PuntikyNearestRelief(g_relief, tNow, trigger, isBuy, relPrice);
       if(relGap >= 0.0)
         {
          const double relFromEntry = MathMax(isBuy ? (relPrice - pl.entry)
                                                    : (pl.entry - relPrice), 0.0);
          if(relFromEntry < dist)
            {
-            if(InpReliefMode == SVED_RELIEF_SKIP)
+            if(InpReliefMode == PUNTIKY_RELIEF_SKIP)
               {
-               pl.barrier      = SVED_BARRIER_RELIEF;
+               pl.barrier      = PUNTIKY_BARRIER_RELIEF;
                pl.barrierPrice = relPrice;
                pl.reason = StringFormat("v cestě reliéfní přímka (%.0f b, %s)",
                                         relFromEntry / _Point,
@@ -1580,7 +1580,7 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
 
             // Zkraceni PT pred primku, SL se zkrati stejne (RRR 1:1)
             dist            = MathMax(relFromEntry - InpReliefBuffer * _Point, 0.0);
-            pl.barrier      = SVED_BARRIER_RELIEF;
+            pl.barrier      = PUNTIKY_BARRIER_RELIEF;
             pl.barrierPrice = relPrice;
            }
         }
@@ -1628,7 +1628,7 @@ int VolumeDigits(const double step)
 
    int    digits = 0;
    double value  = step;
-   while(digits < 8 && MathAbs(value - MathRound(value)) > SVED_LOTSTEP_EPS)
+   while(digits < 8 && MathAbs(value - MathRound(value)) > PUNTIKY_LOTSTEP_EPS)
      {
       value *= 10.0;
       digits++;
@@ -1656,7 +1656,7 @@ double CalcLot(const double slDistance, string &reason)
 
    double lot = InpFixedLot;
 
-   if(InpLotMode == SVED_LOT_RISK)
+   if(InpLotMode == PUNTIKY_LOT_RISK)
      {
       const double balance = AccountInfoDouble(ACCOUNT_BALANCE);
 
@@ -1697,7 +1697,7 @@ double CalcLot(const double slDistance, string &reason)
    //--- 0.29 / 0.01 vyjde 28.999999999999996 a bez ni by se
    //--- obchodovalo 0.28 misto zadanych 0.29.
    if(lotStep > 0.0)
-      lot = MathFloor(lot / lotStep + SVED_LOTSTEP_EPS) * lotStep;
+      lot = MathFloor(lot / lotStep + PUNTIKY_LOTSTEP_EPS) * lotStep;
 
    lot = MathMax(lot, minLot);
    lot = MathMin(lot, maxLot);
@@ -1744,7 +1744,7 @@ bool DeleteOrder(const ulong ticket)
    if(g_trade.OrderDelete(ticket))
       return(true);
 
-   PrintFormat("SVED: příkaz #%I64u se nepodařilo zrušit, retcode %d (%s)",
+   PrintFormat("PUNTIKY: příkaz #%I64u se nepodařilo zrušit, retcode %d (%s)",
                ticket, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
    return(false);
   }
@@ -1794,14 +1794,14 @@ bool PlaceStopOrder(SEntryPlan &pl)
 
    const bool ok = pl.isBuy
                    ? g_trade.BuyStop(pl.lots, pl.entry, _Symbol, pl.sl, pl.tp,
-                                     ORDER_TIME_GTC, 0, "SVED BUYSTOP")
+                                     ORDER_TIME_GTC, 0, "PUNTIKY BUYSTOP")
                    : g_trade.SellStop(pl.lots, pl.entry, _Symbol, pl.sl, pl.tp,
-                                      ORDER_TIME_GTC, 0, "SVED SELLSTOP");
+                                      ORDER_TIME_GTC, 0, "PUNTIKY SELLSTOP");
    if(!ok)
      {
       g_lastEvent = StringFormat("%s STOP příkaz selhal, retcode %d",
                                  pl.isBuy ? "BUY" : "SELL", g_trade.ResultRetcode());
-      Print("SVED: ", g_lastEvent, " (", g_trade.ResultRetcodeDescription(), ")");
+      Print("PUNTIKY: ", g_lastEvent, " (", g_trade.ResultRetcodeDescription(), ")");
      }
    return(ok);
   }
@@ -1835,13 +1835,13 @@ void SyncOneDirection(SEntryPlan &pl, const ulong ticket, const double price,
    //--- rusil a zadaval znovu i beze zmeny (2-4 blokujici pozadavky
    //--- kazdych 15 minut), zatimco zmena SL/PT/objemu bez zmeny
    //--- platnosti navrhu se do nej naopak nepromitla vubec.
-   const bool sameVolume = (MathAbs(volume - pl.lots) < SVED_VOLUME_EPS);
+   const bool sameVolume = (MathAbs(volume - pl.lots) < PUNTIKY_VOLUME_EPS);
    if(SamePrice(price, pl.entry) && SamePrice(sl, pl.sl) && SamePrice(tp, pl.tp) && sameVolume)
       return;
 
    if(OrderIsFrozen(pl.isBuy, price))
      {
-      PrintFormat("SVED: příkaz #%I64u je ve freeze zóně brokera, úprava odložena.", ticket);
+      PrintFormat("PUNTIKY: příkaz #%I64u je ve freeze zóně brokera, úprava odložena.", ticket);
       return;
      }
 
@@ -1854,7 +1854,7 @@ void SyncOneDirection(SEntryPlan &pl, const ulong ticket, const double price,
      }
 
    if(!g_trade.OrderModify(ticket, pl.entry, pl.sl, pl.tp, ORDER_TIME_GTC, 0, 0.0))
-      PrintFormat("SVED: úpravu příkazu #%I64u se nepodařilo provést, retcode %d (%s)",
+      PrintFormat("PUNTIKY: úpravu příkazu #%I64u se nepodařilo provést, retcode %d (%s)",
                   ticket, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
   }
 
@@ -1960,7 +1960,7 @@ void AdjustPositionStops(const ulong ticket, const double distance)
       return;
 
    if(!g_trade.PositionModify(ticket, sl, tp))
-      PrintFormat("SVED: úpravu stopů pozice #%I64u se nepodařilo provést, retcode %d (%s)",
+      PrintFormat("PUNTIKY: úpravu stopů pozice #%I64u se nepodařilo provést, retcode %d (%s)",
                   ticket, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
   }
 
@@ -1977,7 +1977,7 @@ bool OpenMarket(SEntryPlan &pl)
       return(false);
      }
 
-   const string comment = "SVED " + (pl.isBuy ? "BUY" : "SELL");
+   const string comment = "PUNTIKY " + (pl.isBuy ? "BUY" : "SELL");
    const bool   ok = pl.isBuy
                      ? g_trade.Buy(pl.lots, _Symbol, 0.0, pl.sl, pl.tp, comment)
                      : g_trade.Sell(pl.lots, _Symbol, 0.0, pl.sl, pl.tp, comment);
@@ -1986,7 +1986,7 @@ bool OpenMarket(SEntryPlan &pl)
      {
       g_lastEvent = StringFormat("Chyba vstupu %d / %d",
                                  g_trade.ResultRetcode(), GetLastError());
-      Print("SVED: ", g_lastEvent);
+      Print("PUNTIKY: ", g_lastEvent);
       return(false);
      }
 
@@ -2000,14 +2000,14 @@ bool OpenMarket(SEntryPlan &pl)
                               DoubleToString(pl.sl, _Digits),
                               DoubleToString(pl.tp, _Digits),
                               pl.distance / _Point,
-                              pl.barrier == SVED_BARRIER_NONE
+                              pl.barrier == PUNTIKY_BARRIER_NONE
                               ? "" : ", zkráceno k " + BarrierText(pl.barrier));
-   Print("SVED: ", g_lastEvent);
+   Print("PUNTIKY: ", g_lastEvent);
    return(true);
   }
 
 //+------------------------------------------------------------------+
-//| Vyhodnoceni prurazu na vstupnim TF (rezim SVED_ENTRY_M1_CLOSE).  |
+//| Vyhodnoceni prurazu na vstupnim TF (PUNTIKY_ENTRY_M1_CLOSE).     |
 //| Pruraz je potvrzen az uzavrenim svicky vstupniho TF za urovni    |
 //| HIGH / LOW svicky TF prurazu. Vstupuje se jen na skutecnem       |
 //| prechodu pres uroven - predchozi svicka musi byt jeste pred ni.  |
@@ -2177,10 +2177,10 @@ bool HueSend(const bool isBuy, const double level, const double dist, const bool
       const int err = GetLastError();
       // 4014 = adresa neni v seznamu povolenych URL v nastaveni terminalu
       if(err == ERR_FUNCTION_NOT_ALLOWED)
-         PrintFormat("SVED: Hue - adresa %s není povolená v Nástroje > Nastavení > "
+         PrintFormat("PUNTIKY: Hue - adresa %s není povolená v Nástroje > Nastavení > "
                      "Expert Advisors > Povolit WebRequest.", InpHueUrl);
       else
-         PrintFormat("SVED: Hue - požadavek na %s selhal, chyba %d", InpHueUrl, err);
+         PrintFormat("PUNTIKY: Hue - požadavek na %s selhal, chyba %d", InpHueUrl, err);
 
       g_lastEvent = (isTest ? "Hue test selhal" : "Hue upozornění selhalo") +
                     " (chyba " + IntegerToString(err) + ")";
@@ -2192,7 +2192,7 @@ bool HueSend(const bool isBuy, const double level, const double dist, const bool
                  : StringFormat("Hue %s: %.0f b k %s (HTTP %d)",
                                 isBuy ? "BUY" : "SELL", dist / _Point,
                                 DoubleToString(level, _Digits), code);
-   Print("SVED: ", g_lastEvent, "  tělo: ", body);
+   Print("PUNTIKY: ", g_lastEvent, "  tělo: ", body);
 
    return(code >= 200 && code < 300);
   }
@@ -2206,7 +2206,7 @@ void HueSendTest()
    const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    const double level = (ask > 0.0) ? ask : iClose(_Symbol, _Period, 0);
 
-   PrintFormat("SVED: Hue - ruční test, cíl %s", InpHueUrl);
+   PrintFormat("PUNTIKY: Hue - ruční test, cíl %s", InpHueUrl);
    HueSend(true, level, 0.0, true);
   }
 
@@ -2216,7 +2216,7 @@ void HueSendTest()
 //+------------------------------------------------------------------+
 void DrawHueTestButton(const int y)
   {
-   const string name = SVED_PREFIX + "BTN_HUETEST";
+   const string name = PUNTIKY_PREFIX + "BTN_HUETEST";
 
    if(!InpHueTestButton)
      {
@@ -2226,7 +2226,7 @@ void DrawHueTestButton(const int y)
 
    // Vyska tlacitka se ridi pismem panelu, aby sedelo k jeho radkum
    const int h = MathMax(InpPanelFontSize * 2 + 4, 20);
-   SvedButton(name, InpPanelX, y, 150, h, "TEST Hue",
+   PuntikyButton(name, InpPanelX, y, 150, h, "TEST Hue",
               InpColorPanel, C'48,48,48', InpPanelFontSize, "Consolas",
               "Odešle testovací upozornění na " + InpHueUrl);
   }
@@ -2273,7 +2273,7 @@ string PlanToText(SEntryPlan &pl)
                        pl.distance / _Point,
                        pl.lots,
                        pl.channelIdx + 1,
-                       pl.barrier == SVED_BARRIER_NONE
+                       pl.barrier == PUNTIKY_BARRIER_NONE
                        ? "" : "  [zkráceno k " + BarrierText(pl.barrier) + "]"));
   }
 
@@ -2316,17 +2316,17 @@ void UpdatePanel()
       // Uklid staci jednou, ne na kazdem volani
       if(g_panelShown != 0)
         {
-         SvedDeleteObjects("PNL_");
+         PuntikyDeleteObjects("PNL_");
          g_panelShown = 0;
         }
       DrawHueTestButton(InpPanelY);
       return;
      }
 
-   string lines[SVED_PANEL_MAX_LINES];
+   string lines[PUNTIKY_PANEL_MAX_LINES];
    int    n = 0;
 
-   lines[n++] = "SVED CHANNEL BREAKOUT  |  " + _Symbol + "  |  účet " +
+   lines[n++] = "PUNTIKY CHANNEL BREAKOUT  |  " + _Symbol + "  |  účet " +
                 IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
    lines[n++] = StringFormat("kanály %s   průraz %s   vstup %s   |  max %d b, SL:PT 1:1",
                              EnumToString(InpChannelTF), EnumToString(InpBreakoutTF),
@@ -2340,7 +2340,7 @@ void UpdatePanel()
      {
       lines[n++] = StringFormat("kanály: %d", channels);
       const datetime tNow = TimeCurrent();
-      for(int i = 0; i < channels && n < SVED_PANEL_MAX_CH; i++)
+      for(int i = 0; i < channels && n < PUNTIKY_PANEL_MAX_CH; i++)
          lines[n++] = StringFormat("  kanál %d (měřítko %d, %s)  šířka %.0f b  dotyků %d  body po C: %d  uvnitř %.0f%%  hrany %s / %s",
                                    i + 1,
                                    g_channels[i].scaleIdx,
@@ -2364,7 +2364,7 @@ void UpdatePanel()
    if(InpUseRelief)
       lines[n++] = StringFormat("reliéfní přímky %s: %d  (režim: %s)",
                                 EnumToString(InpEntryTF), ReliefCount(),
-                                InpReliefMode == SVED_RELIEF_SKIP ? "přeskočit vstup"
+                                InpReliefMode == PUNTIKY_RELIEF_SKIP ? "přeskočit vstup"
                                                                   : "zkrátit PT");
 
    //--- Stav upozorneni na zarovky Hue
@@ -2379,7 +2379,7 @@ void UpdatePanel()
    lines[n++] = PlanToText(g_planSell);
    lines[n++] = PositionText();
 
-   if(g_lastEvent != "" && n < SVED_PANEL_MAX_LINES)
+   if(g_lastEvent != "" && n < PUNTIKY_PANEL_MAX_LINES)
       lines[n++] = "poslední: " + g_lastEvent;
 
    //--- Umisteni panelu. Kdyz je zapnuty one-click SELL/BUY panel MT5,
@@ -2402,7 +2402,7 @@ void UpdatePanel()
      {
       if(!moved && i < g_panelShown && lines[i] == g_panelText[i])
          continue;
-      SvedLabel(SVED_PREFIX + "PNL_" + IntegerToString(i),
+      PuntikyLabel(PUNTIKY_PREFIX + "PNL_" + IntegerToString(i),
                 InpPanelX, panelY + i * lineH,
                 lines[i], InpColorPanel, InpPanelFontSize, "Consolas");
       g_panelText[i] = lines[i];
@@ -2412,13 +2412,13 @@ void UpdatePanel()
    //--- Radky, ktere po zkraceni panelu zbyly
    if(n < g_panelShown)
      {
-      SvedDeleteIndexed("PNL_", n, g_panelShown);
+      PuntikyDeleteIndexed("PNL_", n, g_panelShown);
       changed = true;
      }
    g_panelShown = n;
 
    //--- Tlacitko testu se kresli pod posledni radek panelu
-   DrawHueTestButton(panelY + n * lineH + SVED_PANEL_BTN_GAP);
+   DrawHueTestButton(panelY + n * lineH + PUNTIKY_PANEL_BTN_GAP);
 
    if(changed)
       ChartRedraw();

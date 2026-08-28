@@ -1,6 +1,6 @@
-# Sved Channel Breakout — strategie pro MetaTrader 5
+# Puntiky Channel Breakout — strategie pro MetaTrader 5
 
-Expert Advisor pro MT5 (verze 1.12), který detekuje ABCD kanály na M15, kreslí je
+Expert Advisor pro MT5 (verze 1.13), který detekuje ABCD kanály na M15, kreslí je
 do grafu a obchoduje průrazy swingových H1 úrovní uvnitř těchto kanálů. Vstup se
 vyhodnocuje na M1. Do grafu vykresluje **pouze kanály, reliéfní přímky
 a informace o vstupu** — žádné jiné indikátory ani pomocnou grafiku.
@@ -108,7 +108,7 @@ Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
   neproražený swing nenajde (v silném trendu jsou všechny starší vrcholy
   proražené), druhá strana se přesto přepočítá.
 - Na jedné swingové úrovni se obchoduje **nejvýše jednou**. Spotřebovaná úroveň
-  se ukládá do globální proměnné terminálu (`SVED_<symbol>_<magic>_BUY` / `_SELL`),
+  se ukládá do globální proměnné terminálu (`PUNTIKY_<symbol>_<magic>_BUY` / `_SELL`),
   takže to přežije i restart terminálu — dřív se po restartu tatáž úroveň
   obchodovala podruhé.
 - Směr je **zablokovaný**, dokud cena nebyla na správné straně úrovně (pod HIGH pro
@@ -123,7 +123,7 @@ Průraz musí nastat **uvnitř** některého z detekovaných kanálů (tolerance
 `InpInsideTolFrac` × šířka; při více kanálech se bere ten s nejlepším skóre),
 jinak se signál zahodí. Režim vstupu určuje `InpEntryMode`:
 
-- **`SVED_ENTRY_PENDING` (výchozí)**: BuyStop a SellStop se umístí přímo na
+- **`PUNTIKY_ENTRY_PENDING` (výchozí)**: BuyStop a SellStop se umístí přímo na
   swingové úrovně (± `InpBreakoutBuffer`) se SL a PT z návrhu vstupu, platnost GTC.
   Zadají se hned po nahození experta. Dál se **nerušily a nezadávaly znovu**, ale
   srovnávají se s návrhem: expert najde svůj příkaz podle magic a typu a sáhne na
@@ -140,7 +140,7 @@ jinak se signál zahodí. Režim vstupu určuje `InpEntryMode`:
   jinak je návrh označený jako neproveditelný a důvod je vidět v panelu.
   Po otevření pozice se zbylý příkaz zruší (OCO), a to až při dosažení
   `InpMaxPositions` — s `InpMaxPositions = 2` tedy může běžet i druhý směr.
-- **`SVED_ENTRY_M1_CLOSE`**: čeká na uzavření M1 svíčky za úrovní (o
+- **`PUNTIKY_ENTRY_M1_CLOSE`**: čeká na uzavření M1 svíčky za úrovní (o
   `InpBreakoutBuffer` bodů) a vstupuje tržním příkazem — v terminálu tedy do
   vstupu není vidět žádný příkaz. Vstupuje se jen na **skutečném přechodu** přes
   úroveň (předchozí M1 close musí být ještě na druhé straně), aby expert
@@ -174,7 +174,7 @@ Společné pro oba režimy:
 - Při odebrání experta z grafu se jeho pending příkazy zruší (jinak by ležely bez
   dozoru a jejich vyplnění by otevřelo neřízenou pozici); při změně parametrů nebo
   rekompilaci zůstávají a jen se srovnají s novým návrhem. Po přepnutí do režimu
-  `SVED_ENTRY_M1_CLOSE` se osiřelé příkazy zruší při startu.
+  `PUNTIKY_ENTRY_M1_CLOSE` se osiřelé příkazy zruší při startu.
 
 ### Reliéfní přímky (timeframe M1)
 
@@ -228,8 +228,8 @@ Když leží přímka ve směru obchodu **blíž než plánovaný PT**, rozhoduj
 
 | Režim | Chování |
 |---|---|
-| `SVED_RELIEF_SKIP` (výchozí) | vstup se přeskočí, důvod se vypíše v panelu |
-| `SVED_RELIEF_SHORTEN` | PT se zkrátí před přímku (mínus `InpReliefBuffer`), SL stejně — RRR zůstává 1:1 |
+| `PUNTIKY_RELIEF_SKIP` (výchozí) | vstup se přeskočí, důvod se vypíše v panelu |
+| `PUNTIKY_RELIEF_SHORTEN` | PT se zkrátí před přímku (mínus `InpReliefBuffer`), SL stejně — RRR zůstává 1:1 |
 
 Přímky se přepočítávají s každou novou M1 svíčkou a kreslí se do grafu tečkovaně
 (`InpColorRelief`), prodloužené o `InpReliefForwardBars` svíček doprava.
@@ -252,8 +252,8 @@ Přímky se přepočítávají s každou novou M1 svíčkou a kreslí se do graf
   projekce o `InpEdgeProjBars` svíček dopředu.
 - Když je místa méně než `InpMinEntryPoints`, nebo délka nepřesahuje stop-level
   brokera, obchod se neotevře a důvod se zobrazí v panelu.
-- Objem: výchozí je dopočet z rizika (`InpLotMode = SVED_LOT_RISK`: ztráta na SL
-  = `InpRiskPercent` % zůstatku, výchozí 1 %) nebo pevný lot (`SVED_LOT_FIXED`, `InpFixedLot`).
+- Objem: výchozí je dopočet z rizika (`InpLotMode = PUNTIKY_LOT_RISK`: ztráta na SL
+  = `InpRiskPercent` % zůstatku, výchozí 1 %) nebo pevný lot (`PUNTIKY_LOT_FIXED`, `InpFixedLot`).
   Lot se zaokrouhlí dolů na krok objemu (s tolerancí proti chybě dělení
   v plovoucí řadové čárce — `0.29 / 0.01` vyjde `28.999…` a bez ní by se
   obchodovalo 0.28 místo zadaných 0.29), normalizuje na počet desetinných míst
@@ -301,7 +301,7 @@ na správné straně úrovně) / `obchodován` / `nelze (důvod)`. Možné důvo
 
 Popisky sdílené opory se slučují (`E1 E3`), panel uhýbá one-click SELL/BUY panelu
 a obnovuje se každou sekundu i bez ticků. Hlavní kanál (nejvyšší skóre) se kreslí
-silnější čarou než ostatní. Všechny objekty mají prefix `SVED_`, jsou nevybíratelné
+silnější čarou než ostatní. Všechny objekty mají prefix `PUNTIKY_`, jsou nevybíratelné
 a mají tooltip s popisem; při odebrání experta se smažou jen tyto objekty.
 
 ### Upozornění Hue na blížící se vstup
@@ -365,7 +365,7 @@ Po nasazení v terminálu:
 
 1. **Nástroje → Volby → Expert Advisors** → povolit algoritmické obchodování.
 2. Otevřít graf `XAUUSD` (libovolný timeframe, kanály se kreslí podle `InpChannelTF`).
-3. Přetáhnout `Experts\Sved\SvedChannelBreakout` na graf.
+3. Přetáhnout `Experts\Puntiky\PuntikyChannelBreakout` na graf.
 4. Zkontrolovat řádek v Expert logu s přepočtem bodů na cenu — u zlata se počet
    desetinných míst mezi brokery liší. Při `digits = 3` je potřeba nastavit
    `InpMaxEntryPoints = 3000`, aby délka vstupu odpovídala 3,00 USD.
@@ -374,12 +374,12 @@ Po nasazení v terminálu:
 
 ```
 MQL5/
-  Experts/Sved/SvedChannelBreakout.mq5   hlavní EA — vstupy, úrovně průrazu, obchodování, panel
-  Include/Sved/SvedTypes.mqh             datové struktury a výčtové typy
-  Include/Sved/SvedSwings.mqh            detekce swingových bodů (zig-zag)
-  Include/Sved/SvedChannels.mqh          stavba, hodnocení a výběr kanálů, hledání hran
-  Include/Sved/SvedRelief.mqh            reliéfní přímky na vstupním TF
-  Include/Sved/SvedDraw.mqh              vykreslování kanálů, popisků, úrovní a panelu
+  Experts/Puntiky/PuntikyChannelBreakout.mq5   hlavní EA — vstupy, úrovně průrazu, obchodování, panel
+  Include/Puntiky/PuntikyTypes.mqh             datové struktury a výčtové typy
+  Include/Puntiky/PuntikySwings.mqh            detekce swingových bodů (zig-zag)
+  Include/Puntiky/PuntikyChannels.mqh          stavba, hodnocení a výběr kanálů, hledání hran
+  Include/Puntiky/PuntikyRelief.mqh            reliéfní přímky na vstupním TF
+  Include/Puntiky/PuntikyDraw.mqh              vykreslování kanálů, popisků, úrovní a panelu
 scripts/deploy.cmd                       spouštěč (obchází ExecutionPolicy)
 scripts/deploy.ps1                       kopie do terminálu + kompilace
 ```
@@ -511,8 +511,8 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpDiagnostics` | true | výpis detekce kanálů a reliéfu do Expert logu |
 | `InpShotOnRequest` | true | snímek grafu na vyžádání (viz níže) |
 | `InpShotEveryBars` | 0 | snímek každých N svíček TF kanálu (0 = vypnuto) |
-| `InpShotFileName` | SvedShot.png | soubor snímku v `MQL5\Files` |
-| `InpShotRequestFile` | SvedShot.request | soubor požadavku o snímek |
+| `InpShotFileName` | PuntikyShot.png | soubor snímku v `MQL5\Files` |
+| `InpShotRequestFile` | PuntikyShot.request | soubor požadavku o snímek |
 
 Při zapnuté diagnostice se s každým přepočtem kanálů (nová M15 svíčka) zapíše
 do Expert logu, kolik kandidátů padlo na kterém filtru (bod B, délka, stáří,
@@ -521,8 +521,8 @@ vybraných kanálů a totéž pro reliéfní přímky. Z rozložení zamítnutí
 vidět, který práh je úzkým hrdlem.
 
 Snímek grafu si lze vyžádat kdykoliv — stačí v `MQL5\Files` vytvořit prázdný
-soubor `SvedShot.request`. Expert ho do sekundy zpracuje (kontrola běží
-v timeru), uloží `MQL5\Files\SvedShot.png` a požadavek smaže.
+soubor `PuntikyShot.request`. Expert ho do sekundy zpracuje (kontrola běží
+v timeru), uloží `MQL5\Files\PuntikyShot.png` a požadavek smaže.
 
 ## Poznámky a omezení
 
@@ -557,5 +557,14 @@ v timeru), uloží `MQL5\Files\SvedShot.png` a požadavek smaže.
 - Panel se překresluje z timeru (jednou za sekundu) a jen v řádcích, jejichž text
   se skutečně změnil; grafické objekty se aktualizují na místě a maže se jen to,
   co po zmenšení počtu kanálů či přímek zbylo.
+- `datetime − datetime` je v MQL5 **znaménkový** rozdíl (typ se chová jako `long`)
+  — ověřeno kompilační sondou v MetaEditoru. Projekce `BaseAt()` a `ValueAt()` do
+  časů *před* první oporou tedy nepřetéká a nepotřebuje ošetřit; není to chyba,
+  kterou by bylo potřeba „opravovat“.
+- Strategie se ve verzi 1.13 přejmenovala ze `Sved*` na `Puntiky*` (soubory,
+  adresáře, identifikátory, prefix objektů v grafu i jména globálních proměnných
+  terminálu). Po starší verzi můžou v terminálu zůstat globální proměnné
+  `SVED_…` — jsou neškodné, jen se v nich ztratí paměť „na téhle úrovni už bylo
+  obchodováno“. Objekty `SVED_*` v grafu smaže starý expert sám při odebrání.
 - Strategie nemá časový filtr obchodních hodin ani filtr zpráv — pokud jsou
   potřeba, je to samostatné rozšíření.
