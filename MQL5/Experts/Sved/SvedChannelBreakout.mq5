@@ -12,7 +12,7 @@
 //|   - do grafu se kresli pouze kanaly a informace o vstupu         |
 //+------------------------------------------------------------------+
 #property copyright "Sved"
-#property version   "1.10"
+#property version   "1.11"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -129,6 +129,15 @@ input int             InpPanelOneClickShift = 130;        // Posun panelu pod SE
 input int             InpPointFontSize    = 10;           // Velikost pisma popisku opor
 input double          InpLabelMergeATR    = 0.5;          // Slouceni blizkych popisku (nasobek ATR)
 
+//--- Upozorneni na priblizeni k urovni vstupu (zarovky Philips Hue)
+input group "=== Upozorneni Hue ==="
+input bool            InpHueEnabled       = true;          // Blikat zarovkou pri priblizeni k urovni vstupu
+input string          InpHueUrl           = "http://192.168.0.157:8082/hue"; // URL sluzby Hue (vcetne portu)
+input int             InpHueNearPoints    = 500;           // Vzdalenost od urovne vstupu pro upozorneni (body)
+input int             InpHueRepeatMinutes = 0;             // Opakovat upozorneni po N minutach (0 = jen jednou)
+input int             InpHueTimeout       = 1000;          // Timeout HTTP pozadavku (ms)
+input bool            InpHueTestButton    = true;          // Zobrazit tlacitko pro test upozorneni
+
 //--- Diagnostika a ladeni
 input group "=== Diagnostika ==="
 input bool            InpDiagnostics      = true;         // Vypisovat diagnostiku detekce do logu
@@ -169,6 +178,12 @@ SEntryPlan    g_planSell;              // aktualni navrh prodeje
 string        g_lastEvent = "";        // posledni udalost pro panel
 bool          g_tradingAllowed = true; // vysledek kontroly uctu
 
+//--- Upozorneni Hue - pamet uz odeslanych upozorneni pro oba smery
+double        g_hueBuyLevel  = 0.0;    // uroven, pro kterou uz slo BUY upozorneni
+double        g_hueSellLevel = 0.0;    // uroven, pro kterou uz slo SELL upozorneni
+datetime      g_hueBuyTime   = 0;      // cas posledniho BUY upozorneni
+datetime      g_hueSellTime  = 0;      // cas posledniho SELL upozorneni
+
 //+------------------------------------------------------------------+
 //| Inicializace experta                                             |
 //+------------------------------------------------------------------+
@@ -206,6 +221,13 @@ int OnInit()
                InpMaxEntryPoints, DoubleToString(InpMaxEntryPoints * _Point, _Digits));
 
    EventSetTimer(1);
+
+   // Bez povoleni adresy v nastaveni terminalu skonci WebRequest chybou 4014,
+   // proto se URL vypise hned pri startu
+   if(InpHueEnabled)
+      PrintFormat("SVED: upozornění Hue zapnuto - %d b od úrovně vstupu, %s "
+                  "(adresu povol v Nástroje > Nastavení > Expert Advisors > Povolit WebRequest)",
+                  InpHueNearPoints, InpHueUrl);
 
    //--- Prvni vypocet hned pri startu, aby byl graf ihned popsany
    RecalcChannels();
@@ -299,6 +321,9 @@ void OnTick()
       ManagePendingOrders();
      }
 
+   //--- 6) Priblizeni k urovni vstupu rozblika zarovky Hue
+   CheckHueAlerts();
+
    UpdatePanel();
   }
 
@@ -355,6 +380,26 @@ void OnTimer()
   {
    UpdatePanel();
    CheckScreenshotRequest();
+  }
+
+//+------------------------------------------------------------------+
+//| Udalosti grafu - obsluha tlacitka pro test upozorneni Hue.       |
+//| MT5 necha tlacitko po kliknuti zamacknute, proto se stav vraci   |
+//| do puvodni polohy rucne.                                         |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id, const long &lparam, const double &dparam,
+                  const string &sparam)
+  {
+   if(id != CHARTEVENT_OBJECT_CLICK)
+      return;
+   if(sparam != SVED_PREFIX + "BTN_HUETEST")
+      return;
+
+   ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+   ChartRedraw();
+
+   HueSendTest();
+   UpdatePanel();
   }
 
 //+------------------------------------------------------------------+
@@ -1304,6 +1349,168 @@ void ManagePendingOrders()
   }
 
 //+------------------------------------------------------------------+
+//| Hlida, jestli se cena priblizila k urovni planovaneho vstupu,    |
+//| a rozblika zarovky Hue. Sleduji se jen platne navrhy - k         |
+//| neproveditelnemu vstupu neni proc upozornovat.                   |
+//+------------------------------------------------------------------+
+void CheckHueAlerts()
+  {
+   if(!InpHueEnabled || InpHueUrl == "" || InpHueNearPoints <= 0)
+      return;
+
+   // V testeru ani pri optimalizaci WebRequest nefunguje
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION))
+      return;
+
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(ask <= 0.0 || bid <= 0.0)
+      return;
+
+   const double nearDist = InpHueNearPoints * _Point;
+
+   //--- BUY: k urovni se cena blizi zespodu
+   if(InpAllowBuy && g_planBuy.valid)
+      HueCheckDirection(true, g_planBuy.entry, g_planBuy.entry - ask, nearDist,
+                        g_hueBuyLevel, g_hueBuyTime);
+   else
+      g_hueBuyLevel = 0.0;    // navrh zmizel, priznak se uvolni
+
+   //--- SELL: k urovni se cena blizi shora
+   if(InpAllowSell && g_planSell.valid)
+      HueCheckDirection(false, g_planSell.entry, bid - g_planSell.entry, nearDist,
+                        g_hueSellLevel, g_hueSellTime);
+   else
+      g_hueSellLevel = 0.0;
+  }
+
+//+------------------------------------------------------------------+
+//| Vyhodnoti jeden smer a pripadne posle upozorneni.                |
+//|  isBuy     - smer navrhu                                         |
+//|  level     - cena planovaneho vstupu                             |
+//|  dist      - vzdalenost ceny k urovni (zaporna = uz je za ni)    |
+//|  nearDist  - prah upozorneni v cene                              |
+//|  sentLevel - uroven, pro kterou uz upozorneni odeslo (stav)      |
+//|  sentTime  - cas posledniho odeslani (stav)                      |
+//+------------------------------------------------------------------+
+void HueCheckDirection(const bool isBuy, const double level, const double dist,
+                       const double nearDist, double &sentLevel, datetime &sentTime)
+  {
+   // Priznak se uvolni az za hysterezi 25 % nad prahem - pri kolisani
+   // presne na hranici pasma by se jinak blikalo porad dokola
+   if(dist < 0.0 || dist > nearDist * 1.25)
+     {
+      sentLevel = 0.0;
+      return;
+     }
+
+   // Mezipasmo hystereze: uz mimo prah, ale priznak se jeste drzi
+   if(dist > nearDist)
+      return;
+
+   // Na stejnou uroven se hlasi jen jednou, dokud neni zapnute opakovani
+   if(sentLevel > 0.0 && MathAbs(sentLevel - level) <= _Point)
+     {
+      if(InpHueRepeatMinutes <= 0)
+         return;
+      if(TimeCurrent() - sentTime < InpHueRepeatMinutes * 60)
+         return;
+     }
+
+   // Priznak se nastavi i pri neuspechu, aby se pri vypadku sluzby
+   // neposilal pozadavek na kazdem ticku
+   sentLevel = level;
+   sentTime  = TimeCurrent();
+   HueSend(isBuy, level, dist);
+  }
+
+//+------------------------------------------------------------------+
+//| Odesle POST pozadavek na sluzbu Hue.                             |
+//| Telo ma stejny tvar jako rucni volani curl:                      |
+//|   "BTCUSD Greater Than 9001" / "BTCUSD Less Than 9001"           |
+//| Vraci true, kdyz sluzba odpovedela HTTP 2xx.                     |
+//+------------------------------------------------------------------+
+bool HueSend(const bool isBuy, const double level, const double dist, const bool isTest = false)
+  {
+   const string body = StringFormat("%s %s %s", _Symbol,
+                                    isBuy ? "Greater Than" : "Less Than",
+                                    DoubleToString(level, _Digits));
+
+   // Telo jde jako cisty text v UTF-8; koncova nula do pozadavku nepatri
+   char data[];
+   int len = StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8) - 1;
+   if(len < 0)
+      len = 0;
+   ArrayResize(data, len);
+
+   char   result[];
+   string resultHeaders = "";
+   const string headers = "Content-Type: text/plain; charset=utf-8\r\n";
+
+   ResetLastError();
+   const int code = WebRequest("POST", InpHueUrl, headers, InpHueTimeout,
+                               data, result, resultHeaders);
+
+   if(code == -1)
+     {
+      const int err = GetLastError();
+      // 4014 = adresa neni v seznamu povolenych URL v nastaveni terminalu
+      if(err == ERR_FUNCTION_NOT_ALLOWED)
+         PrintFormat("SVED: Hue - adresa %s není povolená v Nástroje > Nastavení > "
+                     "Expert Advisors > Povolit WebRequest.", InpHueUrl);
+      else
+         PrintFormat("SVED: Hue - požadavek na %s selhal, chyba %d", InpHueUrl, err);
+
+      g_lastEvent = (isTest ? "Hue test selhal" : "Hue upozornění selhalo") +
+                    " (chyba " + IntegerToString(err) + ")";
+      return(false);
+     }
+
+   g_lastEvent = isTest
+                 ? StringFormat("Hue test: HTTP %d", code)
+                 : StringFormat("Hue %s: %.0f b k %s (HTTP %d)",
+                                isBuy ? "BUY" : "SELL", dist / _Point,
+                                DoubleToString(level, _Digits), code);
+   Print("SVED: ", g_lastEvent, "  tělo: ", body);
+
+   return(code >= 200 && code < 300);
+  }
+
+//+------------------------------------------------------------------+
+//| Rucni test upozorneni. Posle pozadavek s aktualni cenou, takze   |
+//| jde overit sluzbu i povoleni URL bez cekani na skutecny pruraz.  |
+//+------------------------------------------------------------------+
+void HueSendTest()
+  {
+   const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   const double level = (ask > 0.0) ? ask : iClose(_Symbol, _Period, 0);
+
+   PrintFormat("SVED: Hue - ruční test, cíl %s", InpHueUrl);
+   HueSend(true, level, 0.0, true);
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresli tlacitko pro rucni test upozorneni Hue.                 |
+//|  y - svisle odsazeni v pixelech (pod poslednim radkem panelu)    |
+//+------------------------------------------------------------------+
+void DrawHueTestButton(const int y)
+  {
+   const string name = SVED_PREFIX + "BTN_HUETEST";
+
+   if(!InpHueTestButton)
+     {
+      ObjectDelete(0, name);
+      return;
+     }
+
+   // Vyska tlacitka se ridi pismem panelu, aby sedelo k jeho radkum
+   const int h = MathMax(InpPanelFontSize * 2 + 4, 20);
+   SvedButton(name, InpPanelX, y, 150, h, "TEST Hue",
+              InpColorPanel, C'48,48,48', InpPanelFontSize, "Consolas",
+              "Odešle testovací upozornění na " + InpHueUrl);
+  }
+
+//+------------------------------------------------------------------+
 //| Vykresleni urovni pruzazu (HIGH / LOW svicky TF pruzazu)         |
 //+------------------------------------------------------------------+
 void DrawBreakoutLevels()
@@ -1397,10 +1604,11 @@ void UpdatePanel()
    if(!InpShowPanel)
      {
       SvedDeleteObjects("PNL_");
+      DrawHueTestButton(InpPanelY);
       return;
      }
 
-   string lines[20];
+   string lines[24];
    int    n = 0;
 
    lines[n++] = "SVED CHANNEL BREAKOUT  |  " + _Symbol + "  |  účet " +
@@ -1443,6 +1651,13 @@ void UpdatePanel()
                                 InpReliefMode == SVED_RELIEF_SKIP ? "přeskočit vstup"
                                                                  : "zkrátit PT");
 
+   //--- Stav upozorneni na zarovky Hue
+   if(InpHueEnabled)
+      lines[n++] = StringFormat("Hue: upozornění %d b od úrovně vstupu  (BUY %s / SELL %s)",
+                                InpHueNearPoints,
+                                g_hueBuyLevel  > 0.0 ? "posláno" : "-",
+                                g_hueSellLevel > 0.0 ? "posláno" : "-");
+
    lines[n++] = "stav: " + StateText(true, g_planBuy) + " / " + StateText(false, g_planSell);
    lines[n++] = PlanToText(g_planBuy);
    lines[n++] = PlanToText(g_planSell);
@@ -1450,7 +1665,7 @@ void UpdatePanel()
    //--- Stav pozice
    lines[n++] = PositionText();
 
-   if(g_lastEvent != "" && n < 20)
+   if(g_lastEvent != "" && n < 24)
       lines[n++] = "poslední: " + g_lastEvent;
 
    //--- Vykresleni radku panelu a uklid prebytecnych
@@ -1470,8 +1685,11 @@ void UpdatePanel()
                 InpPanelX, panelY + i * lineH,
                 lines[i], InpColorPanel, InpPanelFontSize, "Consolas");
 
-   for(int i = n; i < 20; i++)
+   for(int i = n; i < 24; i++)
       ObjectDelete(0, SVED_PREFIX + "PNL_" + IntegerToString(i));
+
+   //--- Tlacitko testu se kresli pod posledni radek panelu
+   DrawHueTestButton(panelY + n * lineH + 6);
 
    ChartRedraw();
   }

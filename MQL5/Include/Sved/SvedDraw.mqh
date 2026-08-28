@@ -109,6 +109,42 @@ struct SChannelLabel
   };
 
 //+------------------------------------------------------------------+
+//| Vytvori nebo aktualizuje tlacitko ukotvene k rohu grafu.         |
+//|  x, y     - odsazeni od leveho horniho rohu v pixelech           |
+//|  w, h     - rozmery tlacitka v pixelech                          |
+//|  text     - popisek tlacitka                                     |
+//|  clr, bg  - barva textu a pozadi                                 |
+//| Tlacitko se po kliknuti vraci do nestisknuteho stavu az v        |
+//| obsluze udalosti - MT5 ho jinak necha "zamacknute".              |
+//+------------------------------------------------------------------+
+void SvedButton(const string name, const int x, const int y, const int w, const int h,
+                const string text, const color clr, const color bg,
+                const int fontSize, const string font, const string tooltip)
+  {
+   if(ObjectFind(0, name) < 0)
+     {
+      ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_STATE, false);
+     }
+
+   ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
+   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetString(0, name, OBJPROP_FONT, font);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
+  }
+
+//+------------------------------------------------------------------+
 //| Vykresli jeden kanal: LOW usecku a HIGH usecku.                  |
 //| Popisky opor se kresli zvlast pres SvedDrawLabels.               |
 //|  idx  - poradi kanalu (0 = hlavni, vyssi = mene vyznamny)        |

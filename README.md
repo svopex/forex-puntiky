@@ -234,12 +234,55 @@ na správné straně úrovně) / `obchodován` / `nelze (důvod)`. Možné důvo
 | Čárkované čáry (`InpColorBreak`, Goldenrod) | úrovně průrazu; čára začíná u swingové svíčky, ze které pochází |
 | Tečkované čáry (`InpColorEntry` / `InpColorSL` / `InpColorTP`) | plánovaný vstup, SL a PT pro oba směry, s popisky `SL` / `PT` |
 | Tečkované čáry (`InpColorRelief`, MediumOrchid) | reliéfní přímky z hlavních M1 swingů |
-| Panel vlevo nahoře | hlavička, přehled kanálů, úrovně průrazu, reliéf, stav směrů, návrhy vstupu, pozice / pending, poslední událost |
+| Panel vlevo nahoře | hlavička, přehled kanálů, úrovně průrazu, reliéf, stav upozornění Hue, stav směrů, návrhy vstupu, pozice / pending, poslední událost |
 
 Popisky sdílené opory se slučují (`E1 E3`), panel uhýbá one-click SELL/BUY panelu
 a obnovuje se každou sekundu i bez ticků. Hlavní kanál (nejvyšší skóre) se kreslí
 silnější čarou než ostatní. Všechny objekty mají prefix `SVED_`, jsou nevybíratelné
 a mají tooltip s popisem; při odebrání experta se smažou jen tyto objekty.
+
+### Upozornění Hue na blížící se vstup
+
+Když se cena přiblíží k úrovni plánovaného vstupu na `InpHueNearPoints` bodů
+(výchozí 500), expert pošle POST požadavek na `InpHueUrl` a rozbliká tím žárovky
+Philips Hue. Odpovídá to ručnímu volání:
+
+```
+curl -H "Content-Type: text/plain; charset=utf-8" -d "BTCUSD Greater Than 9001" -X POST "http://192.168.0.157:8082/hue"
+```
+
+Tělo požadavku se skládá automaticky ze symbolu, směru a ceny vstupu —
+`<symbol> Greater Than <cena>` pro BUY (cena se k úrovni blíží zespodu),
+`<symbol> Less Than <cena>` pro SELL.
+
+- Hlídají se jen **platné návrhy** vstupu. Pokud je směr zamítnutý (úroveň už
+  proražená, v cestě reliéfní přímka, málo místa k hraně …), upozornění nechodí —
+  není k čemu zvát.
+- Na jednu úroveň se hlásí **jednou**. Nová úroveň (nový H1 swing) upozornění
+  odblokuje; opakování na stejné úrovni lze zapnout přes `InpHueRepeatMinutes`.
+- Odchod z pásma uvolní příznak až za hysterezí 25 % nad prahem, aby se při
+  kolísání přesně na hranici neblikalo pořád dokola.
+- Stav upozornění je vidět v panelu na řádku `Hue:` a odeslání se loguje do
+  Expert logu i s tělem požadavku.
+
+**Nutné povolení v terminálu:** Nástroje → Nastavení → Expert Advisors →
+*Povolit WebRequest pro uvedené URL* a přidat `http://192.168.0.157:8082`.
+Bez toho volání skončí chybou 4014, což expert v logu jednorázově vypíše.
+V testeru strategie `WebRequest` nefunguje, upozornění se tam přeskakuje.
+
+Pod panelem je tlačítko **`TEST Hue`** (`InpHueTestButton`) — kliknutím se pošle
+testovací požadavek s aktuální cenou Ask, takže jde ověřit spojení i povolení URL
+bez čekání na skutečný průraz. Výsledek (`Hue test: HTTP 200`, nebo chyba) se
+objeví v panelu na řádku `poslední:` a v Expert logu.
+
+Pokud URL nejde přidat přes GUI, použij:
+
+```
+scripts\allow-webrequest.ps1
+```
+
+Skript zapíše adresu přímo do `config\common.ini` terminálu. **Terminál musí být
+zavřený** — MT5 si soubor při ukončení přepisuje, takže by změnu zahodil.
 
 ## Instalace
 
@@ -387,6 +430,16 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpPanelOneClickShift` | 130 | posun panelu pod SELL/BUY okno MT5 |
 | `InpPointFontSize` | 10 | velikost písma popisků opor |
 | `InpLabelMergeATR` | 0.5 | sloučení blízkých popisků (násobek ATR) |
+
+### Upozornění Hue
+| Parametr | Výchozí | Význam |
+|---|---|---|
+| `InpHueEnabled` | true | blikat žárovkou při přiblížení k úrovni vstupu |
+| `InpHueUrl` | http://192.168.0.157:8082/hue | URL služby Hue včetně portu |
+| `InpHueNearPoints` | 500 | vzdálenost od úrovně vstupu pro upozornění (body) |
+| `InpHueRepeatMinutes` | 0 | opakovat upozornění po N minutách (0 = jen jednou) |
+| `InpHueTimeout` | 1000 | timeout HTTP požadavku (ms) |
+| `InpHueTestButton` | true | zobrazit tlačítko `TEST Hue` pod panelem |
 
 ### Diagnostika
 | Parametr | Výchozí | Význam |
