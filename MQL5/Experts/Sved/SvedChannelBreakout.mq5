@@ -99,9 +99,9 @@ input int             InpReliefForwardBars = 120;         // Prodlouzeni primek 
 
 //--- Rizeni objemu
 input group "=== Objem ==="
-input ENUM_SVED_LOT   InpLotMode          = SVED_LOT_FIXED; // Rezim vypoctu objemu
+input ENUM_SVED_LOT   InpLotMode          = SVED_LOT_RISK;  // Rezim vypoctu objemu (vychozi: dopocet z rizika)
 input double          InpFixedLot         = 0.10;         // Pevny lot
-input double          InpRiskPercent      = 0.5;          // Riziko na obchod (% uctu)
+input double          InpRiskPercent      = 1.0;          // Riziko na obchod (% uctu)
 
 //--- Zobrazeni
 input group "=== Zobrazeni ==="

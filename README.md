@@ -201,8 +201,8 @@ Přímky se přepočítávají s každou novou M1 svíčkou a kreslí se do graf
   projekce o `InpEdgeProjBars` svíček dopředu.
 - Když je místa méně než `InpMinEntryPoints`, nebo délka nepřesahuje stop-level
   brokera, obchod se neotevře a důvod se zobrazí v panelu.
-- Objem: pevný lot (`InpLotMode = SVED_LOT_FIXED`, `InpFixedLot`) nebo dopočet
-  z rizika (`SVED_LOT_RISK`: ztráta na SL = `InpRiskPercent` % zůstatku).
+- Objem: výchozí je dopočet z rizika (`InpLotMode = SVED_LOT_RISK`: ztráta na SL
+  = `InpRiskPercent` % zůstatku, výchozí 1 %) nebo pevný lot (`SVED_LOT_FIXED`, `InpFixedLot`).
   Lot se zaokrouhlí dolů na krok objemu a ořízne do rozsahu symbolu.
 
 ### Stavy a důvody zamítnutí v panelu
@@ -361,9 +361,9 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 ### Objem
 | Parametr | Výchozí | Význam |
 |---|---|---|
-| `InpLotMode` | FIXED | pevný lot / dopočet z rizika |
+| `InpLotMode` | RISK | pevný lot / dopočet z rizika |
 | `InpFixedLot` | 0.10 | pevný objem |
-| `InpRiskPercent` | 0.5 | riziko na obchod v % zůstatku (režim RISK) |
+| `InpRiskPercent` | 1.0 | riziko na obchod v % zůstatku (režim RISK) |
 
 ### Zobrazení
 | Parametr | Výchozí | Význam |
