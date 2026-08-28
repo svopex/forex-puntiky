@@ -3,7 +3,7 @@
 Datum: 2026-08-28 · Revidovaný stav: commit `675d8df` (main) · Rozsah: celý adresář `MQL5/`
 (`Experts/Sved/SvedChannelBreakout.mq5`, `Include/Sved/SvedTypes.mqh`, `SvedSwings.mqh`,
 `SvedChannels.mqh`, `SvedRelief.mqh`, `SvedDraw.mqh`; 3 189 řádků).
-Mezi tím přibyly nějaké změny a nějaké commity, tak s tím prosím počítej, mohly se změnit pozice řádků.
+Mezi tím přibyly nějaké změny a nějaké commity, tak s tím prosím počítej, **mohly se změnit pozice řádků**.
 
 Metoda: 10 nezávislých hledacích úhlů (řádek po řádku, slíbené chování dle README/komentářů,
 křížové vazby volajících, pasti MQL5, konzistence stavového automatu, reuse, zjednodušení,
