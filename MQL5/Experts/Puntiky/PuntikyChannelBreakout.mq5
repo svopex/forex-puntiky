@@ -6,6 +6,8 @@
 //|   - urovne prurazu jsou HIGH / LOW swingove H1 svicky            |
 //|     (bezna hodinova svicka signal nedava)                        |
 //|   - vstup se vyhodnocuje na M1                                   |
+//|   - rezim MANUAL: expert sam neobchoduje, jen kresli a blika,    |
+//|     obchody zadava uzivatel tlacitky LONG / SHORT v grafu        |
 //|   - delka vstupu max. InpMaxEntryPoints bodu, SL:PT = 1:1        |
 //|   - pokud je hrana kanalu bliz, PT se zkrati k teto hrane        |
 //|     a SL se zkrati stejne (RRR zustava 1:1)                      |
@@ -13,7 +15,7 @@
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
-#property version   "1.13"
+#property version   "1.14"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -60,7 +62,7 @@ input bool            InpRequireInside    = true;         // Vyzadovat cenu uvni
 //--- Vstup a rizeni obchodu
 input group "=== Vstup ==="
 input bool            InpEnableTrading    = true;         // Povolit obchodovani (false = jen kresleni)
-input ENUM_PUNTIKY_ENTRY InpEntryMode        = PUNTIKY_ENTRY_PENDING;  // Rezim vstupu
+input ENUM_PUNTIKY_ENTRY InpEntryMode        = PUNTIKY_ENTRY_MANUAL;   // Rezim vstupu (vychozi: rucne tlacitky)
 input int             InpMaxEntryPoints   = 300;          // Maximalni delka vstupu (body)
 input int             InpMinEntryPoints   = 150;          // Minimalni delka vstupu (body)
 input int             InpBreakoutBuffer   = 10;           // Buffer nad/pod urovni prurazu (body)
@@ -152,7 +154,18 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 #define PUNTIKY_MIN_BARS        50    // minimum svicek pro smysluplnou detekci
 #define PUNTIKY_PANEL_MAX_LINES 40    // kapacita panelu (radku)
 #define PUNTIKY_PANEL_RESERVE   14    // radky drzene pro vypis pod kanaly
-#define PUNTIKY_PANEL_BTN_GAP   6     // mezera mezi panelem a tlacitkem (px)
+#define PUNTIKY_PANEL_BTN_GAP   6     // mezera mezi tlacitky a panelem (px)
+#define PUNTIKY_BTN_HUE_W       150   // sirka tlacitka testu Hue (px)
+#define PUNTIKY_BTN_TRADE_W     182   // sirka rucnich tlacitek LONG / SHORT (px)
+
+// Pozadi tlacitek. Kazdy stav ma vlastni barvu, aby slo od pohledu poznat,
+// co je funkcni a co ne - tmava sed je vyhrazena jedine nedostupnemu
+// tlacitku, takze zadne aktivni tlacitko ji nesmi mit.
+#define PUNTIKY_BTN_BG_HUE      C'30,70,120'   // test Hue (funkcni vzdy)
+#define PUNTIKY_BTN_BG_LONG     C'0,90,0'      // zadat LONG
+#define PUNTIKY_BTN_BG_SHORT    C'130,0,0'     // zadat SHORT
+#define PUNTIKY_BTN_BG_REMOVE   C'150,90,0'    // zrusit prikaz / zavrit pozici
+#define PUNTIKY_BTN_BG_OFF      C'48,48,48'    // navrh neni platny, klik nic neudela
 
 // MT5 zobrazi z textu grafickeho objektu jen prvnich 63 znaku a zbytek
 // tise zahodi (i uprostred slova). Delsi radky panelu se proto zalomi.
@@ -205,7 +218,8 @@ int           g_drawnChannels = 0;
 int           g_drawnLabels   = 0;
 int           g_drawnRelief   = 0;
 
-//--- Stav panelu - kolik radku je vykresleno a kde panel zacina
+//--- Stav panelu - kolik radku je vykresleno a na jake vysce zacina
+//--- prvni radek textu (tedy uz pod radkem tlacitek)
 int           g_panelShown = 0;
 int           g_panelY     = -1;
 
@@ -259,13 +273,19 @@ int OnInit()
    // proto se URL vypise hned pri startu
    if(InpHueEnabled)
       PrintFormat("PUNTIKY: upozornění Hue zapnuto - %d b od úrovně vstupu, %s "
-                  "(adresu povol v Nástroje > Nastavení > Expert Advisors > Povolit WebRequest)",
+                  "(adresu povol v Nástroje > Možnosti > Strategie > Povolit WebRequest)",
                   InpHueNearPoints, InpHueUrl);
+
+   if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
+      Print("PUNTIKY: ruční režim - expert sám neobchoduje, obchody se zadávají "
+            "tlačítky LONG / SHORT v grafu.");
 
    // Po prepnuti z pending rezimu by na urovnich zustaly lezet GTC
    // prikazy se starym SL/PT - jejich plneni by otevrelo pozici, kterou
-   // uz zadny rezim neridi
-   if(InpEntryMode != PUNTIKY_ENTRY_PENDING && TradingEnabled())
+   // uz zadny rezim neridi. V rucnim rezimu se prikazy naopak nechavaji
+   // byt: zadal je uzivatel tlacitkem a nesou vlastni SL i PT, takze mu
+   // rekompilace ani zmena parametru nesmi obchod zrusit.
+   if(InpEntryMode == PUNTIKY_ENTRY_M1_CLOSE && TradingEnabled())
       CancelPendingOrders();
 
    //--- Prvni vypocet hned pri startu, aby byl graf ihned popsany.
@@ -294,8 +314,20 @@ void OnDeinit(const int reason)
    // dozoru a jejich plneni by otevrelo neridenou pozici. Pri zmene
    // parametru nebo rekompilaci se expert hned vraci, takze se prikazy
    // nechavaji byt a srovna je nasledny OnInit.
+   // V rucnim rezimu prikaz vedome zadal uzivatel a nese vlastni SL i
+   // PT - ten se nerusi, jen se do logu napise, co na trhu zustava.
    if(reason == REASON_REMOVE && TradingEnabled())
-      CancelPendingOrders();
+     {
+      if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
+        {
+         const int left = CountOrders();
+         if(left > 0)
+            PrintFormat("PUNTIKY: ruční režim - na trhu zůstává %d příkaz(ů) "
+                        "zadaných tlačítkem.", left);
+        }
+      else
+         CancelPendingOrders();
+     }
 
    PuntikyDeleteObjects();
    ChartRedraw();
@@ -455,7 +487,8 @@ void OnTimer()
   }
 
 //+------------------------------------------------------------------+
-//| Udalosti grafu - obsluha tlacitka pro test upozorneni Hue.       |
+//| Udalosti grafu - obsluha tlacitek nad panelem.                   |
+//| Tlacitka jsou tri: test upozorneni Hue a rucni LONG / SHORT.     |
 //| MT5 necha tlacitko po kliknuti zamacknute, proto se stav vraci   |
 //| do puvodni polohy rucne.                                         |
 //|  id     - druh udalosti                                          |
@@ -468,13 +501,21 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
   {
    if(id != CHARTEVENT_OBJECT_CLICK)
       return;
-   if(sparam != PUNTIKY_PREFIX + "BTN_HUETEST")
+
+   const bool isHue   = (sparam == PUNTIKY_PREFIX + "BTN_HUETEST");
+   const bool isLong  = (sparam == PUNTIKY_PREFIX + "BTN_LONG");
+   const bool isShort = (sparam == PUNTIKY_PREFIX + "BTN_SHORT");
+   if(!isHue && !isLong && !isShort)
       return;
 
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
    ChartRedraw();
 
-   HueSendTest();
+   if(isHue)
+      HueSendTest();
+   else
+      ManualToggle(isLong);
+
    UpdatePanel();
   }
 
@@ -750,6 +791,46 @@ int CountPositions()
          cnt++;
      }
    return(cnt);
+  }
+
+//+------------------------------------------------------------------+
+//| Najde pending STOP prikaz strategie v zadanem smeru.             |
+//| Slouzi rucnim tlacitkum - ta potrebuji vedet, jestli uz v danem  |
+//| smeru neco na trhu lezi, a pripadne to umet zrusit.              |
+//|  isBuy - smer (true = BUY STOP, false = SELL STOP)               |
+//| Vraci ticket prikazu, nebo 0 kdyz zadny takovy neexistuje.       |
+//+------------------------------------------------------------------+
+ulong FindOurOrder(const bool isBuy)
+  {
+   const long wanted = isBuy ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      const ulong ticket = OrderGetTicket(i);
+      if(ticket == 0 || !IsOurOrder())
+         continue;
+      if(OrderGetInteger(ORDER_TYPE) == wanted)
+         return(ticket);
+     }
+   return(0);
+  }
+
+//+------------------------------------------------------------------+
+//| Najde otevrenou pozici strategie v zadanem smeru.                |
+//|  isBuy - smer (true = BUY, false = SELL)                         |
+//| Vraci ticket pozice, nebo 0 kdyz zadna takova neexistuje.        |
+//+------------------------------------------------------------------+
+ulong FindOurPosition(const bool isBuy)
+  {
+   const long wanted = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !IsOurPosition())
+         continue;
+      if(PositionGetInteger(POSITION_TYPE) == wanted)
+         return(ticket);
+     }
+   return(0);
   }
 
 //+------------------------------------------------------------------+
@@ -1502,6 +1583,9 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
 //| Delka vstupu je min(InpMaxEntryPoints, vzdalenost k nejblizsi    |
 //| hrane kanalu nebo reliefni primce ve smeru obchodu); SL ma vzdy  |
 //| stejnou delku jako PT (RRR 1:1).                                 |
+//| Kanal NENI podminkou vstupu - je to obycejna S/R uroven jako     |
+//| kterakoli jina a slouzi uz jen ke zkraceni PT k hrane. Vstup     |
+//| mimo kanal (i uplna absence kanalu) je tedy legitimni.           |
 //+------------------------------------------------------------------+
 SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double trigger,
                      const bool atMarket)
@@ -1515,21 +1599,14 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
    if(pl.reason != "")
       return(pl);
 
-   if(ChannelCount() <= 0)
-     {
-      pl.reason = "žádný platný kanál";
-      return(pl);
-     }
-
    const datetime tNow = TimeCurrent();
 
-   //--- Pruraz musi nastat uvnitr kanalu
+   // Kanal, uvnitr ktereho pruraz lezi (-1 = zadny takovy). Drive to
+   // byla tvrda podminka a pruraz mimo kanal se zahazoval; kanal je ale
+   // jen S/R uroven, takze vstup nezakazuje a uplatni se az nize pri
+   // zkracovani PT k hrane. Vyhodnoceni je proto stejne ve vsech
+   // rezimech vstupu - lisi se jen to, kdo prikaz posle na trh.
    const int ci = PuntikyFindContainingChannel(g_channels, tNow, trigger, InpInsideTolFrac);
-   if(ci < 0)
-     {
-      pl.reason = "průraz mimo kanál";
-      return(pl);
-     }
    pl.channelIdx = ci;
 
    const double maxDist = InpMaxEntryPoints * _Point;
@@ -2010,6 +2087,94 @@ bool OpenMarket(SEntryPlan &pl)
   }
 
 //+------------------------------------------------------------------+
+//| Zada obchod podle navrhu na pokyn uzivatele (tlacitko).          |
+//| Zadava se stejny STOP prikaz jako v automatickem pending rezimu, |
+//| vcetne SL a PT s RRR 1:1 - tlacitko je tedy jen rucni schvaleni  |
+//| toho, co uz expert kresli do grafu. Neplatny navrh se nezadava:  |
+//| obchod se nabizi jen tam, kde je na nej misto.                   |
+//|  pl - navrh vstupu prislusneho smeru                             |
+//+------------------------------------------------------------------+
+void ManualPlace(SEntryPlan &pl)
+  {
+   const string dir = pl.isBuy ? "LONG" : "SHORT";
+
+   if(!pl.valid)
+     {
+      g_lastEvent = StringFormat("%s nelze zadat - %s", dir,
+                                 pl.reason == "" ? "návrh není platný" : pl.reason);
+      Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   if(!PlaceStopOrder(pl))
+     {
+      // Duvod uz zapsal PlaceStopOrder do g_lastEvent
+      PrintFormat("PUNTIKY: %s tlačítkem nezadán (%s)", dir, g_lastEvent);
+      return;
+     }
+
+   g_lastEvent = StringFormat("%s zadán tlačítkem @ %s  SL %s  PT %s  %.2f lot",
+                              dir,
+                              DoubleToString(pl.entry, _Digits),
+                              DoubleToString(pl.sl, _Digits),
+                              DoubleToString(pl.tp, _Digits),
+                              pl.lots);
+   Print("PUNTIKY: ", g_lastEvent);
+  }
+
+//+------------------------------------------------------------------+
+//| Obsluha kliknuti na rucni tlacitko LONG / SHORT.                 |
+//| Tlacitko se chova stridave: kdyz v danem smeru nic na trhu neni, |
+//| zada obchod podle navrhu; kdyz uz prikaz nebo pozice existuje,   |
+//| obchod odebere. Pozice ma pri odebirani prednost pred prikazem - |
+//| vyplneny obchod na trhu skutecne bezi a je treba ho zavrit.      |
+//|  isBuy - smer tlacitka (true = LONG, false = SHORT)              |
+//+------------------------------------------------------------------+
+void ManualToggle(const bool isBuy)
+  {
+   const string dir = isBuy ? "LONG" : "SHORT";
+
+   if(!TradingEnabled())
+     {
+      g_lastEvent = dir + " - obchodování je vypnuto";
+      Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   //--- Odebrani otevrene pozice
+   const ulong pos = FindOurPosition(isBuy);
+   if(pos != 0)
+     {
+      if(g_trade.PositionClose(pos))
+         g_lastEvent = StringFormat("%s pozice #%I64u zavřena tlačítkem", dir, pos);
+      else
+         g_lastEvent = StringFormat("%s pozici #%I64u se nepodařilo zavřít, retcode %d (%s)",
+                                    dir, pos, g_trade.ResultRetcode(),
+                                    g_trade.ResultRetcodeDescription());
+      Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   //--- Odebrani jeste nevyplneneho prikazu
+   const ulong ord = FindOurOrder(isBuy);
+   if(ord != 0)
+     {
+      // Neuspech uz vypsal DeleteOrder do logu, panel dostane vlastni text
+      g_lastEvent = DeleteOrder(ord)
+                    ? StringFormat("%s příkaz #%I64u zrušen tlačítkem", dir, ord)
+                    : StringFormat("%s příkaz #%I64u se nepodařilo zrušit", dir, ord);
+      Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   //--- V tomto smeru nic nelezi, takze se obchod zadava
+   if(isBuy)
+      ManualPlace(g_planBuy);
+   else
+      ManualPlace(g_planSell);
+  }
+
+//+------------------------------------------------------------------+
 //| Vyhodnoceni prurazu na vstupnim TF (PUNTIKY_ENTRY_M1_CLOSE).     |
 //| Pruraz je potvrzen az uzavrenim svicky vstupniho TF za urovni    |
 //| HIGH / LOW svicky TF prurazu. Vstupuje se jen na skutecnem       |
@@ -2145,6 +2310,22 @@ void HueCheckDirection(const bool isBuy, const double level, const double dist,
   }
 
 //+------------------------------------------------------------------+
+//| Adresa sluzby Hue bez cesty, tedy "schema://host:port".          |
+//| Do seznamu povolenych URL v terminalu se zapisuje prave tento    |
+//| tvar - s cestou (/hue) by povoleni nesedelo, takze hlaska o      |
+//| chybe 4014 musi ukazovat uz orizlou adresu.                      |
+//+------------------------------------------------------------------+
+string HueBaseUrl()
+  {
+   const int scheme = StringFind(InpHueUrl, "://");
+   if(scheme < 0)
+      return(InpHueUrl);
+
+   const int slash = StringFind(InpHueUrl, "/", scheme + 3);
+   return(slash < 0 ? InpHueUrl : StringSubstr(InpHueUrl, 0, slash));
+  }
+
+//+------------------------------------------------------------------+
 //| Odesle POST pozadavek na sluzbu Hue.                             |
 //| Telo ma stejny tvar jako rucni volani curl:                      |
 //|   "BTCUSD Greater Than 9001" / "BTCUSD Less Than 9001"           |
@@ -2177,16 +2358,24 @@ bool HueSend(const bool isBuy, const double level, const double dist, const bool
 
    if(code == -1)
      {
-      const int err = GetLastError();
-      // 4014 = adresa neni v seznamu povolenych URL v nastaveni terminalu
-      if(err == ERR_FUNCTION_NOT_ALLOWED)
-         PrintFormat("PUNTIKY: Hue - adresa %s není povolená v Nástroje > Nastavení > "
-                     "Expert Advisors > Povolit WebRequest.", InpHueUrl);
-      else
-         PrintFormat("PUNTIKY: Hue - požadavek na %s selhal, chyba %d", InpHueUrl, err);
+      const int err  = GetLastError();
+      const string co = isTest ? "test" : "upozornění";
 
-      g_lastEvent = (isTest ? "Hue test selhal" : "Hue upozornění selhalo") +
-                    " (chyba " + IntegerToString(err) + ")";
+      // 4014 = adresa neni v seznamu povolenych URL v nastaveni terminalu.
+      // Nestaci to napsat do logu - do nej se za behu nikdo nediva, proto
+      // panel rovnou nese i navod, co v terminalu zaskrtnout.
+      if(err == ERR_FUNCTION_NOT_ALLOWED)
+        {
+         g_lastEvent = StringFormat("Hue %s: chyba 4014 - povol adresu %s "
+                                    "v Nástroje > Možnosti > Strategie > "
+                                    "Povolit WebRequest pro uvedené URL",
+                                    co, HueBaseUrl());
+         Print("PUNTIKY: ", g_lastEvent);
+         return(false);
+        }
+
+      g_lastEvent = StringFormat("Hue %s selhalo: chyba %d (%s)", co, err, InpHueUrl);
+      Print("PUNTIKY: ", g_lastEvent);
       return(false);
      }
 
@@ -2214,24 +2403,168 @@ void HueSendTest()
   }
 
 //+------------------------------------------------------------------+
-//| Vykresli tlacitko pro rucni test upozorneni Hue.                 |
-//|  y - svisle odsazeni v pixelech (pod poslednim radkem panelu)    |
+//| Vyska tlacitek v pixelech.                                       |
+//| Odvozuje se od pisma panelu, aby tlacitka sedela k jeho radkum,  |
+//| a je zamerne dvojnasobna - na tlacitka se klika za behu trhu a   |
+//| nizky prouzek se trefuje spatne.                                 |
 //+------------------------------------------------------------------+
-void DrawHueTestButton(const int y)
+int ButtonHeight()
+  {
+   return(MathMax(InpPanelFontSize * 2 + 4, 20) * 2);
+  }
+
+//+------------------------------------------------------------------+
+//| Vyska cele rady tlacitek vcetne mezery pod ni (0 = zadne         |
+//| tlacitko se nekresli). O tuto hodnotu se posouva text panelu,    |
+//| ktery zacina az pod tlacitky.                                    |
+//+------------------------------------------------------------------+
+int ButtonRowHeight()
+  {
+   if(!InpHueTestButton && InpEntryMode != PUNTIKY_ENTRY_MANUAL)
+      return(0);
+   return(ButtonHeight() + PUNTIKY_PANEL_BTN_GAP);
+  }
+
+//+------------------------------------------------------------------+
+//| Horni okraj cele sestavy (tlacitka + panel).                     |
+//| Kdyz je zapnuty one-click SELL/BUY panel MT5, sestava se posune  |
+//| pod nej, aby se s nim neprekryvala.                              |
+//+------------------------------------------------------------------+
+int PanelTopY()
+  {
+   int y = InpPanelY;
+   if(ChartGetInteger(0, CHART_SHOW_ONE_CLICK))
+      y += InpPanelOneClickShift;
+   return(y);
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresli tlacitko pro rucni test upozorneni Hue.                 |
+//|  x, y - poloha leveho horniho rohu v pixelech                    |
+//| Vraci sirku, kterou tlacitko zabralo vcetne mezery za nim        |
+//| (0 = tlacitko se nekresli), aby na nej sla navazat dalsi.        |
+//+------------------------------------------------------------------+
+int DrawHueTestButton(const int x, const int y)
   {
    const string name = PUNTIKY_PREFIX + "BTN_HUETEST";
 
    if(!InpHueTestButton)
      {
       ObjectDelete(0, name);
+      return(0);
+     }
+
+   PuntikyButton(name, x, y, PUNTIKY_BTN_HUE_W, ButtonHeight(), "TEST Hue",
+              InpColorPanel, PUNTIKY_BTN_BG_HUE, InpPanelFontSize, "Consolas",
+              "Odešle testovací upozornění na " + InpHueUrl);
+
+   return(PUNTIKY_BTN_HUE_W + PUNTIKY_PANEL_BTN_GAP);
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresli jedno rucni tlacitko a nastavi mu podobu podle toho,    |
+//| co je v danem smeru na trhu.                                     |
+//| Prazdny smer = tlacitko obchod zadava, jinak ho odebira; text i  |
+//| barva se meni, aby bylo na prvni pohled videt, co klik udela.    |
+//| Neproveditelny navrh necha tlacitko zesedle a duvod da do        |
+//| bubliny - obchod se nabizi jen tam, kde je na nej misto.         |
+//|  name  - jmeno objektu, isBuy - smer tlacitka                    |
+//|  x, y  - poloha leveho horniho rohu v pixelech                   |
+//+------------------------------------------------------------------+
+void DrawManualButton(const string name, const bool isBuy, const int x, const int y)
+  {
+   const string dir = isBuy ? "LONG" : "SHORT";
+   const ulong  pos = FindOurPosition(isBuy);
+   const ulong  ord = (pos == 0) ? FindOurOrder(isBuy) : 0;
+
+   string text    = dir;
+   string tooltip = "";
+   color  bg      = isBuy ? PUNTIKY_BTN_BG_LONG : PUNTIKY_BTN_BG_SHORT;
+
+   if(pos != 0)
+     {
+      text    = "ZAVŘÍT " + dir;
+      bg      = PUNTIKY_BTN_BG_REMOVE;
+      tooltip = StringFormat("Zavře otevřenou %s pozici #%I64u za trhu.", dir, pos);
+     }
+   else
+      if(ord != 0)
+        {
+         text    = "ZRUŠIT " + dir;
+         bg      = PUNTIKY_BTN_BG_REMOVE;
+         tooltip = StringFormat("Zruší ležící %s příkaz #%I64u.", dir, ord);
+        }
+      else
+        {
+         // Cteni po polozkach - strukturu SEntryPlan nelze vybrat
+         // podminenym vyrazem, takze se bere clen po clenu
+         const bool   valid  = isBuy ? g_planBuy.valid  : g_planSell.valid;
+         const string reason = isBuy ? g_planBuy.reason : g_planSell.reason;
+
+         if(valid)
+            tooltip = StringFormat("Zadá %s STOP příkaz @ %s  SL %s  PT %s  %.2f lot.",
+                                   dir,
+                                   DoubleToString(isBuy ? g_planBuy.entry : g_planSell.entry, _Digits),
+                                   DoubleToString(isBuy ? g_planBuy.sl    : g_planSell.sl,    _Digits),
+                                   DoubleToString(isBuy ? g_planBuy.tp    : g_planSell.tp,    _Digits),
+                                   isBuy ? g_planBuy.lots : g_planSell.lots);
+         else
+           {
+            bg      = PUNTIKY_BTN_BG_OFF;   // na obchod zatim neni misto
+            tooltip = "Návrh " + dir + " teď není platný" +
+                      (reason == "" ? "." : " (" + reason + ").");
+           }
+        }
+
+   PuntikyButton(name, x, y, PUNTIKY_BTN_TRADE_W, ButtonHeight(), text,
+              InpColorPanel, bg, InpPanelFontSize, "Consolas", tooltip);
+
+   // PuntikyButton nastavuje text a barvy jen pri vzniku objektu, takze
+   // zmenu stavu je treba promitnout zvlast - a jen pri skutecne zmene,
+   // protoze tudy chodi kazde obnoveni panelu
+   const bool textChanged = (ObjectGetString(0, name, OBJPROP_TEXT) != text);
+   const bool bgChanged   = ((color)ObjectGetInteger(0, name, OBJPROP_BGCOLOR) != bg);
+   if(textChanged || bgChanged)
+     {
+      ObjectSetString(0, name, OBJPROP_TEXT, text);
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+      ChartRedraw();
+     }
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresli dvojici rucnich tlacitek LONG / SHORT.                  |
+//| Mimo rucni rezim obchoduje expert sam a rucni zasah by mu lezl   |
+//| do rekonciliace prikazu, proto se tam tlacitka nekresli.         |
+//|  x, y - poloha prvniho tlacitka v pixelech                       |
+//+------------------------------------------------------------------+
+void DrawManualButtons(const int x, const int y)
+  {
+   const string nameLong  = PUNTIKY_PREFIX + "BTN_LONG";
+   const string nameShort = PUNTIKY_PREFIX + "BTN_SHORT";
+
+   if(InpEntryMode != PUNTIKY_ENTRY_MANUAL)
+     {
+      ObjectDelete(0, nameLong);
+      ObjectDelete(0, nameShort);
       return;
      }
 
-   // Vyska tlacitka se ridi pismem panelu, aby sedelo k jeho radkum
-   const int h = MathMax(InpPanelFontSize * 2 + 4, 20);
-   PuntikyButton(name, InpPanelX, y, 150, h, "TEST Hue",
-              InpColorPanel, C'48,48,48', InpPanelFontSize, "Consolas",
-              "Odešle testovací upozornění na " + InpHueUrl);
+   DrawManualButton(nameLong,  true,  x, y);
+   DrawManualButton(nameShort, false, x + PUNTIKY_BTN_TRADE_W + PUNTIKY_PANEL_BTN_GAP, y);
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresli celou radu tlacitek nad panelem.                        |
+//| Tlacitka jsou nahore a informacni text zacina az pod nimi.       |
+//|  y - svisle odsazeni rady tlacitek v pixelech                    |
+//+------------------------------------------------------------------+
+void DrawPanelButtons(const int y)
+  {
+   int x = InpPanelX;
+   x += DrawHueTestButton(x, y);
+   DrawManualButtons(x, y);
   }
 
 //+------------------------------------------------------------------+
@@ -2256,6 +2589,19 @@ string StateText(const bool isBuy, SEntryPlan &pl)
   }
 
 //+------------------------------------------------------------------+
+//| Co je v danem smeru na trhu - popisek pro radek rucniho rezimu.  |
+//|  isBuy - smer                                                    |
+//+------------------------------------------------------------------+
+string ManualStateText(const bool isBuy)
+  {
+   if(FindOurPosition(isBuy) != 0)
+      return("pozice");
+   if(FindOurOrder(isBuy) != 0)
+      return("příkaz");
+   return((isBuy ? g_planBuy.valid : g_planSell.valid) ? "lze zadat" : "není místo");
+  }
+
+//+------------------------------------------------------------------+
 //| Textovy popis navrhu vstupu pro panel.                           |
 //|  pl - navrh vstupu                                               |
 //+------------------------------------------------------------------+
@@ -2269,15 +2615,17 @@ string PlanToText(SEntryPlan &pl)
                           pl.reason == "" ? "čeká na kanál" : pl.reason));
 
    // Popisky jsou zkracene zamerne - na radek panelu se vejde 63 znaku
-   // a delka i objem jsou z pozice v radku zrejme
-   return(StringFormat("%s vstup %s  SL %s  PT %s  %.0f b  %.2f lot  k%d%s",
+   // a delka i objem jsou z pozice v radku zrejme. "k-" znamena obchod
+   // mimo kanal, ktery jde zadat jen v rucnim rezimu.
+   return(StringFormat("%s vstup %s  SL %s  PT %s  %.0f b  %.2f lot  %s%s",
                        dir,
                        DoubleToString(pl.entry, _Digits),
                        DoubleToString(pl.sl, _Digits),
                        DoubleToString(pl.tp, _Digits),
                        pl.distance / _Point,
                        pl.lots,
-                       pl.channelIdx + 1,
+                       pl.channelIdx >= 0
+                       ? "k" + IntegerToString(pl.channelIdx + 1) : "k-",
                        pl.barrier == PUNTIKY_BARRIER_NONE
                        ? "" : "  [PT k " + BarrierText(pl.barrier) + "]"));
   }
@@ -2378,7 +2726,7 @@ void UpdatePanel()
          PuntikyDeleteObjects("PNL_");
          g_panelShown = 0;
         }
-      DrawHueTestButton(InpPanelY);
+      DrawPanelButtons(PanelTopY());
       return;
      }
 
@@ -2438,6 +2786,11 @@ void UpdatePanel()
                                       g_hueBuyLevel  > 0.0 ? "posláno" : "-",
                                       g_hueSellLevel > 0.0 ? "posláno" : "-"));
 
+   //--- Rucni rezim - co je v jednotlivych smerech na trhu
+   if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
+      PanelAdd(lines, n, "ruční režim: LONG " + ManualStateText(true) +
+                         "   SHORT " + ManualStateText(false));
+
    // Kazdy smer na vlastnim radku - duvody zamitnuti byvaji dlouhe a
    // spolecny radek by se stejne zalomil
    PanelAdd(lines, n, "stav: " + StateText(true,  g_planBuy));
@@ -2449,19 +2802,20 @@ void UpdatePanel()
    if(g_lastEvent != "")
       PanelAdd(lines, n, "poslední: " + g_lastEvent);
 
-   //--- Umisteni panelu. Kdyz je zapnuty one-click SELL/BUY panel MT5,
-   //--- posune se panel pod nej, aby se s nim neprekryval.
-   int panelY = InpPanelY;
-   if(ChartGetInteger(0, CHART_SHOW_ONE_CLICK))
-      panelY += InpPanelOneClickShift;
+   //--- Tlacitka jsou nahore, text panelu zacina az pod nimi
+   const int panelY = PanelTopY();
+   const int textY  = panelY + ButtonRowHeight();
+   DrawPanelButtons(panelY);
 
    // Vyska radku je samostatny parametr - odvozeni od velikosti pisma
    // nestaci na obrazovkach s vyssim DPI, kde se radky slepuji
    const int lineH = (InpPanelLineHeight > 0) ? InpPanelLineHeight
                                               : (InpPanelFontSize + 5);
 
-   const bool moved = (panelY != g_panelY);
-   g_panelY = panelY;
+   // Prvni radek textu se muze posunout i tim, ze rada tlacitek
+   // pribyla nebo zmizela - pak se prekresli cely panel
+   const bool moved = (textY != g_panelY);
+   g_panelY = textY;
 
    //--- Prekresli se jen radky, jejichz text se skutecne zmenil.
    //--- Porovnava se s textem SKUTECNE ulozenym v objektu, ne se stinovou
@@ -2475,7 +2829,7 @@ void UpdatePanel()
       const string name = PUNTIKY_PREFIX + "PNL_" + IntegerToString(i);
       if(!moved && ObjectGetString(0, name, OBJPROP_TEXT) == lines[i])
          continue;
-      PuntikyLabel(name, InpPanelX, panelY + i * lineH,
+      PuntikyLabel(name, InpPanelX, textY + i * lineH,
                    lines[i], InpColorPanel, InpPanelFontSize, "Consolas");
       changed = true;
      }
@@ -2491,9 +2845,6 @@ void UpdatePanel()
       changed = true;
      }
    g_panelShown = n;
-
-   //--- Tlacitko testu se kresli pod posledni radek panelu
-   DrawHueTestButton(panelY + n * lineH + PUNTIKY_PANEL_BTN_GAP);
 
    if(changed)
       ChartRedraw();

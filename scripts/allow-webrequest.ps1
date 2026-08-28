@@ -1,4 +1,4 @@
-# Prida adresu do seznamu povolenych URL pro WebRequest v MetaTraderu 5.
+﻿# Prida adresu do seznamu povolenych URL pro WebRequest v MetaTraderu 5.
 #
 # MT5 drzi toto nastaveni v config\common.ini (UTF-16) a cely soubor
 # prepisuje pri ukonceni terminalu - proto musi byt pri uprave zavreny,
@@ -105,4 +105,4 @@ Set-Content -Path $ini -Value $out -Encoding Unicode
 Write-Output "Povolene adresy pro WebRequest:"
 $existing | ForEach-Object { Write-Output "  $_" }
 Write-Output "Zapsano do $ini (zaloha $ini.bak)."
-Write-Output "Spust terminal a zkontroluj Nastroje > Nastaveni > Expert Advisors."
+Write-Output "Spust terminal a zkontroluj Nastroje > Moznosti > Strategie."

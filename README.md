@@ -1,9 +1,14 @@
 # Puntiky Channel Breakout — strategie pro MetaTrader 5
 
-Expert Advisor pro MT5 (verze 1.13), který detekuje ABCD kanály na M15, kreslí je
-do grafu a obchoduje průrazy swingových H1 úrovní uvnitř těchto kanálů. Vstup se
+Expert Advisor pro MT5 (verze 1.14), který detekuje ABCD kanály na M15, kreslí je
+do grafu a obchoduje průrazy swingových H1 úrovní. Vstup se
 vyhodnocuje na M1. Do grafu vykresluje **pouze kanály, reliéfní přímky
 a informace o vstupu** — žádné jiné indikátory ani pomocnou grafiku.
+
+**Ve výchozím nastavení expert sám neobchoduje**: obchody jen zobrazuje a hlásí
+blikáním, na trh je posílá až člověk tlačítky `LONG` / `SHORT` — viz
+[Ruční režim](#ruční-režim--obchodování-tlačítky). Automatické režimy zůstávají
+k dispozici přes `InpEntryMode`.
 
 Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
 
@@ -119,11 +124,17 @@ Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
 
 ### Vstup (vyhodnocení M1)
 
-Průraz musí nastat **uvnitř** některého z detekovaných kanálů (tolerance
-`InpInsideTolFrac` × šířka; při více kanálech se bere ten s nejlepším skóre),
-jinak se signál zahodí. Režim vstupu určuje `InpEntryMode`:
+Kanál **není podmínkou vstupu** — je to S/R zóna jako reliéfní přímka, ne filtr.
+Uplatní se až na zkrácení PT k nejbližší hraně ve směru obchodu, takže **průraz
+mimo kanál i stav bez jediného detekovaného kanálu jsou legitimní** a obchodují
+se. Kanál obsahující úroveň se dohledává s tolerancí `InpInsideTolFrac` × šířka
+(při více kanálech ten s nejlepším skóre) jen kvůli popisu návrhu — když žádný
+takový není, nese návrh v panelu `k-` místo `k1`, `k2` …
 
-- **`PUNTIKY_ENTRY_PENDING` (výchozí)**: BuyStop a SellStop se umístí přímo na
+Vyhodnocení návrhu je **ve všech režimech stejné**; liší se jen to, kdo příkaz
+pošle na trh. Režim vstupu určuje `InpEntryMode`:
+
+- **`PUNTIKY_ENTRY_PENDING`**: BuyStop a SellStop se umístí přímo na
   swingové úrovně (± `InpBreakoutBuffer`) se SL a PT z návrhu vstupu, platnost GTC.
   Zadají se hned po nahození experta. Dál se **nerušily a nezadávaly znovu**, ale
   srovnávají se s návrhem: expert najde svůj příkaz podle magic a typu a sáhne na
@@ -149,6 +160,12 @@ jinak se signál zahodí. Režim vstupu určuje `InpEntryMode`:
   na hodinové hranici neporovnával s úrovní, která platí až od další H1 svíčky.
   Vstup dál od úrovně než `InpMaxLevelOffset` bodů se zamítne — po gapu nebo
   dlouhé svíčce už s průrazem nemá nic společného.
+- **`PUNTIKY_ENTRY_MANUAL` (výchozí)**: režim pro ostré obchodování pod dohledem. Expert
+  **sám neobchoduje** — jen detekuje, kreslí návrhy do grafu a blikáním žárovek
+  hlásí přiblížení k úrovni vstupu. STOP příkaz (a s ním SL i PT) se zapíná
+  a vypíná tlačítky `LONG` / `SHORT` nad panelem, viz
+  [Ruční režim](#ruční-režim--obchodování-tlačítky). Detekce, filtry ani výpočet
+  návrhu se nemění: obchod jde zadat jen tam, kde na něj podle strategie je místo.
 
 Společné pro oba režimy:
 
@@ -243,8 +260,8 @@ Přímky se přepočítávají s každou novou M1 svíčkou a kreslí se do graf
 - Pokud je nejbližší hrana kanálu ve směru obchodu blíž, PT se zkrátí tak, aby se
   před ni vešel (mínus rezerva `InpEdgeBuffer`), a SL se zkrátí stejně — **RRR
   zůstává 1:1**.
-- Hrana se hledá od **úrovně průrazu**, tedy od stejné ceny, proti které se
-  testovalo „průraz uvnitř kanálu“; volné místo se pak měří od skutečného vstupu.
+- Hrana se hledá od **úrovně průrazu**, tedy od ceny, na které obchod vzniká;
+  volné místo se pak měří od skutečného vstupu.
   Když hrana leží mezi úrovní a vstupem, je volného místa nula a obchod se
   zamítne (`málo místa k hraně kanálu`). Dřív se hledalo až od vstupu a taková
   hrana se považovala za neexistující — PT pak mířil v plné délce **za** hranu
@@ -281,8 +298,6 @@ na správné straně úrovně) / `obchodován` / `nelze (důvod)`. Možné důvo
 | `průraz už proběhl` | cena je právě za úrovní, STOP příkaz nelze zadat |
 | `blíž než stop-level brokera` | úroveň je k trhu blíž, než broker pro STOP příkaz dovolí |
 | `vstup N b od úrovně` | tržní vstup dál od úrovně než `InpMaxLevelOffset` (gap, dlouhá svíčka) |
-| `žádný platný kanál` | žádný kanál neprošel filtry |
-| `průraz mimo kanál` | úroveň neleží uvnitř žádného kanálu |
 | `v cestě reliéfní přímka (N b, cena)` | přímka blíž než PT, režim SKIP |
 | `málo místa k hraně kanálu / reliéfní přímce (N b)` | zbývá méně než `InpMinEntryPoints` |
 | `délka pod stop-level brokera` | SL/PT by byly blíž, než broker dovolí |
@@ -301,11 +316,50 @@ na správné straně úrovně) / `obchodován` / `nelze (důvod)`. Možné důvo
 | Tečkované čáry (`InpColorEntry` / `InpColorSL` / `InpColorTP`) | plánovaný vstup, SL a PT pro oba směry, s popisky `SL` / `PT` |
 | Tečkované čáry (`InpColorRelief`, MediumOrchid) | reliéfní přímky z hlavních M1 swingů |
 | Panel vlevo nahoře | hlavička, přehled kanálů, úrovně průrazu, reliéf, stav upozornění Hue, stav směrů, návrhy vstupu, pozice / pending, poslední událost |
+| Řada tlačítek nad panelem | `TEST Hue` a v ručním režimu `LONG` / `SHORT`; text panelu začíná až pod nimi |
 
 Popisky sdílené opory se slučují (`E1 E3`), panel uhýbá one-click SELL/BUY panelu
 a obnovuje se každou sekundu i bez ticků. Hlavní kanál (nejvyšší skóre) se kreslí
 silnější čarou než ostatní. Všechny objekty mají prefix `PUNTIKY_`, jsou nevybíratelné
 a mají tooltip s popisem; při odebrání experta se smažou jen tyto objekty.
+
+### Ruční režim — obchodování tlačítky
+
+`InpEntryMode = PUNTIKY_ENTRY_MANUAL` (výchozí) je režim pro ostré obchodování, kde
+rozhoduje člověk. Po startu experta se obchody **jen zobrazují** (kanály, úrovně
+průrazu, návrh vstupu se SL a PT) a upozorňuje se na ně blikáním žárovek Hue —
+na trh se sám nic nepošle.
+
+Nad panelem jsou vedle tlačítka `TEST Hue` dvě tlačítka:
+
+| Stav směru | Text tlačítka | Co klik udělá |
+|---|---|---|
+| nic na trhu, návrh platný | `LONG` / `SHORT` (zeleně / červeně) | zadá STOP příkaz přesně podle návrhu, včetně SL a PT (RRR 1:1) |
+| nic na trhu, návrh neplatný | `LONG` / `SHORT` (zešedlé) | nic — v bublině je důvod (např. „úroveň už byla proražena“) |
+| leží nevyplněný příkaz | `ZRUŠIT LONG` / `ZRUŠIT SHORT` (oranžově) | zruší ležící STOP příkaz |
+| příkaz se vyplnil do pozice | `ZAVŘÍT LONG` / `ZAVŘÍT SHORT` (oranžově) | zavře otevřenou pozici za trhu |
+
+Tlačítko se tedy chová **střídavě**: zadat → odebrat → zadat. Jediné, co je proti
+automatickým režimům nové, je právě toto zapnutí a vypnutí STOP příkazu (a s ním
+SL a PT) — detekce, filtry i výpočet návrhu zůstávají beze změny a **obchod se
+nabídne jen tehdy, když na něj je místo**.
+
+Další vlastnosti režimu:
+
+- Expert **nesrovnává** ručně zadaný příkaz s návrhem (`SyncPendingOrders` v tomto
+  režimu neběží) — co se zadalo tlačítkem, to na trhu leží beze změny, i když se
+  návrh mezitím pohne. Nechtěný příkaz se odebere tlačítkem.
+- Rekompilace, změna parametrů ani odebrání experta z grafu ručně zadaný příkaz
+  **neruší** — zadal ho uživatel a nese vlastní SL a PT. Při odebrání experta se
+  do Expert logu vypíše, kolik příkazů na trhu zůstává.
+- Vyplnění se dál zachytává v `OnTradeTransaction`: SL a PT se dorovnají na
+  skutečnou plnicí cenu a úroveň se označí za spotřebovanou, takže se na ní
+  podruhé neobchoduje.
+- Stav obou směrů je vidět v panelu na řádku `ruční režim:`
+  (`lze zadat` / `není místo` / `příkaz` / `pozice`) a každý klik se zapíše na
+  řádek `poslední:` i do Expert logu.
+- Při `InpEnableTrading = false`, na nepovoleném účtu nebo se zakázaným
+  obchodováním v terminálu tlačítka jen nahlásí `obchodování je vypnuto`.
 
 ### Upozornění Hue na blížící se vstup
 
@@ -331,15 +385,19 @@ Tělo požadavku se skládá automaticky ze symbolu, směru a ceny vstupu —
 - Stav upozornění je vidět v panelu na řádku `Hue:` a odeslání se loguje do
   Expert logu i s tělem požadavku.
 
-**Nutné povolení v terminálu:** Nástroje → Nastavení → Expert Advisors →
+**Nutné povolení v terminálu:** Nástroje → Možnosti → Strategie →
 *Povolit WebRequest pro uvedené URL* a přidat `http://192.168.0.157:8082`.
-Bez toho volání skončí chybou 4014, což expert v logu jednorázově vypíše.
+Bez toho volání skončí chybou 4014. Expert ji nenechá jen v logu — na řádek
+`poslední:` v panelu napíše rovnou návod včetně adresy, kterou je třeba povolit
+(adresa se bere z `InpHueUrl` bez cesty, tedy ve tvaru, jaký seznam povolených
+URL očekává).
 V testeru strategie `WebRequest` nefunguje, upozornění se tam přeskakuje.
 
-Pod panelem je tlačítko **`TEST Hue`** (`InpHueTestButton`) — kliknutím se pošle
+Nad panelem je modré tlačítko **`TEST Hue`** (`InpHueTestButton`) — kliknutím se pošle
 testovací požadavek s aktuální cenou Ask, takže jde ověřit spojení i povolení URL
 bez čekání na skutečný průraz. Výsledek (`Hue test: HTTP 200`, nebo chyba) se
-objeví v panelu na řádku `poslední:` a v Expert logu.
+objeví v panelu na řádku `poslední:` a v Expert logu. Barvu má vlastní záměrně:
+tmavá šeď je vyhrazená nedostupnému tlačítku, takže funkční tlačítko ji nikdy nemá.
 
 Pokud URL nejde přidat přes GUI, použij:
 
@@ -366,7 +424,7 @@ vyžaduje `powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1`.
 
 Po nasazení v terminálu:
 
-1. **Nástroje → Volby → Expert Advisors** → povolit algoritmické obchodování.
+1. **Nástroje → Možnosti → Strategie** → povolit algoritmické obchodování.
 2. Otevřít graf `XAUUSD` (libovolný timeframe, kanály se kreslí podle `InpChannelTF`).
 3. Přetáhnout `Experts\Puntiky\PuntikyChannelBreakout` na graf.
 4. Zkontrolovat řádek v Expert logu s přepočtem bodů na cenu — u zlata se počet
@@ -430,7 +488,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | Parametr | Výchozí | Význam |
 |---|---|---|
 | `InpEnableTrading` | true | false = jen kreslení bez obchodů |
-| `InpEntryMode` | PENDING | pending STOP příkazy vs. potvrzení uzavřením M1 |
+| `InpEntryMode` | MANUAL | ruční tlačítka, pending STOP příkazy, nebo potvrzení uzavřením M1 |
 | `InpMaxEntryPoints` | 300 | maximální délka vstupu |
 | `InpMinEntryPoints` | 150 | pod touto délkou se nevstupuje |
 | `InpBreakoutBuffer` | 10 | buffer za úrovní průrazu |
@@ -506,7 +564,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpHueNearPoints` | 500 | vzdálenost od úrovně vstupu pro upozornění (body) |
 | `InpHueRepeatMinutes` | 0 | opakovat upozornění po N minutách (0 = jen jednou) |
 | `InpHueTimeout` | 1000 | timeout HTTP požadavku (ms) |
-| `InpHueTestButton` | true | zobrazit tlačítko `TEST Hue` pod panelem |
+| `InpHueTestButton` | true | zobrazit tlačítko `TEST Hue` nad panelem |
 
 ### Diagnostika
 | Parametr | Výchozí | Význam |

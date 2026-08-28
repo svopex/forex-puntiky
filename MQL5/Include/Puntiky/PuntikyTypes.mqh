@@ -13,7 +13,8 @@
 enum ENUM_PUNTIKY_ENTRY
   {
    PUNTIKY_ENTRY_M1_CLOSE = 0, // Potvrzeni uzavrenim svicky vstupniho TF (M1)
-   PUNTIKY_ENTRY_PENDING  = 1  // Pending STOP prikazy na urovnich TF prurazu (H1)
+   PUNTIKY_ENTRY_PENDING  = 1, // Pending STOP prikazy na urovnich TF prurazu (H1)
+   PUNTIKY_ENTRY_MANUAL   = 2  // Rucne tlacitky LONG / SHORT (expert sam neobchoduje)
   };
 
 //--- Co delat, kdyz prurazu stoji v ceste reliefni primka
