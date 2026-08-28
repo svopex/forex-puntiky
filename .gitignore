@@ -1,0 +1,15 @@
+# Zkompilované binárky MetaTraderu – vznikají při deploy, do repozitáře nepatří
+*.ex5
+*.ex4
+
+# Logy kompilace a běhu
+*.log
+
+# Dočasné soubory editorů a OS
+*.swp
+*~
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
