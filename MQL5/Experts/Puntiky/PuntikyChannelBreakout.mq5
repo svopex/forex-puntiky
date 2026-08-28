@@ -49,12 +49,12 @@ input int             InpATRPeriod        = 14;           // Perioda ATR pro fil
 input int             InpMinTouches       = 1;            // Min. dotyku hran mimo opory A B C
 input double          InpTouchTolFrac     = 0.15;         // Tolerance dotyku (zlomek sirky)
 input double          InpMinContainment   = 0.85;         // Min. podil svicek uvnitr kanalu
-input int             InpMaxChannels      = 3;            // Kolik hlavnich kanalu ponechat
+input int             InpMaxChannels      = 4;            // Kolik hlavnich kanalu ponechat
 input double          InpPierceTolFrac    = 0.05;         // Povolene proriznuti hran (zlomek sirky)
 input double          InpInvalidTolFrac   = 0.15;         // Prah invalidace kanalu (zlomek sirky)
 input int             InpBackCheckBars    = 20;           // Kolik baru pred bodem A jeste kontrolovat
 input int             InpAnchorWindow     = 5;            // Okno, ve kterem musi byt A a C extremem
-input double          InpDedupFrac        = 0.25;         // Prah shody dvou kanalu (zlomek sirky)
+input double          InpDedupFrac        = 0.15;         // Prah shody dvou kanalu (zlomek sirky)
 input bool            InpRequireInside    = true;         // Vyzadovat cenu uvnitr kanalu
 
 //--- Vstup a rizeni obchodu
@@ -150,9 +150,13 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 
 //--- Pojmenovane konstanty misto magickych cisel v kodu
 #define PUNTIKY_MIN_BARS        50    // minimum svicek pro smysluplnou detekci
-#define PUNTIKY_PANEL_MAX_LINES 24    // kapacita panelu (radku)
-#define PUNTIKY_PANEL_MAX_CH    12    // po kolikaty radek se vypisuji kanaly
+#define PUNTIKY_PANEL_MAX_LINES 40    // kapacita panelu (radku)
+#define PUNTIKY_PANEL_RESERVE   14    // radky drzene pro vypis pod kanaly
 #define PUNTIKY_PANEL_BTN_GAP   6     // mezera mezi panelem a tlacitkem (px)
+
+// MT5 zobrazi z textu grafickeho objektu jen prvnich 63 znaku a zbytek
+// tise zahodi (i uprostred slova). Delsi radky panelu se proto zalomi.
+#define PUNTIKY_PANEL_MAX_CHARS 63
 #define PUNTIKY_LABEL_FALLBACK  10.0  // nahradni tolerance slouceni popisku (body)
 #define PUNTIKY_VOLUME_EPS      1e-8  // tolerance porovnani objemu
 #define PUNTIKY_LOTSTEP_EPS     1e-9  // tolerance deleni objemu krokem
@@ -201,8 +205,7 @@ int           g_drawnChannels = 0;
 int           g_drawnLabels   = 0;
 int           g_drawnRelief   = 0;
 
-//--- Cache panelu - prekresluje se jen to, co se skutecne zmenilo
-string        g_panelText[PUNTIKY_PANEL_MAX_LINES];
+//--- Stav panelu - kolik radku je vykresleno a kde panel zacina
 int           g_panelShown = 0;
 int           g_panelY     = -1;
 
@@ -2265,7 +2268,9 @@ string PlanToText(SEntryPlan &pl)
                           DoubleToString(pl.trigger, _Digits),
                           pl.reason == "" ? "čeká na kanál" : pl.reason));
 
-   return(StringFormat("%s  vstup %s  SL %s  PT %s  délka %.0f b  %.2f lot  kanál %d%s",
+   // Popisky jsou zkracene zamerne - na radek panelu se vejde 63 znaku
+   // a delka i objem jsou z pozice v radku zrejme
+   return(StringFormat("%s vstup %s  SL %s  PT %s  %.0f b  %.2f lot  k%d%s",
                        dir,
                        DoubleToString(pl.entry, _Digits),
                        DoubleToString(pl.sl, _Digits),
@@ -2274,7 +2279,7 @@ string PlanToText(SEntryPlan &pl)
                        pl.lots,
                        pl.channelIdx + 1,
                        pl.barrier == PUNTIKY_BARRIER_NONE
-                       ? "" : "  [zkráceno k " + BarrierText(pl.barrier) + "]"));
+                       ? "" : "  [PT k " + BarrierText(pl.barrier) + "]"));
   }
 
 //+------------------------------------------------------------------+
@@ -2304,6 +2309,60 @@ string PositionText()
   }
 
 //+------------------------------------------------------------------+
+//| Zkraceny nazev timeframu pro panel ("PERIOD_M15" -> "M15").      |
+//| Panel ma na radek jen 63 znaku, takze se prefixem plytvat neda.  |
+//+------------------------------------------------------------------+
+string TFText(const ENUM_TIMEFRAMES tf)
+  {
+   const string name = EnumToString(tf);
+   return(StringSubstr(name, 7));   // odrizne "PERIOD_"
+  }
+
+//+------------------------------------------------------------------+
+//| Zkraceny cas pro panel ("2026.08.28 11:00" -> "08.28 11:00").    |
+//| Rok je u urovni z posledniho dne zbytecny a zabira misto.        |
+//+------------------------------------------------------------------+
+string ShortTime(const datetime t)
+  {
+   if(t <= 0)
+      return("-");
+   return(StringSubstr(TimeToString(t, TIME_DATE | TIME_MINUTES), 5));
+  }
+
+//+------------------------------------------------------------------+
+//| Prida radek do panelu a zalomi ho na limit MT5.                  |
+//| Delsi text nez PUNTIKY_PANEL_MAX_CHARS by terminal urizl         |
+//| uprostred slova, proto se zbytek prelije do dalsiho radku         |
+//| s odsazenim. Lame se na posledni mezere pred limitem.            |
+//|  lines - pole radku panelu                                       |
+//|  n     - pocet dosud naplnenych radku (in/out)                   |
+//|  text  - text radku                                              |
+//+------------------------------------------------------------------+
+void PanelAdd(string &lines[], int &n, const string text)
+  {
+   string rest = text;
+
+   while(n < PUNTIKY_PANEL_MAX_LINES)
+     {
+      if(StringLen(rest) <= PUNTIKY_PANEL_MAX_CHARS)
+        {
+         lines[n++] = rest;
+         return;
+        }
+
+      // Hledani mezery zprava, aby se nerezalo uprostred slova
+      int cut = PUNTIKY_PANEL_MAX_CHARS;
+      while(cut > 0 && StringGetCharacter(rest, cut) != ' ')
+         cut--;
+      if(cut <= 0)
+         cut = PUNTIKY_PANEL_MAX_CHARS;   // jedno dlouhe slovo se ureze natvrdo
+
+      lines[n++] = StringSubstr(rest, 0, cut);
+      rest = "     " + StringSubstr(rest, cut + 1);
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| Vykresleni informacniho panelu.                                  |
 //| Prekresluji se jen radky, jejichz text se zmenil - panel ma pres |
 //| deset radku a kazdy je nekolik volani do terminalu, takze plne   |
@@ -2326,61 +2385,69 @@ void UpdatePanel()
    string lines[PUNTIKY_PANEL_MAX_LINES];
    int    n = 0;
 
-   lines[n++] = "PUNTIKY CHANNEL BREAKOUT  |  " + _Symbol + "  |  účet " +
-                IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN));
-   lines[n++] = StringFormat("kanály %s   průraz %s   vstup %s   |  max %d b, SL:PT 1:1",
-                             EnumToString(InpChannelTF), EnumToString(InpBreakoutTF),
-                             EnumToString(InpEntryTF), InpMaxEntryPoints);
+   PanelAdd(lines, n, "PUNTIKY CHANNEL BREAKOUT  |  " + _Symbol + "  |  účet " +
+                      IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)));
+   PanelAdd(lines, n, StringFormat("kanály %s   průraz %s   vstup %s   |  max %d b, SL:PT 1:1",
+                                   TFText(InpChannelTF), TFText(InpBreakoutTF),
+                                   TFText(InpEntryTF), InpMaxEntryPoints));
 
-   //--- Prehled detekovanych kanalu
+   //--- Prehled detekovanych kanalu. Kazdy kanal ma dva radky - na
+   //--- jeden se pri limitu 63 znaku nevejde ani polovina udaju.
    const int channels = ChannelCount();
    if(channels <= 0)
-      lines[n++] = "kanály: žádný hlavní kanál nesplnil filtry";
+      PanelAdd(lines, n, "kanály: žádný hlavní kanál nesplnil filtry");
    else
      {
-      lines[n++] = StringFormat("kanály: %d", channels);
+      PanelAdd(lines, n, StringFormat("kanály: %d", channels));
       const datetime tNow = TimeCurrent();
-      for(int i = 0; i < channels && n < PUNTIKY_PANEL_MAX_CH; i++)
-         lines[n++] = StringFormat("  kanál %d (měřítko %d, %s)  šířka %.0f b  dotyků %d  body po C: %d  uvnitř %.0f%%  hrany %s / %s",
-                                   i + 1,
-                                   g_channels[i].scaleIdx,
-                                   g_channels[i].baseIsLow ? "LOW základna" : "HIGH základna",
-                                   g_channels[i].width / _Point,
-                                   g_channels[i].touches,
-                                   g_channels[i].extraCount,
-                                   g_channels[i].containment * 100.0,
-                                   DoubleToString(g_channels[i].LowerAt(tNow), _Digits),
-                                   DoubleToString(g_channels[i].UpperAt(tNow), _Digits));
+      for(int i = 0; i < channels && n < PUNTIKY_PANEL_MAX_LINES - PUNTIKY_PANEL_RESERVE; i++)
+        {
+         PanelAdd(lines, n, StringFormat("  kanál %d (%s, měřítko %d)  šířka %.0f b  dotyků %d",
+                                         i + 1,
+                                         g_channels[i].baseIsLow ? "LOW základna" : "HIGH základna",
+                                         g_channels[i].scaleIdx,
+                                         g_channels[i].width / _Point,
+                                         g_channels[i].touches));
+         PanelAdd(lines, n, StringFormat("     uvnitř %.0f %%  body po C %d  hrany %s / %s",
+                                         g_channels[i].containment * 100.0,
+                                         g_channels[i].extraCount,
+                                         DoubleToString(g_channels[i].LowerAt(tNow), _Digits),
+                                         DoubleToString(g_channels[i].UpperAt(tNow), _Digits)));
+        }
      }
 
    //--- Urovne prurazu a navrhy vstupu
-   lines[n++] = StringFormat("průraz %s: H %s (%s)   L %s (%s)",
-                             InpUseSwingLevels ? "swing " + EnumToString(InpBreakoutTF)
-                                               : "poslední " + EnumToString(InpBreakoutTF),
-                             DoubleToString(g_breakHigh, _Digits),
-                             TimeToString(g_breakHighTime, TIME_DATE | TIME_MINUTES),
-                             DoubleToString(g_breakLow, _Digits),
-                             TimeToString(g_breakLowTime, TIME_DATE | TIME_MINUTES));
+   PanelAdd(lines, n, StringFormat("průraz %s %s:  H %s  (%s)",
+                                   InpUseSwingLevels ? "swing" : "poslední",
+                                   TFText(InpBreakoutTF),
+                                   DoubleToString(g_breakHigh, _Digits),
+                                   ShortTime(g_breakHighTime)));
+   PanelAdd(lines, n, StringFormat("                  L %s  (%s)",
+                                   DoubleToString(g_breakLow, _Digits),
+                                   ShortTime(g_breakLowTime)));
    if(InpUseRelief)
-      lines[n++] = StringFormat("reliéfní přímky %s: %d  (režim: %s)",
-                                EnumToString(InpEntryTF), ReliefCount(),
-                                InpReliefMode == PUNTIKY_RELIEF_SKIP ? "přeskočit vstup"
-                                                                  : "zkrátit PT");
+      PanelAdd(lines, n, StringFormat("reliéfní přímky %s: %d  (režim: %s)",
+                                      TFText(InpEntryTF), ReliefCount(),
+                                      InpReliefMode == PUNTIKY_RELIEF_SKIP ? "přeskočit vstup"
+                                                                           : "zkrátit PT"));
 
    //--- Stav upozorneni na zarovky Hue
    if(InpHueEnabled)
-      lines[n++] = StringFormat("Hue: upozornění %d b od úrovně vstupu  (BUY %s / SELL %s)",
-                                InpHueNearPoints,
-                                g_hueBuyLevel  > 0.0 ? "posláno" : "-",
-                                g_hueSellLevel > 0.0 ? "posláno" : "-");
+      PanelAdd(lines, n, StringFormat("Hue: upozornění %d b od úrovně vstupu  (BUY %s / SELL %s)",
+                                      InpHueNearPoints,
+                                      g_hueBuyLevel  > 0.0 ? "posláno" : "-",
+                                      g_hueSellLevel > 0.0 ? "posláno" : "-"));
 
-   lines[n++] = "stav: " + StateText(true, g_planBuy) + " / " + StateText(false, g_planSell);
-   lines[n++] = PlanToText(g_planBuy);
-   lines[n++] = PlanToText(g_planSell);
-   lines[n++] = PositionText();
+   // Kazdy smer na vlastnim radku - duvody zamitnuti byvaji dlouhe a
+   // spolecny radek by se stejne zalomil
+   PanelAdd(lines, n, "stav: " + StateText(true,  g_planBuy));
+   PanelAdd(lines, n, "      " + StateText(false, g_planSell));
+   PanelAdd(lines, n, PlanToText(g_planBuy));
+   PanelAdd(lines, n, PlanToText(g_planSell));
+   PanelAdd(lines, n, PositionText());
 
-   if(g_lastEvent != "" && n < PUNTIKY_PANEL_MAX_LINES)
-      lines[n++] = "poslední: " + g_lastEvent;
+   if(g_lastEvent != "")
+      PanelAdd(lines, n, "poslední: " + g_lastEvent);
 
    //--- Umisteni panelu. Kdyz je zapnuty one-click SELL/BUY panel MT5,
    //--- posune se panel pod nej, aby se s nim neprekryval.
@@ -2396,18 +2463,26 @@ void UpdatePanel()
    const bool moved = (panelY != g_panelY);
    g_panelY = panelY;
 
-   //--- Prekresli se jen radky, jejichz text se skutecne zmenil
+   //--- Prekresli se jen radky, jejichz text se skutecne zmenil.
+   //--- Porovnava se s textem SKUTECNE ulozenym v objektu, ne se stinovou
+   //--- kopii v pameti: kdyz objekt z grafu zmizi (zmena sablony, uklid
+   //--- grafu, neuspesne vytvoreni), vrati ObjectGetString prazdny
+   //--- retezec a radek se obnovi. Stinova kopie takovy vypadek
+   //--- nepoznala a prazdne misto v panelu uz zustalo navzdy.
    bool changed = false;
    for(int i = 0; i < n; i++)
      {
-      if(!moved && i < g_panelShown && lines[i] == g_panelText[i])
+      const string name = PUNTIKY_PREFIX + "PNL_" + IntegerToString(i);
+      if(!moved && ObjectGetString(0, name, OBJPROP_TEXT) == lines[i])
          continue;
-      PuntikyLabel(PUNTIKY_PREFIX + "PNL_" + IntegerToString(i),
-                InpPanelX, panelY + i * lineH,
-                lines[i], InpColorPanel, InpPanelFontSize, "Consolas");
-      g_panelText[i] = lines[i];
+      PuntikyLabel(name, InpPanelX, panelY + i * lineH,
+                   lines[i], InpColorPanel, InpPanelFontSize, "Consolas");
       changed = true;
      }
+
+   // Dotaz na neexistujici objekt nastavuje chybu 4202 - zahodi se, aby
+   // se neobjevila v pozdejsim vypisu chyby obchodu
+   ResetLastError();
 
    //--- Radky, ktere po zkraceni panelu zbyly
    if(n < g_panelShown)

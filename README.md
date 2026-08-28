@@ -415,12 +415,12 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpMinTouches` | 1 | minimální počet dotyků hran **mimo opory A, B, C** |
 | `InpTouchTolFrac` | 0.15 | tolerance dotyku jako zlomek šířky |
 | `InpMinContainment` | 0.85 | minimální podíl svíček uvnitř (tolerance `InpInsideTolFrac`) |
-| `InpMaxChannels` | 3 | kolik kanálů se ponechá |
+| `InpMaxChannels` | 4 | kolik kanálů se ponechá |
 | `InpPierceTolFrac` | 0.05 | kolik smí cena prořezávat hranu (zlomek šířky) |
 | `InpInvalidTolFrac` | 0.15 | za jakým přesahem protější hrany za C je kanál invalidovaný |
 | `InpBackCheckBars` | 20 | kolik svíček před bodem A se ještě kontroluje |
 | `InpAnchorWindow` | 5 | okno, ve kterém musí být A a C nejvýraznějším extrémem |
-| `InpDedupFrac` | 0.25 | práh, kdy se dva kanály považují za totožné |
+| `InpDedupFrac` | 0.15 | práh, kdy se dva kanály považují za totožné |
 | `InpRequireInside` | true | kanál platí jen když je v něm aktuální cena |
 
 ### Vstup
@@ -533,6 +533,13 @@ v timeru), uloží `MQL5\Files\PuntikyShot.png` a požadavek smaže.
   kanály. Pokud se na grafu nekreslí nic, sniž `InpMinTouches` na 0 nebo
   `InpMinContainment` na 0.80, případně uvolni `InpInsideTolFrac` — diagnostika
   v logu ukáže, který filtr brzdí.
+- Když v grafu **chybí konkrétní podkanál**, který je vidět okem, podívej se do
+  logu na řádek `prošlo N, vybráno M`. Když prošly desítky kandidátů a vybralo se
+  jen pár, nebrzdí filtry, ale **deduplikace**: `InpDedupFrac` × šířka je pásmo,
+  ve kterém se dva kanály považují za totožné, a stoupající podkanál se s klesajícím
+  nadřazeným kanálem může v tomto pásmu křížit. Pomůže snížit `InpDedupFrac`
+  a přidat slot přes `InpMaxChannels`. Pod ~0.10 už ale sloty obsazují varianty
+  téhož kanálu posunuté o pár bodů.
 - Body se popisují písmenem a číslem kanálu (`A1`, `B1`, `C1`, `D1` … pro první
   kanál, `A2`, `B2` … pro druhý), takže je vidět, co ke kterému kanálu patří.
   Číslování odpovídá pořadí v panelu; kanál 1 je hlavní a kreslí se silnější čarou.
@@ -556,7 +563,14 @@ v timeru), uloží `MQL5\Files\PuntikyShot.png` a požadavek smaže.
   dopočet ATR“). Dřív se v takové chvíli filtr šířky i složka skóre tiše vypnuly.
 - Panel se překresluje z timeru (jednou za sekundu) a jen v řádcích, jejichž text
   se skutečně změnil; grafické objekty se aktualizují na místě a maže se jen to,
-  co po zmenšení počtu kanálů či přímek zbylo.
+  co po zmenšení počtu kanálů či přímek zbylo. Porovnává se s textem **skutečně
+  uloženým v objektu**, ne se stínovou kopií v paměti — když objekt z grafu zmizí
+  (změna šablony, úklid grafu), řádek se sám obnoví místo aby v panelu zůstalo
+  prázdné místo.
+- MT5 zobrazí z textu grafického objektu jen **prvních 63 znaků** a zbytek tiše
+  zahodí, klidně uprostřed slova. Panel proto delší řádky sám zalomí a pokračování
+  odsadí; texty jsou zkrácené tak, aby se běžné řádky do limitu vešly (timeframy
+  bez prefixu `PERIOD_`, časy úrovní bez roku).
 - `datetime − datetime` je v MQL5 **znaménkový** rozdíl (typ se chová jako `long`)
   — ověřeno kompilační sondou v MetaEditoru. Projekce `BaseAt()` a `ValueAt()` do
   časů *před* první oporou tedy nepřetéká a nepotřebuje ošetřit; není to chyba,
