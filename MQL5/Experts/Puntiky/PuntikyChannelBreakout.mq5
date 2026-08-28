@@ -95,7 +95,7 @@ input bool            InpReliefMidTouch   = false;        // Vyzadovat dotyk i u
 input int             InpReliefMidTol     = 60;           // Tolerance stredniho dotyku (body)
 input double          InpReliefMidFrom    = 0.20;         // Stredni usek primky - od (0..1)
 input double          InpReliefMidTo      = 0.80;         // Stredni usek primky - do (0..1)
-input int             InpMaxReliefLines   = 6;            // Kolik primek ponechat
+input int             InpMaxReliefLines   = 15;           // Kolik primek ponechat
 input int             InpReliefBuffer     = 20;           // Rezerva pred primkou (body)
 input int             InpReliefForwardBars = 120;         // Prodlouzeni primek doprava (bary)
 

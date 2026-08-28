@@ -461,7 +461,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpReliefMidTouch` | false | vyžadovat dotyk i uprostřed přímky |
 | `InpReliefMidTol` | 60 | tolerance středního dotyku (body) |
 | `InpReliefMidFrom` / `InpReliefMidTo` | 0.20 / 0.80 | prostřední úsek přímky |
-| `InpMaxReliefLines` | 6 | kolik přímek ponechat |
+| `InpMaxReliefLines` | 15 | kolik přímek ponechat |
 | `InpReliefBuffer` | 20 | rezerva PT před přímkou (body) |
 | `InpReliefForwardBars` | 120 | prodloužení přímek doprava (M1 svíčky) |
 
