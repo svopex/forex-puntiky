@@ -199,9 +199,12 @@ Reliéfní přímka je trendlinie vedená dvěma **hlavními swingy stejného ty
 vstupním timeframu — dvěma vrcholy (odpor) nebo dvěma dny (podpora). Stojí průrazu
 v cestě, takže ji strategie hlídá při plánování vstupu.
 
-1. Swingy se hledají z `InpReliefLookback` uzavřených M1 svíček s hrubším oknem
-   (`InpReliefSwingDepth`, výchozí 10 svíček) a v několika měřítkách
-   (`InpReliefScales`, výchozí 4 → okna 10/20/40/80 svíček). Jemné okno dá čerstvé
+1. Swingy se hledají z `InpReliefLookback` uzavřených M1 svíček (výchozí 7200,
+   tedy 5 dní) s hrubším oknem (`InpReliefSwingDepth`, výchozí 25 svíček)
+   a v několika měřítkách (`InpReliefScales`, výchozí 4 → okna 25/50/100/200
+   svíček). Šířka okna je zároveň hlavní páka na **dosah do minulosti**: odstup
+   opor se počítá v *počtu swingů* (`InpReliefSwingGap`), takže čím řidší swingy,
+   tím dál přímka sahá. Jemné okno dá čerstvé
    lokální přímky, hrubé vidí jen hlavní vrcholy/dna, takže i přes omezený odstup
    opor (`InpReliefSwingGap` swingů) dosáhne na vzdálené swingy — vějíř trendlinií
    z hlavních vrcholů.
@@ -507,18 +510,18 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 |---|---|---|
 | `InpUseRelief` | true | hlídat reliéfní přímky |
 | `InpReliefMode` | SHORTEN | zkrátit PT / přeskočit vstup |
-| `InpReliefLookback` | 2400 | kolik M1 svíček se analyzuje |
-| `InpReliefSwingDepth` | 10 | šířka okna pro hlavní swingy |
-| `InpReliefScales` | 4 | počet měřítek swingů (10/20/40/80) |
+| `InpReliefLookback` | 7200 | kolik M1 svíček se analyzuje (5 dní) |
+| `InpReliefSwingDepth` | 25 | šířka okna pro hlavní swingy (zároveň dosah do minulosti) |
+| `InpReliefScales` | 4 | počet měřítek swingů (25/50/100/200) |
 | `InpReliefSwingGap` | 20 | max. odstup opor (počet swingů) |
-| `InpReliefMinSpan` | 30 | minimální délka přímky ve svíčkách |
+| `InpReliefMinSpan` | 120 | minimální délka přímky ve svíčkách |
 | `InpReliefMinTouches` | 0 | minimální počet dotyků **mimo vlastní opory přímky** (0 = stačí čistá spojnice) |
 | `InpReliefPierceTol` | 10 | proříznutí přímky tělem svíčky (body) |
 | `InpReliefWickTol` | 150 | povolený přesah přímky knotem mezi oporami (body) |
 | `InpReliefTouchTol` | 25 | tolerance dotyku (body) |
 | `InpReliefDedupTol` | 40 | práh shody dvou přímek (body) |
 | `InpReliefMaxAge` | 0.0 | platnost přímky za 2. oporou v násobcích délky (0 = neomezeno) |
-| `InpReliefMaxDrift` | 1200 | max. vzdálení přímky od 2. opory (body) |
+| `InpReliefMaxDrift` | 3000 | max. vzdálení přímky od 2. opory (body) |
 | `InpReliefMidTouch` | false | vyžadovat dotyk i uprostřed přímky |
 | `InpReliefMidTol` | 60 | tolerance středního dotyku (body) |
 | `InpReliefMidFrom` / `InpReliefMidTo` | 0.20 / 0.80 | prostřední úsek přímky |

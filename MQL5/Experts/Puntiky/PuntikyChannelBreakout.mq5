@@ -81,18 +81,18 @@ input long            InpAllowedAccount   = 0;            // Povoleny ucet (0 = 
 input group "=== Reliefni primky ==="
 input bool            InpUseRelief        = true;         // Hlidat reliefni primky na TF vstupu
 input ENUM_PUNTIKY_RELIEF InpReliefMode      = PUNTIKY_RELIEF_SHORTEN; // Co delat, kdyz primka vadi
-input int             InpReliefLookback   = 2400;         // Kolik svicek TF vstupu analyzovat
-input int             InpReliefSwingDepth = 10;           // Sirka okna pro hlavni swingy
-input int             InpReliefScales     = 4;            // Pocet meritek swingu (10/20/40/80)
+input int             InpReliefLookback   = 7200;         // Kolik svicek TF vstupu analyzovat
+input int             InpReliefSwingDepth = 25;           // Sirka okna pro hlavni swingy
+input int             InpReliefScales     = 4;            // Pocet meritek swingu (25/50/100/200)
 input int             InpReliefSwingGap   = 20;           // Max. odstup opor (pocet swingu)
-input int             InpReliefMinSpan    = 30;           // Minimalni delka primky (bary)
+input int             InpReliefMinSpan    = 120;          // Minimalni delka primky (bary)
 input int             InpReliefMinTouches = 0;            // Min. dotyku primky mimo jeji opory (0 = staci cista spojnice)
 input int             InpReliefPierceTol  = 10;           // Proriznuti primky TELEM svicky (body)
 input int             InpReliefWickTol    = 150;          // Povoleny presah primky KNOTEM (body)
 input int             InpReliefTouchTol   = 25;           // Tolerance dotyku primky (body)
 input int             InpReliefDedupTol   = 40;           // Prah shody dvou primek (body)
 input double          InpReliefMaxAge     = 0.0;          // Platnost primky za 2. oporou (0 = neomezeno)
-input int             InpReliefMaxDrift   = 1200;         // Max. vzdaleni primky od 2. opory (body)
+input int             InpReliefMaxDrift   = 3000;         // Max. vzdaleni primky od 2. opory (body)
 input bool            InpReliefMidTouch   = false;        // Vyzadovat dotyk i uprostred primky
 input int             InpReliefMidTol     = 60;           // Tolerance stredniho dotyku (body)
 input double          InpReliefMidFrom    = 0.20;         // Stredni usek primky - od (0..1)
