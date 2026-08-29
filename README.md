@@ -417,7 +417,7 @@ s důvodem `čeká na návrat pod/nad úroveň`. Možné důvody:
 | `čeká na návrat pod úroveň` / `nad úroveň` | směr není nabitý — cena ještě nebyla na správné straně úrovně |
 | `úroveň už byla proražena` | cena úroveň prorazila (i intrabar), čeká se na nový swing |
 | `průraz už proběhl` | cena je právě za úrovní, STOP příkaz nelze zadat |
-| `blíž než stop-level brokera` | úroveň je k trhu blíž, než broker pro STOP příkaz dovolí |
+| `blíž než stop-level brokera (N b)` | úroveň je k trhu blíž, než broker pro STOP příkaz dovolí; už ležící příkaz se kvůli tomu ale neruší |
 | `vstup N b od úrovně` | tržní vstup dál od úrovně než `InpMaxLevelOffset` (gap, dlouhá svíčka) |
 | `v cestě reliéfní přímka (N b, cena)` | přímka blíž než PT, režim SKIP |
 | `málo místa k hraně kanálu / reliéfní přímce (N b)` | zbývá méně než `InpMinEntryPoints` |
