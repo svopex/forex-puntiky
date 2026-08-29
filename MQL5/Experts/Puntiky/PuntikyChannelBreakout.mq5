@@ -19,7 +19,7 @@
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
-#property version   "1.18"
+#property version   "1.20"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -499,7 +499,9 @@ void OnTick()
 //| Obchodni transakce - zachyti otevreni pozice.                    |
 //| V pending rezimu se prikaz vyplni bez zasahu experta, takze bez  |
 //| teto obsluhy by expert nevedel, ze uz na dane urovni obchodoval, |
-//| a dal by nabizel vstup, ktery je davno vyplneny.                 |
+//| a dal by nabizel vstup, ktery je davno vyplneny. Uroven se       |
+//| spotrebuje jen tehdy, kdyz k ni obchod skutecne patri (viz       |
+//| EntryBelongsToLevel) - po prurazu uz muze byt aktualni jiny swing.|
 //|  trans   - popis transakce                                       |
 //|  request - odeslany pozadavek (nepouziva se)                     |
 //|  result  - odpoved serveru (nepouziva se)                        |
@@ -528,22 +530,51 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(dealType != DEAL_TYPE_BUY && dealType != DEAL_TYPE_SELL)
       return;
 
-   const bool isBuy = (dealType == DEAL_TYPE_BUY);
-   if(isBuy)
+   const bool   isBuy = (dealType == DEAL_TYPE_BUY);
+   const string dir   = isBuy ? "BUY" : "SELL";
+
+   // Prikaz, ze ktereho obchod vznikl, se vybira jednou: jeho cena urcuje
+   // uroven, ke ktere obchod patri, a jeho SL / PT slouzi nize k dorovnani
+   // stopu. Kdyz uz prikaz neni k dispozici, poslouzi cena obchodu - od
+   // ceny prikazu se lisi jen o skluz.
+   double orderPrice = 0.0, orderSL = 0.0, orderTP = 0.0;
+   if(trans.order != 0 && HistoryOrderSelect(trans.order))
      {
-      g_buyTaken = true;
-      g_buyArmed = false;
-      MarkLevelTaken(true, g_breakHigh);
+      orderPrice = HistoryOrderGetDouble(trans.order, ORDER_PRICE_OPEN);
+      orderSL    = HistoryOrderGetDouble(trans.order, ORDER_SL);
+      orderTP    = HistoryOrderGetDouble(trans.order, ORDER_TP);
+     }
+   const double entryPrice = (orderPrice > 0.0) ? orderPrice : dealPrice;
+
+   // Obchod spotrebovava jen uroven, ke ktere skutecne patri. Tick, ktery
+   // STOP prikaz vyplnil, tutez uroven zaroven prorazil, a OnTick uz mohl
+   // prepnout na dalsi (starsi) swing driv, nez tato obsluha dostala slovo.
+   // Drive se tu bez rozmyslu oznacila aktualni uroven - tedy ta nova, na
+   // ktere nikdo neobchodoval - a to i trvale v globalni promenne
+   // terminalu, takze smer zustal zablokovany ("tato uroven uz
+   // obchodovana") az do vzniku dalsiho swingu. Prorazenou (starou)
+   // uroven neni treba spotrebovavat, tu uz vyber swingu preskakuje.
+   const double level = isBuy ? g_breakHigh : g_breakLow;
+   if(EntryBelongsToLevel(isBuy, entryPrice, level))
+     {
+      if(isBuy)
+        {
+         g_buyTaken = true;
+         g_buyArmed = false;
+        }
+      else
+        {
+         g_sellTaken = true;
+         g_sellArmed = false;
+        }
+      MarkLevelTaken(isBuy, level);
+      g_lastEvent = StringFormat("%s vyplněn @ %s", dir,
+                                 DoubleToString(dealPrice, _Digits));
      }
    else
-     {
-      g_sellTaken = true;
-      g_sellArmed = false;
-      MarkLevelTaken(false, g_breakLow);
-     }
-
-   g_lastEvent = StringFormat("%s vyplněn @ %s", isBuy ? "BUY" : "SELL",
-                              DoubleToString(dealPrice, _Digits));
+      g_lastEvent = StringFormat("%s vyplněn @ %s (úroveň už posunuta na %s)", dir,
+                                 DoubleToString(dealPrice, _Digits),
+                                 DoubleToString(level, _Digits));
    Print("PUNTIKY: ", g_lastEvent);
 
    // Pending prikaz nese absolutni SL a PT spoctene pro nominalni
@@ -554,16 +585,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    const ulong posId = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
    double slDistance = 0.0;
    double tpDistance = 0.0;
-   if(trans.order != 0 && HistoryOrderSelect(trans.order))
-     {
-      const double orderPrice = HistoryOrderGetDouble(trans.order, ORDER_PRICE_OPEN);
-      const double orderSL    = HistoryOrderGetDouble(trans.order, ORDER_SL);
-      const double orderTP    = HistoryOrderGetDouble(trans.order, ORDER_TP);
-      if(orderPrice > 0.0 && orderSL > 0.0)
-         slDistance = MathAbs(orderPrice - orderSL);
-      if(orderPrice > 0.0 && orderTP > 0.0)
-         tpDistance = MathAbs(orderTP - orderPrice);
-     }
+   if(orderPrice > 0.0 && orderSL > 0.0)
+      slDistance = MathAbs(orderPrice - orderSL);
+   if(orderPrice > 0.0 && orderTP > 0.0)
+      tpDistance = MathAbs(orderTP - orderPrice);
    if(slDistance > 0.0)
       AdjustPositionStops(posId, slDistance, tpDistance);
 
@@ -1353,16 +1378,88 @@ void MarkLevelTaken(const bool isBuy, const double level)
 
 //+------------------------------------------------------------------+
 //| Obchodovalo se uz na teto urovni? (prezije restart terminalu)    |
-//|  isBuy - smer obchodu, level - uroven prurazu                    |
+//| Zaznam v globalni promenne se overuje proti historii uctu:       |
+//| verze do 1.18 po vyplneni ukladala AKTUALNI uroven misto te, na  |
+//| ktere obchod vznikl, takze v terminalu muze lezet zaznam o       |
+//| urovni, na ktere nikdo neobchodoval - a ta by zustala            |
+//| zablokovana, dokud by ji nekdo rucne nesmazal (F3). Zaznam bez   |
+//| odpovidajiciho obchodu se proto zahodi.                          |
+//|  isBuy     - smer obchodu, level - uroven prurazu                |
+//|  levelTime - cas svicky urovne (obchod na ni mohl vzniknout az   |
+//|              po ni, starsi historie se neprochazi)               |
 //+------------------------------------------------------------------+
-bool LevelWasTaken(const bool isBuy, const double level)
+bool LevelWasTaken(const bool isBuy, const double level, const datetime levelTime)
   {
    if(level <= 0.0)
       return(false);
    double stored = 0.0;
    if(!GlobalVariableGet(TakenVarName(isBuy), stored))
       return(false);
-   return(MathAbs(stored - level) <= _Point);
+   if(MathAbs(stored - level) > _Point)
+      return(false);
+
+   if(LevelRecordConfirmed(isBuy, level, levelTime))
+      return(true);
+
+   GlobalVariableDel(TakenVarName(isBuy));
+   PrintFormat("PUNTIKY: záznam o obchodované úrovni %s %s nemá v historii žádný "
+               "obchod, zahozen.", isBuy ? "BUY" : "SELL", DoubleToString(level, _Digits));
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Potvrzuje historie uctu, ze na dane urovni strategie obchodovala?|
+//| Prochazi obchody od casu svicky urovne (drivejsi k ni patrit     |
+//| nemohou) a hleda vstup (DEAL_ENTRY_IN) teto strategie ve         |
+//| spravnem smeru s cenou za urovni v toleranci EntryBelongsToLevel.|
+//| Kdyz historii nejde nacist, zaznam se nevyvraci a veri se mu.    |
+//|  isBuy - smer, level - uroven prurazu, since - cas svicky urovne |
+//+------------------------------------------------------------------+
+bool LevelRecordConfirmed(const bool isBuy, const double level, const datetime since)
+  {
+   // Horni mez s rezervou - historie se vybira po posledni obchod
+   if(!HistorySelect(since, TimeCurrent() + 86400))
+      return(true);
+
+   const long wantType = isBuy ? DEAL_TYPE_BUY : DEAL_TYPE_SELL;
+   for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+     {
+      const ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(HistoryDealGetString(ticket, DEAL_SYMBOL) != _Symbol)
+         continue;
+      if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != InpMagic)
+         continue;
+      if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_IN)
+         continue;
+      if(HistoryDealGetInteger(ticket, DEAL_TYPE) != wantType)
+         continue;
+      if(EntryBelongsToLevel(isBuy, HistoryDealGetDouble(ticket, DEAL_PRICE), level))
+         return(true);
+     }
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Patri vstup na dane cene k dane urovni prurazu?                  |
+//| Vstup lezi vzdy za urovni: STOP prikaz presne o buffer, trzni    |
+//| vstup (rezim M1) nejdal o InpMaxLevelOffset (viz EntryBlockReason)|
+//| a k tomu se pripousti skluz pro pripad, ze se misto ceny prikazu |
+//| porovnava cena obchodu. Kdyz uroven lezi az za vstupem (zaporny  |
+//| odstup) nebo je dal, obchod k teto urovni nepatri - vznikl na    |
+//| jine, napr. na te, kterou uz nahradil dalsi swing.               |
+//|  isBuy - smer obchodu, entry - cena vstupu (prikazu nebo obchodu)|
+//|  level - uroven prurazu, proti ktere se vstup posuzuje           |
+//+------------------------------------------------------------------+
+bool EntryBelongsToLevel(const bool isBuy, const double entry, const double level)
+  {
+   if(level <= 0.0 || entry <= 0.0)
+      return(false);
+
+   const double offset    = isBuy ? (entry - level) : (level - entry);
+   const double tolerance = g_breakBuffer + g_maxLevelOffset + InpSlippage * _Point;
+   return(offset >= 0.0 && offset <= tolerance);
   }
 
 //+------------------------------------------------------------------+
@@ -1900,12 +1997,12 @@ void ApplyBreakLevel(const bool isBuy, const double price, const datetime levelT
      {
       if(isBuy)
         {
-         g_buyTaken = LevelWasTaken(true, price);
+         g_buyTaken = LevelWasTaken(true, price, levelTime);
          g_buyArmed = false;
         }
       else
         {
-         g_sellTaken = LevelWasTaken(false, price);
+         g_sellTaken = LevelWasTaken(false, price, levelTime);
          g_sellArmed = false;
         }
      }

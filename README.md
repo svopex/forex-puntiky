@@ -1,6 +1,6 @@
 # Puntiky Channel Breakout — strategie pro MetaTrader 5
 
-Expert Advisor pro MT5 (verze 1.18), který detekuje ABCD kanály na M15, kreslí je
+Expert Advisor pro MT5 (verze 1.20), který detekuje ABCD kanály na M15, kreslí je
 do grafu a obchoduje průrazy swingových H1 úrovní. Vstup se
 vyhodnocuje na M1. Do grafu vykresluje **pouze kanály, reliéfní přímky
 a informace o vstupu** — žádné jiné indikátory ani pomocnou grafiku.
@@ -129,7 +129,15 @@ Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
 - Na jedné swingové úrovni se obchoduje **nejvýše jednou**. Spotřebovaná úroveň
   se ukládá do globální proměnné terminálu (`PUNTIKY_<symbol>_<magic>_BUY` / `_SELL`),
   takže to přežije i restart terminálu — dřív se po restartu tatáž úroveň
-  obchodovala podruhé.
+  obchodovala podruhé. Spotřebuje se jen úroveň, ke které vyplněný obchod
+  **skutečně patří** (vstup leží za ní nejdál o buffer + `InpMaxLevelOffset`
+  + skluz): tick, který STOP příkaz vyplní, úroveň zároveň prorazí a expert
+  hned přepne na další swing, takže by se jinak jako obchodovaná označila nová
+  úroveň, na které nikdo neobchodoval, a směr by zůstal zablokovaný až do
+  vzniku dalšího swingu (do verze 1.18 se to takhle dělo). Záznam v globální
+  proměnné se navíc při každém načtení úrovně **ověřuje proti historii účtu**:
+  když k němu od času svíčky úrovně neexistuje vstup strategie za úrovní, zahodí
+  se (uklidí to i falešné záznamy po starších verzích, bez ručního mazání přes F3).
 - Směr je **zablokovaný**, dokud cena nebyla na správné straně úrovně (pod HIGH pro
   BUY, nad LOW pro SELL) — zabraňuje vstupu do už proběhlého pohybu (gap, start EA
   uprostřed pohybu).
