@@ -108,7 +108,8 @@ bool PuntikyChannelScan(const MqlRates &rates[], SChannel &ch, const SChannelPar
 
    for(int i = from; i < n; i++)
      {
-      const datetime t = rates[i].time;
+      // Kanal je vedeny v indexech baru, testuje se tedy proti indexu
+      const double bar = (double)i;
 
       // Pred bodem A kanal jeste "neexistuje" - kontroluje se tam
       // pouze zakladni usecka, protejsi hrana ne
@@ -120,17 +121,17 @@ bool PuntikyChannelScan(const MqlRates &rates[], SChannel &ch, const SChannelPar
       if(ch.baseIsLow)
         {
          // Zakladni usecka je spodni hrana
-         if(rates[i].low < ch.LowerAt(t) - tolBase)
+         if(rates[i].low < ch.LowerAtBar(bar) - tolBase)
             return(false);
-         if(!beforeA && rates[i].high > ch.UpperAt(t) + tolOpp)
+         if(!beforeA && rates[i].high > ch.UpperAtBar(bar) + tolOpp)
             return(false);
         }
       else
         {
          // Zakladni usecka je horni hrana
-         if(rates[i].high > ch.UpperAt(t) + tolBase)
+         if(rates[i].high > ch.UpperAtBar(bar) + tolBase)
             return(false);
-         if(!beforeA && rates[i].low < ch.LowerAt(t) - tolOpp)
+         if(!beforeA && rates[i].low < ch.LowerAtBar(bar) - tolOpp)
             return(false);
         }
 
@@ -138,7 +139,7 @@ bool PuntikyChannelScan(const MqlRates &rates[], SChannel &ch, const SChannelPar
          continue;
 
       total++;
-      if(ch.Contains(t, rates[i].close, tolInside))
+      if(ch.ContainsAtBar(bar, rates[i].close, tolInside))
          inside++;
 
       // Opory se jako dotyk nepocitaji (viz hlavicka), ale nastavuji zaraz
@@ -162,12 +163,12 @@ bool PuntikyChannelScan(const MqlRates &rates[], SChannel &ch, const SChannelPar
          continue;
         }
 
-      if(ch.TouchesUpper(t, rates[i].high, tolTouch) && i - lastUpTouch >= PUNTIKY_TOUCH_GAP)
+      if(ch.TouchesUpperAtBar(bar, rates[i].high, tolTouch) && i - lastUpTouch >= PUNTIKY_TOUCH_GAP)
         {
          touches++;
          lastUpTouch = i;
         }
-      if(ch.TouchesLower(t, rates[i].low, tolTouch) && i - lastLoTouch >= PUNTIKY_TOUCH_GAP)
+      if(ch.TouchesLowerAtBar(bar, rates[i].low, tolTouch) && i - lastLoTouch >= PUNTIKY_TOUCH_GAP)
         {
          touches++;
          lastLoTouch = i;
@@ -223,8 +224,7 @@ bool PuntikyEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChanne
    //--- Je to test jedine svicky, proto bezi jeste pred pruchody polem.
    if(p.requireInside)
      {
-      const datetime tLast = rates[n - 1].time;
-      if(!ch.Contains(tLast, rates[n - 1].close, p.insideTolFrac * ch.width))
+      if(!ch.ContainsAtBar((double)(n - 1), rates[n - 1].close, p.insideTolFrac * ch.width))
         {
          st.outside++;
          return(false);
@@ -282,8 +282,15 @@ bool PuntikyEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChanne
 //| Bod se zapisuje az ve chvili, kdy k dotyku skutecne doslo;       |
 //| nic se nepredikuje dopredu. Z jedne dotykove epizody se bere     |
 //| jeji nejzazsi svicka.                                            |
-//| Dotyk se testuje TYMZ predikatem jako pri pocitani skore, jinak  |
-//| by panel hlasil jiny pocet dotyku, nez kolik je v grafu pismen.  |
+//|                                                                  |
+//| Dotyk se testuje TYMZ predikatem jako pri pocitani skore, ale    |
+//| POCITA SE JINA MNOZINA a obe cisla se rovnat nemaji:             |
+//|   ch.touches (skore)  - obe hrany nezavisle, uz od bodu A,       |
+//|                         bez horniho omezeni poctu,               |
+//|   ch.extraCount (zde) - jen dotyky ZA bodem C, striktne stridave |
+//|                         a nejvyse PUNTIKY_MAX_TOUCH_POINTS.      |
+//| Panel proto vypisuje obe hodnoty zvlast ("dotyku od A" a "body   |
+//| po C"), aby pocet pismen v grafu odpovidal tomu druhemu.         |
 //|  rates   - svicky TF kanalu (index 0 = nejstarsi)                |
 //|  ch      - kanal, do ktereho se body zapisou                     |
 //|  tolFrac - tolerance dotyku jako zlomek sirky kanalu             |
@@ -300,9 +307,9 @@ void PuntikyCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const doub
    int i = ch.iC + 1;
    while(i < n && ch.extraCount < PUNTIKY_MAX_TOUCH_POINTS)
      {
-      const datetime t = rates[i].time;
-      const bool touched = expectUpper ? ch.TouchesUpper(t, rates[i].high, tol)
-                                       : ch.TouchesLower(t, rates[i].low,  tol);
+      const double bar = (double)i;
+      const bool touched = expectUpper ? ch.TouchesUpperAtBar(bar, rates[i].high, tol)
+                                       : ch.TouchesLowerAtBar(bar, rates[i].low,  tol);
       if(!touched)
         {
          i++;
@@ -316,9 +323,9 @@ void PuntikyCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const doub
 
       while(k < n)
         {
-         const datetime tk = rates[k].time;
-         const bool still = expectUpper ? ch.TouchesUpper(tk, rates[k].high, tol)
-                                        : ch.TouchesLower(tk, rates[k].low,  tol);
+         const double barK = (double)k;
+         const bool still = expectUpper ? ch.TouchesUpperAtBar(barK, rates[k].high, tol)
+                                        : ch.TouchesLowerAtBar(barK, rates[k].low,  tol);
          if(!still)
             break;
          if(expectUpper ? (rates[k].high > bestPrice) : (rates[k].low < bestPrice))
@@ -341,29 +348,29 @@ void PuntikyCollectTouchPoints(const MqlRates &rates[], SChannel &ch, const doub
 
 //+------------------------------------------------------------------+
 //| Test, zda jsou dva kanaly prakticky totozne.                     |
-//| Hrany se porovnavaji ve DVOU casovych okamzicich - stoupajici a  |
-//| klesajici kanal se muzou v jedinem bode zrovna protinat a pri    |
-//| porovnani jednim okamzikem by se chybne slily do jednoho         |
+//| Hrany se porovnavaji ve DVOU okamzicich - stoupajici a klesajici |
+//| kanal se muzou v jedinem bode zrovna protinat a pri porovnani    |
+//| jednim okamzikem by se chybne slily do jednoho                   |
 //| (viz docs/iScreen ... 085407.png). Duplicita je jen tehdy,       |
-//| kdyz obe hrany souhlasi v obou casech.                           |
-//|  a, b   - porovnavane kanaly                                     |
-//|  t1, t2 - dva ruzne casove okamziky porovnani                    |
-//|  frac   - prah shody jako zlomek sirky sirsiho z kanalu          |
+//| kdyz obe hrany souhlasi v obou okamzicich.                       |
+//|  a, b     - porovnavane kanaly                                   |
+//|  b1, b2   - dva ruzne indexy baru pro porovnani                  |
+//|  frac     - prah shody jako zlomek sirky sirsiho z kanalu        |
 //+------------------------------------------------------------------+
-bool PuntikyChannelsSimilar(SChannel &a, SChannel &b, const datetime t1, const datetime t2,
+bool PuntikyChannelsSimilar(SChannel &a, SChannel &b, const double b1, const double b2,
                          const double frac)
   {
    const double w = MathMax(a.width, b.width);
    if(w <= 0.0)
       return(false);
 
-   if(MathAbs(a.UpperAt(t1) - b.UpperAt(t1)) >= frac * w)
+   if(MathAbs(a.UpperAtBar(b1) - b.UpperAtBar(b1)) >= frac * w)
       return(false);
-   if(MathAbs(a.LowerAt(t1) - b.LowerAt(t1)) >= frac * w)
+   if(MathAbs(a.LowerAtBar(b1) - b.LowerAtBar(b1)) >= frac * w)
       return(false);
-   if(MathAbs(a.UpperAt(t2) - b.UpperAt(t2)) >= frac * w)
+   if(MathAbs(a.UpperAtBar(b2) - b.UpperAtBar(b2)) >= frac * w)
       return(false);
-   if(MathAbs(a.LowerAt(t2) - b.LowerAt(t2)) >= frac * w)
+   if(MathAbs(a.LowerAtBar(b2) - b.LowerAtBar(b2)) >= frac * w)
       return(false);
    return(true);
   }
@@ -372,13 +379,13 @@ bool PuntikyChannelsSimilar(SChannel &a, SChannel &b, const datetime t1, const d
 //| Je kandidat prakticky totozny s nekterym uz vybranym kanalem?    |
 //|  cand   - testovany kandidat                                     |
 //|  out    - dosud vybrane kanaly, taken - kolik jich je            |
-//|  t1, t2 - casy porovnani, frac - prah shody                      |
+//|  b1, b2 - indexy baru pro porovnani, frac - prah shody           |
 //+------------------------------------------------------------------+
 bool PuntikyChannelIsDuplicate(SChannel &cand, SChannel &out[], const int taken,
-                            const datetime t1, const datetime t2, const double frac)
+                            const double b1, const double b2, const double frac)
   {
    for(int j = 0; j < taken; j++)
-      if(PuntikyChannelsSimilar(cand, out[j], t1, t2, frac))
+      if(PuntikyChannelsSimilar(cand, out[j], b1, b2, frac))
          return(true);
    return(false);
   }
@@ -429,13 +436,15 @@ int PuntikyCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const 
          ch.touches = 0; ch.containment = 0.0; ch.spanBars = 0; ch.ageBars = 0;
          ch.score = 0.0; ch.extraCount = 0;
 
-         const double dt = (double)(ch.tC - ch.tA);
-         if(dt <= 0.0)
+         // Sklon se pocita na BAR, ne na sekundu - stejne, jako kanal
+         // kresli MT5 v grafu (viz hlavicka SChannel)
+         const double dBars = (double)(ch.iC - ch.iA);
+         if(dBars <= 0.0)
             continue;
 
          // Zakladni usecka je dana body A a C, proto ji lze sestrojit
          // jeste pred vyberem bodu B
-         ch.slope = (ch.pC - ch.pA) / dt;
+         ch.slope = (ch.pC - ch.pA) / dBars;
 
          // B = protilehly swing nejdal od zakladni usecky. Meri se
          // odstup OD USECKY, ne absolutni cena - usecka je sikma,
@@ -447,7 +456,7 @@ int PuntikyCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const 
            {
             if(sw[k].isHigh == sw[i].isHigh)
                continue;
-            const double base = ch.BaseAt(sw[k].time);
+            const double base = ch.BaseAtBar((double)sw[k].index);
             const double d    = ch.baseIsLow ? (sw[k].price - base) : (base - sw[k].price);
             if(bIdx < 0 || d > bDist)
               {
@@ -502,11 +511,10 @@ int PuntikySelectChannels(const MqlRates &rates[], SChannel &cand[], const SChan
 
    PuntikySortByScoreDesc(cand);
 
-   const datetime tLast = rates[n - 1].time;
-   // Druhy porovnavaci okamzik pro deduplikaci - dost daleko, aby se
-   // projevil rozdilny sklon kanalu
-   const int      backBars = MathMin(PUNTIKY_DEDUP_BACK_BARS, n - 1);
-   const datetime tPast    = rates[n - 1 - backBars].time;
+   // Dva porovnavaci indexy pro deduplikaci - druhy dost daleko, aby
+   // se projevil rozdilny sklon kanalu
+   const double barLast = (double)(n - 1);
+   const double barPast = (double)(n - 1 - MathMin(PUNTIKY_DEDUP_BACK_BARS, n - 1));
    int taken = 0;
    ArrayResize(out, p.maxChannels);
 
@@ -520,7 +528,7 @@ int PuntikySelectChannels(const MqlRates &rates[], SChannel &cand[], const SChan
         {
          if(cand[i].scaleIdx != s)
             continue;
-         if(PuntikyChannelIsDuplicate(cand[i], out, taken, tLast, tPast, p.dedupFrac))
+         if(PuntikyChannelIsDuplicate(cand[i], out, taken, barLast, barPast, p.dedupFrac))
             continue;
 
          out[taken++] = cand[i];
@@ -531,7 +539,7 @@ int PuntikySelectChannels(const MqlRates &rates[], SChannel &cand[], const SChan
    //--- 2. faze: zbyla mista se doplni podle skore bez ohledu na meritko
    for(int i = 0; i < nc && taken < p.maxChannels; i++)
      {
-      if(PuntikyChannelIsDuplicate(cand[i], out, taken, tLast, tPast, p.dedupFrac))
+      if(PuntikyChannelIsDuplicate(cand[i], out, taken, barLast, barPast, p.dedupFrac))
          continue;
       out[taken++] = cand[i];
      }
@@ -591,21 +599,24 @@ int PuntikyBuildChannels(const MqlRates &rates[], const SChannelParams &p,
 //| od zadane ceny k teto hrane.                                     |
 //| Prochazi obe hrany vsech aktivnich kanalu (tedy i vnorenych),    |
 //| takze "dalsi hrana" muze patrit i mensimu kanalu uvnitr vetsiho. |
-//| Kvuli sklonu hran se bere konzervativnejsi hodnota z casu vstupu |
-//| a z casu projekce (tProj) - pro BUY nizsi, pro SELL vyssi.       |
+//| Kvuli sklonu hran se bere konzervativnejsi hodnota z aktualniho  |
+//| baru a z baru projekce (barProj) - pro BUY nizsi, pro SELL vyssi.|
 //| Kdyz sikma hrana do casu projekce klesne az za zadanou cenu,     |
 //| vraci se vzdalenost 0 (misto pro PT uz neni zadne) - zaporna     |
-//| delka by se jinak protlacila do panelu i do vypoctu.             |
+//| delka by se jinak protlacila do panelu i do vypoctu. Do          |
+//| edgePrice se i v tom pripade vraci poloha HRANY, ne zadana cena: |
+//| volajici ji vypisuje jako "hranu kanalu" a driv v ni mel ulozeny |
+//| vlastni spoustec, tedy cenu, ktera zadnou hranici kanalu neni.   |
 //|  ch        - aktivni kanaly                                      |
-//|  t         - cas, ke kteremu se hrany pocitaji                   |
-//|  tProj     - cas projekce hran dopredu                           |
+//|  barNow    - index baru, ke kteremu se hrany pocitaji            |
+//|  barProj   - index baru projekce hran dopredu                    |
 //|  price     - vychozi cena (referencni uroven obchodu)            |
 //|  isBuy     - smer obchodu                                        |
 //|  edgePrice - out: cena nalezene hrany                            |
 //| Vraci vzdalenost v cene, nebo -1 pokud zadna hrana ve smeru      |
 //| obchodu neexistuje.                                              |
 //+------------------------------------------------------------------+
-double PuntikyDistanceToNextEdge(SChannel &ch[], const datetime t, const datetime tProj,
+double PuntikyDistanceToNextEdge(SChannel &ch[], const double barNow, const double barProj,
                               const double price, const bool isBuy, double &edgePrice)
   {
    const int cnt = ArraySize(ch);
@@ -617,8 +628,8 @@ double PuntikyDistanceToNextEdge(SChannel &ch[], const datetime t, const datetim
       // Obe hrany kazdeho kanalu jsou platnym cilem
       for(int e = 0; e < 2; e++)
         {
-         const double vNow  = (e == 0) ? ch[i].UpperAt(t)     : ch[i].LowerAt(t);
-         const double vProj = (e == 0) ? ch[i].UpperAt(tProj) : ch[i].LowerAt(tProj);
+         const double vNow  = (e == 0) ? ch[i].UpperAtBar(barNow)  : ch[i].LowerAtBar(barNow);
+         const double vProj = (e == 0) ? ch[i].UpperAtBar(barProj) : ch[i].LowerAtBar(barProj);
 
          // Hrana musi lezet ve smeru obchodu, jinak neni cilem
          if(isBuy ? (vNow <= price) : (vNow >= price))
@@ -629,12 +640,11 @@ double PuntikyDistanceToNextEdge(SChannel &ch[], const datetime t, const datetim
          const double d = isBuy ? (v - price) : (price - v);
 
          const double dist = MathMax(d, 0.0);
-         const double edge = (d > 0.0) ? v : price;   // hrana uz je na urovni ceny
 
          if(best < 0.0 || dist < best)
            {
             best      = dist;
-            edgePrice = edge;
+            edgePrice = v;   // vzdy poloha hrany, i kdyz uz cenu minula
            }
         }
      }
@@ -643,19 +653,19 @@ double PuntikyDistanceToNextEdge(SChannel &ch[], const datetime t, const datetim
   }
 
 //+------------------------------------------------------------------+
-//| Vrati index kanalu, uvnitr ktereho lezi zadana cena v case t,    |
+//| Vrati index kanalu, uvnitr ktereho lezi zadana cena na baru bar, |
 //| nebo -1. Pri vice vyhovujicich kanalech vraci ten s nejlepsim    |
 //| skore (pole je jiz serazene sestupne).                           |
 //|  ch      - aktivni kanaly                                        |
-//|  t       - cas testu                                             |
+//|  bar     - index baru, ke kteremu se testuje                     |
 //|  price   - testovana cena                                        |
 //|  tolFrac - tolerance testu jako zlomek sirky kanalu              |
 //+------------------------------------------------------------------+
-int PuntikyFindContainingChannel(SChannel &ch[], const datetime t, const double price, const double tolFrac)
+int PuntikyFindContainingChannel(SChannel &ch[], const double bar, const double price, const double tolFrac)
   {
    const int cnt = ArraySize(ch);
    for(int i = 0; i < cnt; i++)
-      if(ch[i].Contains(t, price, tolFrac * ch[i].width))
+      if(ch[i].ContainsAtBar(bar, price, tolFrac * ch[i].width))
          return(i);
    return(-1);
   }

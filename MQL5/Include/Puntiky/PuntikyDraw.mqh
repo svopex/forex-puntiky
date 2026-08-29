@@ -188,26 +188,33 @@ void PuntikyButton(const string name, const int x, const int y, const int w, con
 //+------------------------------------------------------------------+
 //| Vykresli jeden kanal: LOW usecku a HIGH usecku.                  |
 //| Popisky opor se kresli zvlast pres PuntikyDrawLabels.            |
+//| Usecka se kotvi bodem A a barem tEnd / barEnd. MT5 interpoluje   |
+//| mezi kotvami v prostoru INDEXU baru a kanal je v indexech i      |
+//| pocitany, takze nakreslena cara sedi na spoctenych hodnotach     |
+//| presne - i pres vikendove mezery, kde se driv (sklon na sekundu) |
+//| rozchazela o velkou cast sirky kanalu.                           |
 //|  ch      - kresleny kanal                                        |
 //|  idx     - poradi kanalu (0 = hlavni, vyssi = mene vyznamny)     |
 //|  tEnd    - cas praveho konce usecek                              |
+//|  barEnd  - index baru, ktery tomuto casu odpovida                |
 //|  clrHigh - barva HIGH usecky, clrLow - barva LOW usecky          |
 //+------------------------------------------------------------------+
-void PuntikyDrawChannel(SChannel &ch, const int idx, const datetime tEnd,
+void PuntikyDrawChannel(SChannel &ch, const int idx, const datetime tEnd, const double barEnd,
                      const color clrHigh, const color clrLow)
   {
    const string id  = PUNTIKY_PREFIX + "CH" + IntegerToString(idx) + "_";
    const string num = IntegerToString(idx + 1);   // kanaly cislujeme od 1
    // Hlavni kanal kreslime silneji nez vnorene / mene vyznamne
    const int    w   = (idx == 0) ? 2 : 1;
+   const double barA = (double)ch.iA;
 
    //--- HIGH usecka (horni hrana kanalu)
-   PuntikyTrendLine(id + "HIGH", ch.tA, ch.UpperAt(ch.tA), tEnd, ch.UpperAt(tEnd),
+   PuntikyTrendLine(id + "HIGH", ch.tA, ch.UpperAtBar(barA), tEnd, ch.UpperAtBar(barEnd),
                  clrHigh, w, STYLE_SOLID, true,
                  "Kanál " + num + " - HIGH úsečka");
 
    //--- LOW usecka (spodni hrana kanalu)
-   PuntikyTrendLine(id + "LOW", ch.tA, ch.LowerAt(ch.tA), tEnd, ch.LowerAt(tEnd),
+   PuntikyTrendLine(id + "LOW", ch.tA, ch.LowerAtBar(barA), tEnd, ch.LowerAtBar(barEnd),
                  clrLow, w, STYLE_SOLID, true,
                  "Kanál " + num + " - LOW úsečka");
   }

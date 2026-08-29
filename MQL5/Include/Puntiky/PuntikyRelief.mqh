@@ -25,7 +25,7 @@ struct SReliefLine
    datetime          t1, t2;    // opory primky
    double            p1, p2;
    int               i1, i2;    // indexy baru v analyzovanem poli
-   double            slope;     // zmena ceny za 1 sekundu
+   double            slope;     // zmena ceny na 1 bar
    int               touches;   // pocet potvrzenych dotyku (bez opor primky)
    int               spanBars;  // delka primky v barech
    int               ageBars;   // stari druhe opory v barech
@@ -33,10 +33,14 @@ struct SReliefLine
    double            maxOver;   // nejvetsi presah knotu pres primku
    double            score;     // pro vyber nejvyznamnejsich primek
 
-   //--- Hodnota primky v case t
-   double            ValueAt(const datetime t)
+   //--- Hodnota primky na baru s indexem idx.
+   //--- Stejne jako u kanalu se pocita v INDEXECH baru, ne v case:
+   //--- MT5 kresli usecku v prostoru indexu, takze primka vedena pres
+   //--- vikendovou mezeru by se v grafu ohnula mimo hodnotu, se kterou
+   //--- expert zkracuje PT (viz hlavicka SChannel).
+   double            ValueAtBar(const double idx)
      {
-      return p1 + slope * (double)(t - t1);
+      return p1 + slope * (idx - (double)i1);
      }
    //--- Odstup svicky od uz spoctene hodnoty primky: kladny = svicka
    //--- primku nedosahla, zaporny = knot ji presahl. Jedna definice pro
@@ -46,10 +50,10 @@ struct SReliefLine
      {
       return isHigh ? (v - high) : (low - v);
      }
-   //--- Odstup svicky od primky v case t
-   double            GapTo(const datetime t, const double high, const double low)
+   //--- Odstup svicky od primky na baru idx
+   double            GapAtBar(const double idx, const double high, const double low)
      {
-      return GapFrom(ValueAt(t), high, low);
+      return GapFrom(ValueAtBar(idx), high, low);
      }
    //--- Dotyk primky: svicka je v tolerancnim pasmu kolem ni
    bool              IsTouch(const double gap, const double tol)
@@ -71,13 +75,14 @@ struct SReliefStats
    int               pierced;    // primka prorazena cenou
    int               midTouch;   // chybi dotyk uprostred
    int               touches;    // malo dotyku celkem
-   int               passed;     // proslo vsemi filtry
+   int               merged;     // proslo filtry, ale splynulo s primkou od teze kotvy
+   int               passed;     // proslo filtry a stalo se samostatnym kandidatem
    int               selected;   // vybrano
 
    void              Reset()
      {
       pairs = 0; span = 0; age = 0; drift = 0; pierced = 0;
-      midTouch = 0; touches = 0; passed = 0; selected = 0;
+      midTouch = 0; touches = 0; merged = 0; passed = 0; selected = 0;
      }
   };
 
@@ -96,13 +101,36 @@ struct SReliefParams
    double            touchTol;     // tolerance dotyku (v cene)
    double            dedupTol;     // prah shody dvou primek (v cene)
    double            maxAgeFactor; // jak dlouho primka plati za druhou oporou
-   double            maxDrift;     // jak daleko smi primka ujet od druhe opory
+   double            maxDrift;     // jak daleko smi primka ujet od druhe opory (v cene)
+   double            maxDriftATR;  // totez jako nasobek ATR (0 = jen bodova mez)
+   double            atr;          // aktualni ATR pracovniho TF
    bool              needMidTouch; // vyzadovat dotyk i uprostred primky
    double            midTol;       // tolerance stredniho dotyku (v cene)
    double            midFrom;      // zacatek stredniho useku (0..1)
    double            midTo;        // konec stredniho useku (0..1)
    int               maxLines;     // kolik primek ponechat
   };
+
+//+------------------------------------------------------------------+
+//| Prah, za kterym uz primka od sve druhe opory ujela prilis.       |
+//| Bere se VETSI z bodove meze a nasobku ATR. Samotna bodova mez se |
+//| totiz neprizpusobi nastroji: zadani 3000 b znamena na zlate      |
+//| primerenych par ATR, kdezto na BTCUSD (ATR M15 kolem 84 USD) jen |
+//| 0.36 ATR - filtr tam zahazoval 99 % kandidatu a zbyly jen         |
+//| vodorovne nebo cerstve primky. Sirka kanalu se meri stejne, tedy |
+//| bodova mez vedle nasobku ATR.                                    |
+//| Nula v bodove mezi znamena vypnuty filtr, i kdyz je nasobek ATR  |
+//| zadany - "bez omezeni" musi zustat bez omezeni.                  |
+//|  p - parametry hledani (vcetne aktualniho ATR)                   |
+//+------------------------------------------------------------------+
+double PuntikyReliefDriftLimit(const SReliefParams &p)
+  {
+   if(p.maxDrift <= 0.0)
+      return(0.0);
+   if(p.atr > 0.0 && p.maxDriftATR > 0.0)
+      return(MathMax(p.maxDrift, p.maxDriftATR * p.atr));
+   return(p.maxDrift);
+  }
 
 //+------------------------------------------------------------------+
 //| Jediny pruchod svickami primky - kontrola prorazeni, dotyky,     |
@@ -156,7 +184,7 @@ bool PuntikyReliefScan(const MqlRates &rates[], SReliefLine &ln, const SReliefPa
      {
       // Hodnota primky se pocita jednou za bar - je to nejcastejsi
       // operace cele detekce
-      const double v   = ln.ValueAt(rates[i].time);
+      const double v   = ln.ValueAtBar((double)i);
       const double gap = ln.GapFrom(v, rates[i].high, rates[i].low);
 
       //--- Telo svicky nesmi primku prekrocit
@@ -208,21 +236,21 @@ bool PuntikyReliefScan(const MqlRates &rates[], SReliefLine &ln, const SReliefPa
 
 //+------------------------------------------------------------------+
 //| Jsou dve primky prakticky totozne?                               |
-//| Porovnava se ve DVOU casech - dve primky s ruznym sklonem se u   |
-//| posledni svicky muzou zrovna krizit a pri porovnani jedinym      |
+//| Porovnava se ve DVOU okamzicich - dve primky s ruznym sklonem se |
+//| u posledni svicky muzou zrovna krizit a pri porovnani jedinym    |
 //| okamzikem by se chybne slily (stejnou past resi i dedup kanalu). |
 //|  a, b   - porovnavane primky                                     |
-//|  t1, t2 - dva ruzne casove okamziky porovnani                    |
+//|  b1, b2 - dva ruzne indexy baru pro porovnani                    |
 //|  tol    - prah shody v cene                                      |
 //+------------------------------------------------------------------+
-bool PuntikyReliefSimilar(SReliefLine &a, SReliefLine &b, const datetime t1, const datetime t2,
+bool PuntikyReliefSimilar(SReliefLine &a, SReliefLine &b, const double b1, const double b2,
                        const double tol)
   {
    if(a.isHigh != b.isHigh)
       return(false);
-   if(MathAbs(a.ValueAt(t1) - b.ValueAt(t1)) >= tol)
+   if(MathAbs(a.ValueAtBar(b1) - b.ValueAtBar(b1)) >= tol)
       return(false);
-   if(MathAbs(a.ValueAt(t2) - b.ValueAt(t2)) >= tol)
+   if(MathAbs(a.ValueAtBar(b2) - b.ValueAtBar(b2)) >= tol)
       return(false);
    return(true);
   }
@@ -254,6 +282,9 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
    int nc = 0;
 
    const int maxGap = MathMax(p.maxSwingGap, 2);
+
+   // Prah driftu se spocita jednou - zavisi jen na parametrech a ATR
+   const double driftLimit = PuntikyReliefDriftLimit(p);
 
    //--- Swingy se hledaji ve vice meritkach - jemne okno da cerstve
    //--- lokalni primky, hrube okno vidi jen hlavni vrcholy/dna, takze
@@ -306,19 +337,20 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
                continue;
               }
 
-            const double dt = (double)(ln.t2 - ln.t1);
-            if(dt <= 0.0)
+            // Sklon na BAR, ne na sekundu (viz hlavicka SReliefLine)
+            const double dBars = (double)(ln.i2 - ln.i1);
+            if(dBars <= 0.0)
                continue;
-            ln.slope = (ln.p2 - ln.p1) / dt;
+            ln.slope = (ln.p2 - ln.p1) / dBars;
 
             // Jak daleko primka ujela od sve druhe opory. Strma cara se
-            // za par hodin vzdali desitky dolaru od ceny, kde uz se
-            // niceho nedotyka - takova primka neni reliefem, ale artefaktem.
+            // za par hodin vzdali od ceny nekolik ATR, kde uz se niceho
+            // nedotyka - takova primka neni reliefem, ale artefaktem.
             // Test je O(1), proto bezi jeste pred pruchodem svickami.
-            if(p.maxDrift > 0.0)
+            if(driftLimit > 0.0)
               {
-               const double drift = MathAbs(ln.ValueAt(rates[n - 1].time) - ln.p2);
-               if(drift > p.maxDrift)
+               const double drift = MathAbs(ln.ValueAtBar((double)(n - 1)) - ln.p2);
+               if(drift > driftLimit)
                  {
                   st.drift++;
                   continue;
@@ -345,8 +377,6 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
                continue;
               }
 
-            st.passed++;
-
             // Vyznamnejsi je primka s vice dotyky a delsim zaberem;
             // cim starsi je druha opora, tim mene je primka aktualni
             ln.score = (double)ln.touches * 2.0
@@ -367,6 +397,13 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
 
             if(same >= 0)
               {
+               // Vejir primek z jedne kotvy da jednoho kandidata, at uz
+               // vyhraje kterakoli z nich - do "proslo" se proto pocita
+               // az skutecne vznikly kandidat nize. Drive se zapocitaly
+               // vsechny a diagnostika hlasila radove vic primek, nez
+               // kolik jich doopravdy bylo.
+               st.merged++;
+
                // Skutecna tecna (mensi presah knotu) ma prednost - primka
                // ma prochazet spickami svicek, ne je rezat. Teprve pri
                // srovnatelnem presahu rozhoduji dotyky, prilnuti a zaber.
@@ -386,6 +423,7 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
                continue;
               }
 
+            st.passed++;
             ArrayResize(cand, nc + 1, 128);
             cand[nc++] = ln;
            }
@@ -401,9 +439,8 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
    //--- Vyber s odstranenim prakticky totoznych primek.
    //--- Odpory a podpory se stridaji, aby jeden typ neobsadil vsechny
    //--- sloty - jinak by silna serie podpor zastinila platny odpor.
-   const datetime tLast    = rates[n - 1].time;
-   const int      backBars = MathMin(PUNTIKY_DEDUP_BACK_BARS, n - 1);
-   const datetime tPast    = rates[n - 1 - backBars].time;
+   const double barLast = (double)(n - 1);
+   const double barPast = (double)(n - 1 - MathMin(PUNTIKY_DEDUP_BACK_BARS, n - 1));
    int taken = 0;
    ArrayResize(out, p.maxLines);
 
@@ -418,7 +455,7 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
 
          bool dup = false;
          for(int j = 0; j < taken; j++)
-            if(PuntikyReliefSimilar(out[j], cand[i], tLast, tPast, p.dedupTol))
+            if(PuntikyReliefSimilar(out[j], cand[i], barLast, barPast, p.dedupTol))
               {
                dup = true;
                break;
@@ -445,15 +482,21 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
 //| Najde nejblizsi reliefni primku ve smeru obchodu.                |
 //| Pro nakup se hledaji primky nad cenou, pro prodej pod ni -       |
 //| tedy ty, ktere by prurazu staly v ceste.                         |
+//| Stejne jako u hran kanalu se bere KONZERVATIVNEJSI z hodnoty na  |
+//| aktualnim baru a na baru projekce (pro BUY nizsi, pro SELL       |
+//| vyssi). Drive se primka merila jen "ted", takze strma cara       |
+//| (InpReliefMaxDrift pripousti i velmi strme) zkracovala PT podle  |
+//| polohy, kterou uz v okamziku vyplneni prikazu davno nemela.      |
 //|  lines     - aktivni reliefni primky                             |
-//|  t         - cas, ke kteremu se primky pocitaji                  |
+//|  barNow    - index baru, ke kteremu se primky pocitaji           |
+//|  barProj   - index baru projekce primek dopredu                  |
 //|  price     - vychozi cena (planovany vstup)                      |
 //|  isBuy     - smer obchodu                                        |
-//|  linePrice - out: cena nalezene primky v case t                  |
+//|  linePrice - out: konzervativni cena nalezene primky             |
 //| Vraci vzdalenost v cene, nebo -1 pokud zadna primka nevadi.      |
 //+------------------------------------------------------------------+
-double PuntikyNearestRelief(SReliefLine &lines[], const datetime t, const double price,
-                         const bool isBuy, double &linePrice)
+double PuntikyNearestRelief(SReliefLine &lines[], const double barNow, const double barProj,
+                         const double price, const bool isBuy, double &linePrice)
   {
    const int cnt = ArraySize(lines);
    double best = -1.0;
@@ -461,13 +504,17 @@ double PuntikyNearestRelief(SReliefLine &lines[], const datetime t, const double
 
    for(int i = 0; i < cnt; i++)
      {
-      const double v = lines[i].ValueAt(t);
+      const double vNow  = lines[i].ValueAtBar(barNow);
+      const double vProj = lines[i].ValueAtBar(barProj);
 
       // Primka za zady obchodu nevadi - prekazkou je jen ta ve smeru
-      if(isBuy ? (v <= price) : (v >= price))
+      if(isBuy ? (vNow <= price) : (vNow >= price))
          continue;
 
-      const double d = isBuy ? (v - price) : (price - v);
+      // Konzervativni odhad polohy primky v case obchodu
+      const double v = isBuy ? MathMin(vNow, vProj) : MathMax(vNow, vProj);
+      const double d = MathMax(isBuy ? (v - price) : (price - v), 0.0);
+
       if(best < 0.0 || d < best)
         {
          best      = d;

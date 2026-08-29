@@ -1,6 +1,6 @@
 # Puntiky Channel Breakout — strategie pro MetaTrader 5
 
-Expert Advisor pro MT5 (verze 1.17), který detekuje ABCD kanály na M15, kreslí je
+Expert Advisor pro MT5 (verze 1.18), který detekuje ABCD kanály na M15, kreslí je
 do grafu a obchoduje průrazy swingových H1 úrovní. Vstup se
 vyhodnocuje na M1. Do grafu vykresluje **pouze kanály, reliéfní přímky
 a informace o vstupu** — žádné jiné indikátory ani pomocnou grafiku.
@@ -42,6 +42,13 @@ Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
    Dotyky se střídají: A a C leží na základní úsečce, B na protější, takže D se
    čeká na protější hraně vůči C, E zase na základní a tak dál. Z jedné dotykové
    epizody se bere její nejzazší svíčka. Maximálně se sleduje 8 bodů (D až K).
+   Geometrie kanálu (i reliéfních přímek) je vedena v **indexech svíček**, ne
+   v reálném čase. MT5 kreslí úsečku v prostoru indexů — víkendová mezera na ose x
+   žádné místo nezabírá — takže sklon počítaný na sekundy znamenal, že nakreslená
+   čára a hodnota, se kterou expert počítá, se uprostřed okna rozešly o velkou část
+   šířky kanálu (při 1500 svíčkách M15 je ~28 % okna víkend). Poznalo se to podle
+   toho, že popisky A, B, C seděly na svých svíčkách, ale viditelně **mimo**
+   nakreslenou hranu. V indexech se obě věci kryjí přesně.
 4. Kanál musí cenu **obalovat a nesmí být proražený**. Kontroluje se celý úsek od
    bodu A až po poslední svíčku, přičemž obě hrany se posuzují **různě**, protože
    mají jiný význam:
@@ -110,6 +117,12 @@ Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
   i historie jsou v BID, ale BuyStop se plní za ASK, takže se u nákupu k ceně
   přičítá spread. Bez toho se BUY při širokém spreadu plnil ještě *pod* úrovní
   a žádná svíčka průraz nezaznamenala.
+  Nepoužívá se okamžitý spread, ale **medián posledních vzorků** (jeden za minutu,
+  půlhodinové okno). Tentýž přepočet totiž běží i na historických svíčkách a jedna
+  špička při rolloveru (na zlatě z 20 na 500 bodů) by naráz prohlásila za proražené
+  i swingy stovky bodů daleko — úroveň průrazu by odskočila na dávno neplatný swing
+  a příznak „proraženo“ by zaklapl, aniž by se cena k úrovni přiblížila. Chyba
+  přitom byla jednostranná (týkala se jen nákupů), takže se špatně všímala.
 - Obě strany se aktualizují **samostatně**: když se pro jeden směr žádný
   neproražený swing nenajde (v silném trendu jsou všechny starší vrcholy
   proražené), druhá strana se přesto přepočítá.
@@ -245,6 +258,24 @@ v cestě, takže ji strategie hlídá při plánování vstupu.
    které se právě kříží, chybně nesloučily. Při výběru se **střídají odpory
    a podpory**, aby jeden typ neobsadil všechny sloty.
 
+Jak daleko smí přímka ujet od své druhé opory, hlídá **dvojí mez**: bodová
+(`InpReliefMaxDrift`) a relativní k ATR (`InpReliefMaxDriftATR`); platí ta **větší**.
+Samotná bodová mez se totiž nepřizpůsobí nástroji — zadání 3000 b znamená na zlatě
+přiměřených pár ATR, ale na BTCUSD (ATR M15 kolem 84 USD) jen 0,36 ATR, takže filtr
+zahazoval **99 % kandidátů** (v diagnostice `drift 2450` z 2470) a zbyly jen vodorovné
+nebo čerstvé přímky. Šířka kanálu se měří stejně (`InpMinWidthPoints` vedle
+`InpMinWidthATR`). `InpReliefMaxDrift = 0` filtr vypne úplně i s násobkem ATR.
+Do logu se vypisuje, která mez zrovna platí:
+`PUNTIKY diag: reliéf - práh driftu N b (bodově M b, ATR A × K)`.
+
+Plný přepočet přímek běží **jednou za 15 svíček vstupního TF**, ne na každé.
+Ověřit každého kandidáta přes celou historii znamená při výchozích 7200 svíčkách
+a čtyřech měřítkách řádově miliony průchodů svíčkami a expert po tu dobu
+nezpracovává ticky (nekontroluje průraz, nesrovnává příkazy, neblikají žárovky).
+Každou minutu je to zbytečné — hlavní swingy se tak rychle nemění. Mezi přepočty
+se hlídá to podstatné: přímka, kterou právě uzavřená svíčka prorazila, **zmizí
+hned**, protože už překážkou není. Nová přímka může počkat na nejbližší přepočet.
+
 Když leží přímka ve směru obchodu **blíž než plánovaný PT**, rozhoduje
 `InpReliefMode`:
 
@@ -273,8 +304,21 @@ Přímky se přepočítávají s každou novou M1 svíčkou a kreslí se do graf
   kanálu, právě když swing seděl na hraně.
 - Hledají se hrany **všech** aktivních kanálů, takže cílem může být i hrana menšího
   kanálu vnořeného do většího.
-- Protože jsou hrany šikmé, bere se konzervativnější hodnota z času vstupu a z času
-  projekce o `InpEdgeProjBars` svíček dopředu.
+- Protože jsou hrany šikmé, bere se konzervativnější hodnota z aktuální svíčky a ze
+  svíčky projekce dopředu. **Stejně** se promítá i reliéfní přímka — horizont se jen
+  přepočte na svíčky vstupního TF, aby se obě překážky posuzovaly ke stejnému
+  okamžiku. Dřív se reliéf měřil jen „teď“, takže strmá přímka
+  (`InpReliefMaxDrift` připouští i velmi strmé) zkracovala PT podle polohy, kterou
+  v okamžiku vyplnění příkazu dávno neměla.
+- **Délka projekce se odvozuje z obchodu, ne z pevného počtu svíček.** Odhaduje se
+  jako `InpMaxEntryPoints / ATR` — obchod dlouhý jednu ATR trvá řádově jednu svíčku;
+  `InpEdgeProjBars` je už jen **strop**. Pevný počet svíček se totiž nepřizpůsobil
+  nástroji, stejně jako dřív práh driftu: na BTCUSD je celý obchod 300 b = 3 USD proti
+  ATR M15 kolem 84 USD, tedy otázka minut, ale hrana kanálu za 12 svíček (3 hodiny)
+  mezitím vyjela přes 100 USD nad vstup — a konzervativní odhad zamítl směr
+  (`málo místa k hraně kanálu (0 b)`), kde bylo **3708 b místa, dvanáctkrát víc, než
+  obchod potřeboval**. Do logu se vypisuje, co zrovna platí:
+  `PUNTIKY diag: projekce překážek N svíčky PERIOD_M15 (strop 12, vstup 300 b, ATR A)`.
 - Když je místa méně než `InpMinEntryPoints`, nebo délka nepřesahuje stop-level
   brokera, obchod se neotevře a důvod se zobrazí v panelu.
 - Objem: výchozí je dopočet z rizika (`InpLotMode = PUNTIKY_LOT_RISK`: ztráta na SL
@@ -287,11 +331,18 @@ Přímky se přepočítávají s každou novou M1 svíčkou a kreslí se do graf
   nejmenší dovolený lot, **obchod se neotevře** a v panelu je vidět, jaké procento
   by minimální lot znamenal — dřív se lot zvedl na minimum a riziko tiše překročilo
   zadaný limit (na malém účtu i několikanásobně).
+  Objem se **na minimum brokera nikdy nezvedá**, a to ani v režimu pevného lotu.
+  Dřív to dělal `MathMax(lot, minLot)` úplně nakonec a tiše tím rušil obě dělení:
+  při `InpFixedLot = 0.10` a minimu symbolu 0.10 dostaly obě nohy dvojitého vstupu
+  plných 0.10, tedy **dvojnásobek** expozice jednoho obchodu, přestože bublina
+  tlačítka i tato dokumentace slibují polovinu. Takový obchod se teď nezadá
+  a důvod je v panelu.
 
 ### Stavy a důvody zamítnutí v panelu
 
-Řádek `stav:` ukazuje pro každý směr `připraven` / `blokován` (cena ještě nebyla
-na správné straně úrovně) / `obchodován` / `nelze (důvod)`. Možné důvody:
+Řádek `stav:` ukazuje pro každý směr `připraven` / `obchodován` / `nelze (důvod)`.
+Nenabitý směr (cena ještě nebyla na správné straně úrovně) spadá pod `nelze`
+s důvodem `čeká na návrat pod/nad úroveň`. Možné důvody:
 
 | Důvod | Význam |
 |---|---|
@@ -307,6 +358,7 @@ na správné straně úrovně) / `obchodován` / `nelze (důvod)`. Možné důvo
 | `málo místa k hraně kanálu / reliéfní přímce (N b)` | zbývá méně než `InpMinEntryPoints` |
 | `délka pod stop-level brokera` | SL/PT by byly blíž, než broker dovolí |
 | `riziko N % nestačí ani na M lot` | v režimu RISK by minimální lot překročil zadané riziko |
+| `objem N nedosahuje minima brokera M` | po zaokrouhlení na krok objemu (a u dvojitého vstupu po rozdělení rizika) zbyl objem pod minimem symbolu |
 | `nelze určit objem` | výpočet lotu selhal (chybí data symbolu nebo účtu) |
 
 ### Co se kreslí do grafu
@@ -583,7 +635,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpBreakoutBuffer` | 10 | buffer za úrovní průrazu |
 | `InpMaxLevelOffset` | 30 | max. odstup tržního vstupu od úrovně (režim M1_CLOSE) |
 | `InpEdgeBuffer` | 20 | rezerva PT před hranou kanálu |
-| `InpEdgeProjBars` | 12 | o kolik svíček dopředu se hrany promítají |
+| `InpEdgeProjBars` | 12 | **strop** projekce hran dopředu (skutečná délka vyjde z `InpMaxEntryPoints / ATR`) |
 | `InpInsideTolFrac` | 0.02 | tolerance testu „úroveň uvnitř kanálu“ (zlomek šířky) |
 | `InpAllowBuy` / `InpAllowSell` | true / true | povolení jednotlivých směrů |
 | `InpMaxPositions` | 1 | maximální počet současných pozic |
@@ -607,7 +659,8 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpReliefTouchTol` | 25 | tolerance dotyku (body) |
 | `InpReliefDedupTol` | 40 | práh shody dvou přímek (body) |
 | `InpReliefMaxAge` | 0.0 | platnost přímky za 2. oporou v násobcích délky (0 = neomezeno) |
-| `InpReliefMaxDrift` | 3000 | max. vzdálení přímky od 2. opory (body) |
+| `InpReliefMaxDrift` | 3000 | max. vzdálení přímky od 2. opory (body; 0 = filtr vypnutý) |
+| `InpReliefMaxDriftATR` | 4.0 | totéž jako násobek ATR — platí větší z obou mezí |
 | `InpReliefMidTouch` | false | vyžadovat dotyk i uprostřed přímky |
 | `InpReliefMidTol` | 60 | tolerance středního dotyku (body) |
 | `InpReliefMidFrom` / `InpReliefMidTo` | 0.20 / 0.80 | prostřední úsek přímky |
@@ -626,7 +679,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | Parametr | Výchozí | Význam |
 |---|---|---|
 | `InpShowChannels` | true | kreslit kanály |
-| `InpShowPoints` | true | kreslit opory A B C D … |
+| `InpShowPoints` | true | kreslit opory A B C D … (nezávisle na `InpShowChannels`) |
 | `InpShowBreakLevels` | true | kreslit úrovně průrazu |
 | `InpShowEntryLevels` | true | kreslit úrovně plánovaného vstupu |
 | `InpShowRelief` | true | kreslit reliéfní přímky |

@@ -63,6 +63,13 @@ struct SDirectionState
      {
       return(positions > 0 || orders > 0);
      }
+   //--- Prazdny prehled - mimo rucni rezim se seznam vubec neprochazi
+   void              Reset()
+     {
+      positions = 0;
+      orders    = 0;
+      kind      = PUNTIKY_MANUAL_NONE;
+     }
   };
 
 //+------------------------------------------------------------------+
@@ -167,6 +174,16 @@ void PuntikySortByScoreDesc(T &arr[])
 //| vedou pres metody nize, aby mely jednu definici - drive to byly  |
 //| ctyri ad-hoc nerovnosti roztroušene po modulech, ktere si        |
 //| navzajem odporovaly (bod D zapsany bez horni meze vs. dotyk s ni)|
+//|                                                                  |
+//| GEOMETRIE JE VEDENA V INDEXECH BARU, ne v realnem case. MT5      |
+//| kresli usecku (OBJ_TREND) v prostoru indexu - vikendova mezera   |
+//| na ose x zadne misto nezabira. Kdyz se sklon pocital na sekundy, |
+//| nakreslena cara a hodnota, se kterou expert pocital, se uprostred|
+//| okna rozesly o velkou cast sirky kanalu (pri 1500 barech M15 je  |
+//| ~28 % okna vikend) - popisky A B C sedely na svych barech a      |
+//| viditelne mimo nakreslenou hranu. V indexech se obe veci kryji.  |
+//| Index smi byt zlomkovy a smi presahnout za posledni bar (projekce|
+//| hran dopredu) - v budoucnu MT5 bary take radi po delce periody.  |
 //+------------------------------------------------------------------+
 struct SChannel
   {
@@ -185,7 +202,7 @@ struct SChannel
    bool              extraUpper[PUNTIKY_MAX_TOUCH_POINTS];   // dotyk horni hrany?
 
    //--- geometrie
-   double            slope;        // zmena ceny za 1 sekundu na zakladni usecce
+   double            slope;        // zmena ceny na 1 bar na zakladni usecce
    double            width;        // vertikalni sirka kanalu v cene
 
    //--- hodnoceni kvality
@@ -196,38 +213,38 @@ struct SChannel
    int               scaleIdx;     // meritko detekce (0 = nejjemnejsi swingy)
    double            score;        // vysledne skore pro vyber hlavnich kanalu
 
-   //--- Hodnota zakladni (base) usecky v case t
-   double            BaseAt(const datetime t)
+   //--- Hodnota zakladni (base) usecky na baru s indexem idx
+   double            BaseAtBar(const double idx)
      {
-      return pA + slope * (double)(t - tA);
+      return pA + slope * (idx - (double)iA);
      }
-   //--- Hodnota spodni hrany kanalu v case t
-   double            LowerAt(const datetime t)
+   //--- Hodnota spodni hrany kanalu na baru idx
+   double            LowerAtBar(const double idx)
      {
-      return baseIsLow ? BaseAt(t) : BaseAt(t) - width;
+      return baseIsLow ? BaseAtBar(idx) : BaseAtBar(idx) - width;
      }
-   //--- Hodnota horni hrany kanalu v case t
-   double            UpperAt(const datetime t)
+   //--- Hodnota horni hrany kanalu na baru idx
+   double            UpperAtBar(const double idx)
      {
-      return baseIsLow ? BaseAt(t) + width : BaseAt(t);
+      return baseIsLow ? BaseAtBar(idx) + width : BaseAtBar(idx);
      }
-   //--- Test, zda cena lezi uvnitr kanalu v case t (s toleranci v cene)
-   bool              Contains(const datetime t, const double price, const double tol)
+   //--- Test, zda cena lezi uvnitr kanalu na baru idx (tolerance v cene)
+   bool              ContainsAtBar(const double idx, const double price, const double tol)
      {
-      return (price >= LowerAt(t) - tol && price <= UpperAt(t) + tol);
+      return (price >= LowerAtBar(idx) - tol && price <= UpperAtBar(idx) + tol);
      }
    //--- Dotyk horni hrany: high dosahl do tolerancniho pasma u hrany.
    //--- Horni mez je zamerne volnejsi (2x tol) - knot smi hranu lehce
    //--- presahnout, porad je to dotyk, ne proriznuti.
-   bool              TouchesUpper(const datetime t, const double high, const double tol)
+   bool              TouchesUpperAtBar(const double idx, const double high, const double tol)
      {
-      const double up = UpperAt(t);
+      const double up = UpperAtBar(idx);
       return (high >= up - tol && high <= up + tol * 2.0);
      }
-   //--- Dotyk spodni hrany (zrcadlove k TouchesUpper)
-   bool              TouchesLower(const datetime t, const double low, const double tol)
+   //--- Dotyk spodni hrany (zrcadlove k TouchesUpperAtBar)
+   bool              TouchesLowerAtBar(const double idx, const double low, const double tol)
      {
-      const double lo = LowerAt(t);
+      const double lo = LowerAtBar(idx);
       return (low <= lo + tol && low >= lo - tol * 2.0);
      }
   };
@@ -298,6 +315,11 @@ struct SEntryPlan
    double            tp;           // take profit
    double            distance;     // delka vstupu v cene (SL i PT maji tuto delku)
    double            lots;         // navrzeny objem
+   // Objem jedne nohy dvojiteho vstupu (polovicni riziko). Pocita se
+   // uz pri stavbe navrhu, aby ho bublina tlacitka 2x nemusela
+   // dopocitavat pri kazdem obnoveni panelu, tedy kazdou sekundu.
+   double            lotsDouble;   // 0 = dvojity vstup nelze zadat
+   string            doubleReason; // proc dvojity vstup nelze ("" = lze)
    ENUM_PUNTIKY_BARRIER barrier;      // co PT zkratilo (hrana kanalu / reliefni primka)
    double            barrierPrice; // cena teto prekazky
    int               channelIdx;   // index kanalu, uvnitr ktereho vstupujeme
