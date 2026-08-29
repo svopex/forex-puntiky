@@ -19,7 +19,7 @@
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
-#property version   "1.21"
+#property version   "1.22"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -143,6 +143,7 @@ input group "=== Upozorneni Hue ==="
 input bool            InpHueEnabled       = true;          // Blikat zarovkou pri priblizeni k urovni vstupu
 input string          InpHueUrl           = "http://192.168.0.157:8082/hue"; // URL sluzby Hue (vcetne portu)
 input int             InpHueNearPoints    = 500;           // Vzdalenost od urovne vstupu pro upozorneni (body)
+input double          InpHueResetFactor   = 1.25;          // Hystereze - pamet se uvolni az za N-nasobkem prahu
 input int             InpHueRepeatMinutes = 0;             // Opakovat upozorneni po N minutach (0 = jen jednou)
 input int             InpHueTimeout       = 1000;          // Timeout HTTP pozadavku (ms)
 input bool            InpHueTestButton    = true;          // Zobrazit tlacitko pro test upozorneni
@@ -415,9 +416,10 @@ int OnInit()
    // Bez povoleni adresy v nastaveni terminalu skonci WebRequest chybou 4014,
    // proto se URL vypise hned pri startu
    if(InpHueEnabled)
-      PrintFormat("PUNTIKY: upozornění Hue zapnuto - %d b od úrovně vstupu, %s "
-                  "(adresu povol v Nástroje > Možnosti > Strategie > Povolit WebRequest)",
-                  InpHueNearPoints, InpHueUrl);
+      PrintFormat("PUNTIKY: upozornění Hue zapnuto - %d b od úrovně vstupu, paměť se "
+                  "uvolní za %.0f b, %s (adresu povol v Nástroje > Možnosti > "
+                  "Strategie > Povolit WebRequest)",
+                  InpHueNearPoints, InpHueNearPoints * InpHueResetFactor, InpHueUrl);
 
    if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
       Print("PUNTIKY: ruční režim - expert sám neobchoduje, obchody se zadávají "
@@ -893,6 +895,11 @@ bool ValidateInputs()
    if(InpHueTimeout < 1)         err += "InpHueTimeout >= 1; ";
    if(InpHueNearPoints < 0)      err += "InpHueNearPoints >= 0; ";
    if(InpHueRepeatMinutes < 0)   err += "InpHueRepeatMinutes >= 0; ";
+
+   // Hystereze pod 1 by pamet upozorneni uvolnila jeste UVNITR pasma,
+   // ve kterem se hlasi - upozorneni by se pak posilalo znovu a znovu
+   // pri kazdem ticku, ktery se do pasma vrati
+   if(InpHueResetFactor < 1.0)   err += "InpHueResetFactor >= 1; ";
 
    // Zobrazeni - nulove pismo by udelalo z panelu i tlacitek prazdna mista
    if(InpPanelFontSize < 1)      err += "InpPanelFontSize >= 1; ";
@@ -3716,9 +3723,11 @@ void CheckHueAlerts()
 void HueCheckDirection(const bool isBuy, const double level, const double dist,
                        const double nearDist, SDirection &d)
   {
-   // Priznak se uvolni az za hysterezi 25 % nad prahem - pri kolisani
-   // presne na hranici pasma by se jinak blikalo porad dokola
-   if(dist < 0.0 || dist > nearDist * 1.25)
+   // Priznak se uvolni az za hysterezi nad prahem - pri kolisani presne
+   // na hranici pasma by se jinak blikalo porad dokola. Sirku hystereze
+   // urcuje InpHueResetFactor (1.0 = zadna, uvolni se hned za prahem).
+   // Cena za urovni vstupu priznak uvolnuje vzdy, bez ohledu na nej.
+   if(dist < 0.0 || dist > nearDist * InpHueResetFactor)
      {
       d.hueLevel = 0.0;
       return;

@@ -1,6 +1,6 @@
 # Puntiky Channel Breakout — strategie pro MetaTrader 5
 
-Expert Advisor pro MT5 (verze 1.21), který detekuje ABCD kanály na M15, kreslí je
+Expert Advisor pro MT5 (verze 1.22), který detekuje ABCD kanály na M15, kreslí je
 do grafu a obchoduje průrazy swingových H1 úrovní. Vstup se
 vyhodnocuje na M1. Do grafu vykresluje **pouze kanály, reliéfní přímky
 a informace o vstupu** — žádné jiné indikátory ani pomocnou grafiku.
@@ -592,9 +592,18 @@ Tělo požadavku se skládá automaticky ze symbolu, směru a ceny vstupu —
   proražená, v cestě reliéfní přímka, málo místa k hraně …), upozornění nechodí —
   není k čemu zvát.
 - Na jednu úroveň se hlásí **jednou**. Nová úroveň (nový H1 swing) upozornění
-  odblokuje; opakování na stejné úrovni lze zapnout přes `InpHueRepeatMinutes`.
-- Odchod z pásma uvolní příznak až za hysterezí 25 % nad prahem, aby se při
-  kolísání přesně na hranici neblikalo pořád dokola.
+  odblokuje; opakování na stejné úrovni zapne `InpHueRepeatMinutes` — s hodnotou
+  N se upozornění posílá znovu každých N minut, dokud cena zůstává v pásmu
+  a úroveň se nemění. Interval se měří od posledního **odeslaného** upozornění
+  a kontrola běží jen na ticku, takže bez pohybu trhu se neopakuje.
+- Odchod z pásma uvolní příznak až za **hysterezí** `InpHueResetFactor` × práh
+  (výchozí 1,25, tedy 625 bodů při prahu 500), aby se při kolísání přesně na
+  hranici neblikalo pořád dokola. Hodnota 1,0 hysterezi vypne — příznak se uvolní
+  hned za prahem. Níž než 1 to jít nesmí: paměť by se uvolňovala ještě uvnitř
+  pásma, ve kterém se hlásí, a upozornění by chodilo při každém návratu do něj.
+- Cenu **za** úrovní vstupu (`dist < 0`) bere expert jako uvolnění příznaku vždy,
+  na hysterezi nezávisle. Proto se při kolísání kolem samotné úrovně vstupu
+  hlásí znovu, i když je `InpHueRepeatMinutes = 0`.
 - Stav upozornění je vidět v panelu na řádku `Hue:` a odeslání se loguje do
   Expert logu i s tělem požadavku.
 
@@ -776,6 +785,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpHueEnabled` | true | blikat žárovkou při přiblížení k úrovni vstupu |
 | `InpHueUrl` | http://192.168.0.157:8082/hue | URL služby Hue včetně portu |
 | `InpHueNearPoints` | 500 | vzdálenost od úrovně vstupu pro upozornění (body) |
+| `InpHueResetFactor` | 1.25 | hystereze — paměť se uvolní až za N× prahem (1 = bez hystereze) |
 | `InpHueRepeatMinutes` | 0 | opakovat upozornění po N minutách (0 = jen jednou) |
 | `InpHueTimeout` | 1000 | timeout HTTP požadavku (ms) |
 | `InpHueTestButton` | true | zobrazit tlačítko `TEST Hue` nad panelem |
