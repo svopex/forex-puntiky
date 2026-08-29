@@ -130,6 +130,47 @@ enum ENUM_PUNTIKY_BLOCK
   };
 
 //+------------------------------------------------------------------+
+//| Stav jednoho smeru prurazu (BUY = index 0, SELL = index 1).      |
+//| Drzet ho v poli misto v parovych globalech ma jediny duvod: pole |
+//| se indexuje smerem, takze kod obou smeru je doslova tentyz.      |
+//| Parove globaly vynucovaly u kazdeho pristupu if/else nebo ternar |
+//| a prave z takove kopie vznikla chyba, kvuli ktere se po vyplneni |
+//| oznacovala jako obchodovana jina uroven, nez na ktere obchod     |
+//| skutecne vznikl.                                                 |
+//|  level      - cena urovne prurazu (HIGH pro nakup, LOW pro prodej)|
+//|  levelTime  - cas svicky, ze ktere uroven pochazi                |
+//|  armed      - smer je nabity (cena je na spravne strane urovne)  |
+//|  taken      - na teto urovni uz strategie obchodovala            |
+//|  broken     - uroven uz byla prorazena                           |
+//|  brokenTime - cas prvniho zjisteneho prurazu                     |
+//|  hueLevel   - uroven vstupu, pro kterou uz odeslo upozorneni Hue |
+//|  hueTime    - cas posledniho odeslaneho upozorneni               |
+//+------------------------------------------------------------------+
+struct SDirection
+  {
+   double            level;
+   datetime          levelTime;
+   bool              armed;
+   bool              taken;
+   bool              broken;
+   datetime          brokenTime;
+   double            hueLevel;
+   datetime          hueTime;
+
+   void              Reset()
+     {
+      level      = 0.0;
+      levelTime  = 0;
+      armed      = false;
+      taken      = false;
+      broken     = false;
+      brokenTime = 0;
+      hueLevel   = 0.0;
+      hueTime    = 0;
+     }
+  };
+
+//+------------------------------------------------------------------+
 //| Swingovy bod (lokalni extrem) detekovany na pracovnim TF.        |
 //|  time  - cas otevreni svicky s extremem                          |
 //|  price - hodnota extremu (high pro vrchol, low pro dno)          |

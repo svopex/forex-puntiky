@@ -253,23 +253,15 @@ datetime      g_lastBreakoutBar = 0;   // cas posledniho zpracovaneho baru TF pr
 datetime      g_lastEntryBar    = 0;   // cas posledniho zpracovaneho baru TF vstupu
 int           g_barsSinceShot   = 0;   // pocitadlo baru pro periodicky snimek
 
-double        g_breakHigh = 0.0;       // uroven prurazu nahoru (HIGH swingove svicky)
-double        g_breakLow  = 0.0;       // uroven prurazu dolu (LOW swingove svicky)
-datetime      g_breakHighTime = 0;     // cas svicky, ze ktere uroven pochazi
-datetime      g_breakLowTime  = 0;     // cas svicky, ze ktere uroven pochazi
-bool          g_buyArmed   = false;    // smer BUY je pripraven (cena je pod urovni)
-bool          g_sellArmed  = false;    // smer SELL je pripraven (cena je nad urovni)
-bool          g_buyTaken   = false;    // na teto urovni uz bylo nakoupeno
-bool          g_sellTaken  = false;    // na teto urovni uz bylo prodano
-bool          g_buyBroken  = false;    // uroven prurazu nahoru uz byla prorazena
-bool          g_sellBroken = false;    // uroven prurazu dolu uz byla prorazena
+//--- Stav obou smeru prurazu: uroven, jeji cas, nabito / obchodovano /
+//--- prorazeno a pamet upozorneni Hue. Index urcuje DirIdx, takze kod
+//--- obou smeru je tentyz (viz hlavicka SDirection).
+SDirection    g_dir[2];
 
-//--- Cas prvniho zjisteneho prurazu urovne. Rezim M1_CLOSE podle nej
-//--- pozna, jestli pruraz patri k prave uzavrene svicce vstupniho TF
-//--- (a vstup tedy dava smysl), nebo je starsi a uroven uz svou
-//--- prilezitost mela (viz EntryBlockReason).
-datetime      g_buyBrokenTime  = 0;
-datetime      g_sellBrokenTime = 0;
+//--- Index smeru v polich stavu a navrhu (0 = BUY, 1 = SELL)
+#define PUNTIKY_DIR_BUY   0
+#define PUNTIKY_DIR_SELL  1
+int DirIdx(const bool isBuy) { return(isBuy ? PUNTIKY_DIR_BUY : PUNTIKY_DIR_SELL); }
 
 //--- Odlozena vymena spotrebovane urovne za dalsi swing. V rezimu
 //--- M1_CLOSE se nesmi provest uvnitr svicky vstupniho TF: vstup se
@@ -278,8 +270,7 @@ datetime      g_sellBrokenTime = 0;
 bool          g_breakSwapPending = false;
 datetime      g_breakSwapBar     = 0;  // bar vstupniho TF, ve kterem pruraz nastal
 
-SEntryPlan    g_planBuy;               // aktualni navrh nakupu
-SEntryPlan    g_planSell;              // aktualni navrh prodeje
+SEntryPlan    g_plan[2];               // aktualni navrhy obou smeru
 string        g_lastEvent = "";        // posledni udalost pro panel
 bool          g_tradingAllowed = true; // vysledek kontroly uctu
 bool          g_showPanel     = false;// kreslit textovy panel pod tlacitky
@@ -342,12 +333,6 @@ int           g_spreadNext  = 0;       // kam se zapise dalsi vzorek
 datetime      g_spreadTime  = 0;       // cas posledniho odberu
 double        g_spreadRef   = 0.0;     // median vzorku (0 = jeste zadny)
 bool          g_spreadPrimed = false;  // vzorky uz naplneny z historickych svicek
-
-//--- Upozorneni Hue - pamet uz odeslanych upozorneni pro oba smery
-double        g_hueBuyLevel  = 0.0;    // uroven, pro kterou uz slo BUY upozorneni
-double        g_hueSellLevel = 0.0;    // uroven, pro kterou uz slo SELL upozorneni
-datetime      g_hueBuyTime   = 0;      // cas posledniho BUY upozorneni
-datetime      g_hueSellTime  = 0;      // cas posledniho SELL upozorneni
 
 //+------------------------------------------------------------------+
 //| Ohlasi udalost do panelu i do Expert logu.                       |
@@ -417,8 +402,11 @@ int OnInit()
    InitParams();
    InitPanelMetrics();      // rozmery tlacitek a rezim uctu se za behu nemeni
    PrimeSpreadSamples();    // referencni spread z historie, ne z jedineho vzorku
-   ResetPlan(g_planBuy,  true);
-   ResetPlan(g_planSell, false);
+   for(int i = 0; i < 2; i++)
+     {
+      g_dir[i].Reset();
+      ResetPlan(g_plan[i], i == PUNTIKY_DIR_BUY);
+     }
 
    PrintPointDiagnostics();
 
@@ -590,10 +578,11 @@ void OnTick()
 
    //--- 6) Pruraz urovne se hlida na kazdem ticku, aby se prikaz na
    //---    spotrebovanou uroven zrusil hned, ne az za minutu
-   const bool wasBuyBroken  = g_buyBroken;
-   const bool wasSellBroken = g_sellBroken;
+   const bool wasBuyBroken  = g_dir[PUNTIKY_DIR_BUY].broken;
+   const bool wasSellBroken = g_dir[PUNTIKY_DIR_SELL].broken;
    UpdateArming();
-   if(g_buyBroken != wasBuyBroken || g_sellBroken != wasSellBroken)
+   if(g_dir[PUNTIKY_DIR_BUY].broken  != wasBuyBroken ||
+      g_dir[PUNTIKY_DIR_SELL].broken != wasSellBroken)
      {
       // Uroven padla, je spotrebovana - hleda se dalsi swing (vcetne
       // prave otevrene svicky TF prurazu), jinak by expert cekal az na
@@ -705,19 +694,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    // terminalu, takze smer zustal zablokovany ("tato uroven uz
    // obchodovana") az do vzniku dalsiho swingu. Prorazenou (starou)
    // uroven neni treba spotrebovavat, tu uz vyber swingu preskakuje.
-   const double level = isBuy ? g_breakHigh : g_breakLow;
+   const int    idx   = DirIdx(isBuy);
+   const double level = g_dir[idx].level;
    if(EntryBelongsToLevel(isBuy, entryPrice, level))
      {
-      if(isBuy)
-        {
-         g_buyTaken = true;
-         g_buyArmed = false;
-        }
-      else
-        {
-         g_sellTaken = true;
-         g_sellArmed = false;
-        }
+      g_dir[idx].taken = true;
+      g_dir[idx].armed = false;
       MarkLevelTaken(isBuy, level);
       ReportEvent(StringFormat("%s vyplněn @ %s", dir,
                                DoubleToString(dealPrice, _Digits)));
@@ -2332,7 +2314,8 @@ void DrawRelief()
 //+------------------------------------------------------------------+
 void DrawBreakoutLevels()
   {
-   if(!InpShowBreakLevels || g_breakHigh <= 0.0 || g_breakLow <= 0.0)
+   if(!InpShowBreakLevels || g_dir[PUNTIKY_DIR_BUY].level <= 0.0 ||
+      g_dir[PUNTIKY_DIR_SELL].level <= 0.0)
      {
       PuntikyDeleteObjects("BRK_");
       return;
@@ -2342,12 +2325,15 @@ void DrawBreakoutLevels()
 
    // Cara zacina u svicky, ze ktere uroven pochazi - u swingoveho
    // rezimu je tak na prvni pohled videt, ktery swing se prorazi
-   PuntikyTrendLine(PUNTIKY_PREFIX + "BRK_H", g_breakHighTime, g_breakHigh, tTo, g_breakHigh,
+   const SDirection buy  = g_dir[PUNTIKY_DIR_BUY];
+   const SDirection sell = g_dir[PUNTIKY_DIR_SELL];
+
+   PuntikyTrendLine(PUNTIKY_PREFIX + "BRK_H", buy.levelTime, buy.level, tTo, buy.level,
                  InpColorBreak, 1, STYLE_DASH, false,
-                 "Úroveň průrazu HIGH " + DoubleToString(g_breakHigh, _Digits));
-   PuntikyTrendLine(PUNTIKY_PREFIX + "BRK_L", g_breakLowTime, g_breakLow, tTo, g_breakLow,
+                 "Úroveň průrazu HIGH " + DoubleToString(buy.level, _Digits));
+   PuntikyTrendLine(PUNTIKY_PREFIX + "BRK_L", sell.levelTime, sell.level, tTo, sell.level,
                  InpColorBreak, 1, STYLE_DASH, false,
-                 "Úroveň průrazu LOW " + DoubleToString(g_breakLow, _Digits));
+                 "Úroveň průrazu LOW " + DoubleToString(sell.level, _Digits));
    ChartRedraw();
   }
 
@@ -2365,9 +2351,9 @@ void DrawEntryLevels()
    const datetime tFrom = iTime(_Symbol, InpBreakoutTF, 0);
    const datetime tTo   = FutureBarTime(InpBreakoutTF, 3);
 
-   PuntikyDrawEntryLevels("BUY",  g_planBuy,  tFrom, tTo,
+   PuntikyDrawEntryLevels("BUY",  g_plan[PUNTIKY_DIR_BUY],  tFrom, tTo,
                        InpColorEntry, InpColorSL, InpColorTP, _Digits);
-   PuntikyDrawEntryLevels("SELL", g_planSell, tFrom, tTo,
+   PuntikyDrawEntryLevels("SELL", g_plan[PUNTIKY_DIR_SELL], tFrom, tTo,
                        InpColorEntry, InpColorSL, InpColorTP, _Digits);
    ChartRedraw();
   }
@@ -2478,24 +2464,15 @@ void FindBreakoutSwings(double &hi, datetime &hiTime, bool &foundHi,
 //+------------------------------------------------------------------+
 void MarkBroken(const bool isBuy, const bool broken)
   {
-   if(isBuy)
-     {
-      // Cas se zapisuje jen pri PRECHODU do prorazeneho stavu, aby
-      // opakovany pruraz teze urovne nepredstiral cerstvy signal
-      if(broken && !g_buyBroken)
-         g_buyBrokenTime = TimeCurrent();
-      if(!broken)
-         g_buyBrokenTime = 0;
-      g_buyBroken = broken;
-     }
-   else
-     {
-      if(broken && !g_sellBroken)
-         g_sellBrokenTime = TimeCurrent();
-      if(!broken)
-         g_sellBrokenTime = 0;
-      g_sellBroken = broken;
-     }
+   const int idx = DirIdx(isBuy);
+
+   // Cas se zapisuje jen pri PRECHODU do prorazeneho stavu, aby
+   // opakovany pruraz teze urovne nepredstiral cerstvy signal
+   if(broken && !g_dir[idx].broken)
+      g_dir[idx].brokenTime = TimeCurrent();
+   if(!broken)
+      g_dir[idx].brokenTime = 0;
+   g_dir[idx].broken = broken;
   }
 
 //+------------------------------------------------------------------+
@@ -2513,40 +2490,24 @@ void ApplyBreakLevel(const bool isBuy, const double price, const datetime levelT
    if(price <= 0.0 || levelTime <= 0)
       return;
 
-   const datetime oldTime = isBuy ? g_breakHighTime : g_breakLowTime;
-   const bool     changed = (levelTime != oldTime);
+   const int  idx     = DirIdx(isBuy);
+   const bool changed = (levelTime != g_dir[idx].levelTime);
 
-   if(isBuy)
-     {
-      g_breakHigh     = price;
-      g_breakHighTime = levelTime;
-     }
-   else
-     {
-      g_breakLow     = price;
-      g_breakLowTime = levelTime;
-     }
+   g_dir[idx].level     = price;
+   g_dir[idx].levelTime = levelTime;
 
    if(changed)
      {
       // Nova uroven zacina s cistymi priznaky vcetne casu prurazu
       MarkBroken(isBuy, false);
-      if(isBuy)
-        {
-         g_buyTaken = LevelWasTaken(true, price, levelTime);
-         g_buyArmed = false;
-        }
-      else
-        {
-         g_sellTaken = LevelWasTaken(false, price, levelTime);
-         g_sellArmed = false;
-        }
+      g_dir[idx].taken = LevelWasTaken(isBuy, price, levelTime);
+      g_dir[idx].armed = false;
      }
 
    // Uzavrene svicky TF prurazu uz prosel vyber swingu, zbyva prave
    // otevrena svicka. Pri nezmenene urovni se drzi i to, co mezitim
    // zjistil tick - jinak by se prorazeni pri vypadku dat ztratilo.
-   if(!(isBuy ? g_buyBroken : g_sellBroken) && LevelBrokenNow(isBuy, price))
+   if(!g_dir[idx].broken && LevelBrokenNow(isBuy, price))
       MarkBroken(isBuy, true);
   }
 
@@ -2612,17 +2573,22 @@ void UpdateArming()
    // pruraz, na ktery cekal, propasl.
    const double spread = CurrentSpread();
 
-   if(PriceBeyondLevel(true, bid, g_breakHigh, g_breakBuffer, spread))
-      MarkBroken(true, true);
-   if(PriceBeyondLevel(false, bid, g_breakLow, g_breakBuffer, spread))
-      MarkBroken(false, true);
+   for(int i = 0; i < 2; i++)
+     {
+      const bool   isBuy = (i == PUNTIKY_DIR_BUY);
+      const double level = g_dir[i].level;
+      if(level <= 0.0)
+         continue;
 
-   // Nabiji se proti exekucni cene smeru: nakup se plni za ask, takze
-   // dokud je ask jeste pod urovni, ma pruraz teprve prijit
-   if(g_breakHigh > 0.0 && ExecPrice(true, bid, spread) <= g_breakHigh)
-      g_buyArmed = true;
-   if(g_breakLow > 0.0 && bid >= g_breakLow)
-      g_sellArmed = true;
+      if(PriceBeyondLevel(isBuy, bid, level, g_breakBuffer, spread))
+         MarkBroken(isBuy, true);
+
+      // Nabiji se proti exekucni cene smeru: nakup se plni za ask, takze
+      // dokud je ask jeste pod urovni, ma pruraz teprve prijit
+      const double exec = ExecPrice(isBuy, bid, spread);
+      if(isBuy ? (exec <= level) : (exec >= level))
+         g_dir[i].armed = true;
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -2632,15 +2598,17 @@ void UpdateArming()
 //+------------------------------------------------------------------+
 void RebuildPlans()
   {
-   if(g_breakHigh > 0.0)
-      g_planBuy = BuildPlan(true, g_breakHigh + g_breakBuffer, g_breakHigh, false);
-   else
-      ResetPlan(g_planBuy, true);
+   for(int i = 0; i < 2; i++)
+     {
+      const bool   isBuy = (i == PUNTIKY_DIR_BUY);
+      const double level = g_dir[i].level;
 
-   if(g_breakLow > 0.0)
-      g_planSell = BuildPlan(false, g_breakLow - g_breakBuffer, g_breakLow, false);
-   else
-      ResetPlan(g_planSell, false);
+      if(level > 0.0)
+         g_plan[i] = BuildPlan(isBuy, isBuy ? level + g_breakBuffer : level - g_breakBuffer,
+                               level, false);
+      else
+         ResetPlan(g_plan[i], isBuy);
+     }
 
    // Navrh se zmenil, takze lezici prikazy uz mu nemusi odpovidat.
    // Srovnani se dela jednou za tick v OnTick (viz SyncPendingOrders).
@@ -2674,6 +2642,8 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
    // Vychozi je "uroven neni k dispozici" - prikaz na ni lezet nema
    block = PUNTIKY_BLOCK_LEVEL;
 
+   const int idx = DirIdx(isBuy);
+
    if(isBuy ? !InpAllowBuy : !InpAllowSell)
       return("směr vypnut");
 
@@ -2682,12 +2652,12 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
       return("pozice již otevřena");
 
    // Na jedne swingove urovni se obchoduje nejvyse jednou
-   if(isBuy ? g_buyTaken : g_sellTaken)
+   if(g_dir[idx].taken)
       return("tato úroveň už obchodována");
 
    // Smer musi byt nabity, tedy cena musela byt na spravne strane
    // urovne - jinak se vstupuje do uz beziciho pohybu
-   if(!(isBuy ? g_buyArmed : g_sellArmed))
+   if(!g_dir[idx].armed)
       return(isBuy ? "čeká na návrat pod úroveň" : "čeká na návrat nad úroveň");
 
    if(atMarket)
@@ -2699,10 +2669,9 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
       // nektery tick uvnitr teze svicky, takze samotny priznak
       // "prorazeno" tu rozhodnout nemuze (drive se proto netestoval
       // vubec a rezim vstupoval i na davno spotrebovane urovni).
-      const datetime brokenTime = isBuy ? g_buyBrokenTime : g_sellBrokenTime;
-      const datetime barOpen    = iTime(_Symbol, InpEntryTF, 1);
-      if((isBuy ? g_buyBroken : g_sellBroken) &&
-         brokenTime > 0 && barOpen > 0 && brokenTime < barOpen)
+      const datetime brokenTime = g_dir[idx].brokenTime;
+      const datetime barOpen     = iTime(_Symbol, InpEntryTF, 1);
+      if(g_dir[idx].broken && brokenTime > 0 && barOpen > 0 && brokenTime < barOpen)
          return("úroveň už byla proražena");
 
       // Po gapu nebo dlouhe svicce muze byt trh uz stovky bodu za
@@ -2718,7 +2687,7 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
 
    // Uroven, kterou cena uz jednou prorazila, je spotrebovana -
    // i kdyz se cena mezitim vratila zpatky
-   if(isBuy ? g_buyBroken : g_sellBroken)
+   if(g_dir[idx].broken)
       return("úroveň už byla proražena");
 
    // Navrh ma smysl jen dokud pruraz teprve ceka. Kdyz uz cena urovni
@@ -3248,7 +3217,7 @@ void SyncPendingOrders()
    if(!TradingEnabled())
       return;
 
-   //--- Prehled skutecnych prikazu strategie (index 0 = BUY, 1 = SELL)
+   //--- Prehled skutecnych prikazu strategie (indexy jako v g_plan)
    ulong  ticket[2]  = {0, 0};
    double price[2]   = {0.0, 0.0};
    double slPrice[2] = {0.0, 0.0};
@@ -3264,9 +3233,9 @@ void SyncPendingOrders()
       const long type = OrderGetInteger(ORDER_TYPE);
       int slot = -1;
       if(type == ORDER_TYPE_BUY_STOP)
-         slot = 0;
+         slot = PUNTIKY_DIR_BUY;
       if(type == ORDER_TYPE_SELL_STOP)
-         slot = 1;
+         slot = PUNTIKY_DIR_SELL;
 
       // Prikaz jineho typu nebo druhy prikaz tehoz smeru (pozustatek po
       // nezdarilem ruseni) - prebytek se rusi, jinak by se vyplnily oba
@@ -3283,8 +3252,8 @@ void SyncPendingOrders()
       volume[slot]  = OrderGetDouble(ORDER_VOLUME_CURRENT);
      }
 
-   SyncOneDirection(g_planBuy,  ticket[0], price[0], slPrice[0], tpPrice[0], volume[0]);
-   SyncOneDirection(g_planSell, ticket[1], price[1], slPrice[1], tpPrice[1], volume[1]);
+   for(int i = 0; i < 2; i++)
+      SyncOneDirection(g_plan[i], ticket[i], price[i], slPrice[i], tpPrice[i], volume[i]);
   }
 
 //+------------------------------------------------------------------+
@@ -3597,10 +3566,7 @@ void ManualToggle(const bool isBuy)
      }
 
    //--- V tomto smeru nic nelezi, takze se obchod zadava
-   if(isBuy)
-      ManualPlace(g_planBuy);
-   else
-      ManualPlace(g_planSell);
+   ManualPlace(g_plan[DirIdx(isBuy)]);
   }
 
 //+------------------------------------------------------------------+
@@ -3640,10 +3606,7 @@ void ManualDouble(const bool isBuy)
       return;
      }
 
-   if(isBuy)
-      ManualPlaceDouble(g_planBuy);
-   else
-      ManualPlaceDouble(g_planSell);
+   ManualPlaceDouble(g_plan[DirIdx(isBuy)]);
   }
 
 //+------------------------------------------------------------------+
@@ -3661,11 +3624,11 @@ void CheckEntryOnEntryTF()
    if(closeTF <= 0.0 || prevTF <= 0.0)
       return;
 
-   //--- Obe strany se resi stejnym kodem (0 = BUY, 1 = SELL)
+   //--- Obe strany se resi stejnym kodem (indexy jako v g_dir)
    for(int dir = 0; dir < 2; dir++)
      {
-      const bool   isBuy = (dir == 0);
-      const double level = isBuy ? g_breakHigh : g_breakLow;
+      const bool   isBuy = (dir == PUNTIKY_DIR_BUY);
+      const double level = g_dir[dir].level;
       if(level <= 0.0)
          continue;
 
@@ -3697,16 +3660,8 @@ void CheckEntryOnEntryTF()
 
       // Po vstupu je uroven spotrebovana - dalsi prilezitost prijde
       // az s novym swingem
-      if(isBuy)
-        {
-         g_buyArmed = false;
-         g_buyTaken = true;
-        }
-      else
-        {
-         g_sellArmed = false;
-         g_sellTaken = true;
-        }
+      g_dir[dir].armed = false;
+      g_dir[dir].taken = true;
       MarkLevelTaken(isBuy, level);
      }
   }
@@ -3732,38 +3687,40 @@ void CheckHueAlerts()
 
    const double nearDist = InpHueNearPoints * _Point;
 
-   //--- BUY: k urovni se cena blizi zespodu
-   if(InpAllowBuy && g_planBuy.valid)
-      HueCheckDirection(true, g_planBuy.entry, g_planBuy.entry - ask, nearDist,
-                        g_hueBuyLevel, g_hueBuyTime);
-   else
-      g_hueBuyLevel = 0.0;    // navrh zmizel, priznak se uvolni
+   //--- K urovni se cena blizi zespodu (BUY) nebo shora (SELL)
+   for(int i = 0; i < 2; i++)
+     {
+      const bool isBuy   = (i == PUNTIKY_DIR_BUY);
+      const bool allowed = isBuy ? InpAllowBuy : InpAllowSell;
 
-   //--- SELL: k urovni se cena blizi shora
-   if(InpAllowSell && g_planSell.valid)
-      HueCheckDirection(false, g_planSell.entry, bid - g_planSell.entry, nearDist,
-                        g_hueSellLevel, g_hueSellTime);
-   else
-      g_hueSellLevel = 0.0;
+      if(!allowed || !g_plan[i].valid)
+        {
+         g_dir[i].hueLevel = 0.0;    // navrh zmizel, priznak se uvolni
+         continue;
+        }
+
+      const double entry = g_plan[i].entry;
+      HueCheckDirection(isBuy, entry, isBuy ? (entry - ask) : (bid - entry),
+                        nearDist, g_dir[i]);
+     }
   }
 
 //+------------------------------------------------------------------+
 //| Vyhodnoti jeden smer a pripadne posle upozorneni.                |
-//|  isBuy     - smer navrhu                                         |
-//|  level     - cena planovaneho vstupu                             |
-//|  dist      - vzdalenost ceny k urovni (zaporna = uz je za ni)    |
-//|  nearDist  - prah upozorneni v cene                              |
-//|  sentLevel - uroven, pro kterou uz upozorneni odeslo (stav)      |
-//|  sentTime  - cas posledniho odeslani (stav)                      |
+//|  isBuy    - smer navrhu                                          |
+//|  level    - cena planovaneho vstupu                              |
+//|  dist     - vzdalenost ceny k urovni (zaporna = uz je za ni)     |
+//|  nearDist - prah upozorneni v cene                               |
+//|  d        - stav smeru; drzi pamet uz odeslanych upozorneni      |
 //+------------------------------------------------------------------+
 void HueCheckDirection(const bool isBuy, const double level, const double dist,
-                       const double nearDist, double &sentLevel, datetime &sentTime)
+                       const double nearDist, SDirection &d)
   {
    // Priznak se uvolni az za hysterezi 25 % nad prahem - pri kolisani
    // presne na hranici pasma by se jinak blikalo porad dokola
    if(dist < 0.0 || dist > nearDist * 1.25)
      {
-      sentLevel = 0.0;
+      d.hueLevel = 0.0;
       return;
      }
 
@@ -3772,18 +3729,18 @@ void HueCheckDirection(const bool isBuy, const double level, const double dist,
       return;
 
    // Na stejnou uroven se hlasi jen jednou, dokud neni zapnute opakovani
-   if(sentLevel > 0.0 && PriceWithin(sentLevel, level, 1.0))
+   if(d.hueLevel > 0.0 && PriceWithin(d.hueLevel, level, 1.0))
      {
       if(InpHueRepeatMinutes <= 0)
          return;
-      if(TimeCurrent() - sentTime < InpHueRepeatMinutes * 60)
+      if(TimeCurrent() - d.hueTime < InpHueRepeatMinutes * 60)
          return;
      }
 
    // Priznak se nastavi i pri neuspechu, aby se pri vypadku sluzby
    // neposilal pozadavek na kazdem ticku
-   sentLevel = level;
-   sentTime  = TimeCurrent();
+   d.hueLevel = level;
+   d.hueTime  = TimeCurrent();
    HueSend(isBuy, level, dist);
   }
 
@@ -4230,10 +4187,10 @@ void DrawManualButtons(const int x, const int y, SMarketState &ms)
    const int x2 = x + g_btnTradeW + PUNTIKY_PANEL_BTN_GAP;
    const int y2 = y + ButtonHeight() + PUNTIKY_PANEL_BTN_GAP;
 
-   DrawManualButton(nameLong,  g_planBuy,  x,  y,  ms.buy);
-   DrawManualButton(nameShort, g_planSell, x2, y,  ms.sell);
-   DrawManualDoubleButton(nameLong2,  g_planBuy,  x,  y2, ms.buy);
-   DrawManualDoubleButton(nameShort2, g_planSell, x2, y2, ms.sell);
+   DrawManualButton(nameLong,  g_plan[PUNTIKY_DIR_BUY],  x,  y,  ms.buy);
+   DrawManualButton(nameShort, g_plan[PUNTIKY_DIR_SELL], x2, y,  ms.sell);
+   DrawManualDoubleButton(nameLong2,  g_plan[PUNTIKY_DIR_BUY],  x,  y2, ms.buy);
+   DrawManualDoubleButton(nameShort2, g_plan[PUNTIKY_DIR_SELL], x2, y2, ms.sell);
   }
 
 //+------------------------------------------------------------------+
@@ -4267,7 +4224,7 @@ void DrawPanelButtons(const int y, SMarketState &ms)
 string StateText(SEntryPlan &pl)
   {
    const string dir   = pl.isBuy ? "BUY" : "SELL";
-   const bool   taken = pl.isBuy ? g_buyTaken : g_sellTaken;
+   const bool   taken = g_dir[DirIdx(pl.isBuy)].taken;
 
    if(taken)
       return(dir + " obchodován");
@@ -4502,11 +4459,11 @@ void UpdatePanel()
    PanelAdd(lines, n, StringFormat("průraz %s %s:  H %s  (%s)",
                                    InpUseSwingLevels ? "swing" : "poslední",
                                    TFText(InpBreakoutTF),
-                                   DoubleToString(g_breakHigh, _Digits),
-                                   ShortTime(g_breakHighTime)));
+                                   DoubleToString(g_dir[PUNTIKY_DIR_BUY].level, _Digits),
+                                   ShortTime(g_dir[PUNTIKY_DIR_BUY].levelTime)));
    PanelAdd(lines, n, StringFormat("                  L %s  (%s)",
-                                   DoubleToString(g_breakLow, _Digits),
-                                   ShortTime(g_breakLowTime)));
+                                   DoubleToString(g_dir[PUNTIKY_DIR_SELL].level, _Digits),
+                                   ShortTime(g_dir[PUNTIKY_DIR_SELL].levelTime)));
    if(InpUseRelief)
       PanelAdd(lines, n, StringFormat("reliéfní přímky %s: %d  (režim: %s)",
                                       TFText(InpEntryTF), ReliefCount(),
@@ -4517,20 +4474,20 @@ void UpdatePanel()
    if(InpHueEnabled)
       PanelAdd(lines, n, StringFormat("Hue: upozornění %d b od úrovně vstupu  (BUY %s / SELL %s)",
                                       InpHueNearPoints,
-                                      g_hueBuyLevel  > 0.0 ? "posláno" : "-",
-                                      g_hueSellLevel > 0.0 ? "posláno" : "-"));
+                                      g_dir[PUNTIKY_DIR_BUY].hueLevel  > 0.0 ? "posláno" : "-",
+                                      g_dir[PUNTIKY_DIR_SELL].hueLevel > 0.0 ? "posláno" : "-"));
 
    //--- Rucni rezim - co je v jednotlivych smerech na trhu
    if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
-      PanelAdd(lines, n, "ruční režim: LONG " + ManualStateText(g_planBuy, ms.buy) +
-                         "   SHORT " + ManualStateText(g_planSell, ms.sell));
+      PanelAdd(lines, n, "ruční režim: LONG " + ManualStateText(g_plan[PUNTIKY_DIR_BUY], ms.buy) +
+                         "   SHORT " + ManualStateText(g_plan[PUNTIKY_DIR_SELL], ms.sell));
 
    // Kazdy smer na vlastnim radku - duvody zamitnuti byvaji dlouhe a
    // spolecny radek by se stejne zalomil
-   PanelAdd(lines, n, "stav: " + StateText(g_planBuy));
-   PanelAdd(lines, n, "      " + StateText(g_planSell));
-   PanelAdd(lines, n, PlanToText(g_planBuy));
-   PanelAdd(lines, n, PlanToText(g_planSell));
+   PanelAdd(lines, n, "stav: " + StateText(g_plan[PUNTIKY_DIR_BUY]));
+   PanelAdd(lines, n, "      " + StateText(g_plan[PUNTIKY_DIR_SELL]));
+   PanelAdd(lines, n, PlanToText(g_plan[PUNTIKY_DIR_BUY]));
+   PanelAdd(lines, n, PlanToText(g_plan[PUNTIKY_DIR_SELL]));
    PanelAdd(lines, n, PositionText(ms));
 
    if(g_lastEvent != "")
