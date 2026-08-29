@@ -19,7 +19,7 @@
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
-#property version   "1.20"
+#property version   "1.21"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -264,6 +264,20 @@ bool          g_sellTaken  = false;    // na teto urovni uz bylo prodano
 bool          g_buyBroken  = false;    // uroven prurazu nahoru uz byla prorazena
 bool          g_sellBroken = false;    // uroven prurazu dolu uz byla prorazena
 
+//--- Cas prvniho zjisteneho prurazu urovne. Rezim M1_CLOSE podle nej
+//--- pozna, jestli pruraz patri k prave uzavrene svicce vstupniho TF
+//--- (a vstup tedy dava smysl), nebo je starsi a uroven uz svou
+//--- prilezitost mela (viz EntryBlockReason).
+datetime      g_buyBrokenTime  = 0;
+datetime      g_sellBrokenTime = 0;
+
+//--- Odlozena vymena spotrebovane urovne za dalsi swing. V rezimu
+//--- M1_CLOSE se nesmi provest uvnitr svicky vstupniho TF: vstup se
+//--- potvrzuje az jejim uzavrenim a meri se proti urovni, kterou
+//--- svicka skutecne prorazila (viz OnTick).
+bool          g_breakSwapPending = false;
+datetime      g_breakSwapBar     = 0;  // bar vstupniho TF, ve kterem pruraz nastal
+
 SEntryPlan    g_planBuy;               // aktualni navrh nakupu
 SEntryPlan    g_planSell;              // aktualni navrh prodeje
 string        g_lastEvent = "";        // posledni udalost pro panel
@@ -273,10 +287,31 @@ bool          g_showPanel     = false;// kreslit textovy panel pod tlacitky
 bool          g_ordersDirty    = false;// navrhy se zmenily, prikazy je treba srovnat
 bool          g_needInitCalc   = true; // ceka se na data pro prvni vypocet
 
+//--- Uklid pending prikazu po prepnuti do rezimu M1_CLOSE. Pri startu
+//--- muze byt obchodovani vypnute (AutoTrading, jiny ucet), a protoze
+//--- jeho zapnuti zadny OnInit nevyvola, uklid se opakuje z timeru,
+//--- dokud neprojde - jinak by na urovni zustal lezet prikaz, ktery uz
+//--- zadny rezim neridi, a jeho plneni by pridalo druhou pozici.
+bool          g_cleanupOrders = false;
+bool          g_cleanupWarned = false; // varovani do logu jen jednou
+
 //--- Stav panelu - kolik radku je vykresleno a na jake vysce zacina
 //--- prvni radek textu (tedy uz pod radkem tlacitek)
 int           g_panelShown = 0;
 int           g_panelY     = -1;
+
+//--- Rozmery tlacitek a rezim uctu se za behu nemeni, ale merily se
+//--- pri kazdem obnoveni panelu, tedy kazdou sekundu - a mereni textu
+//--- (TextSetFont + TextGetSize) je z celeho panelu nejdrazsi operace.
+//--- Spocitaji se jednou v InitPanelMetrics.
+int           g_btnHeight  = 0;
+int           g_btnHueW    = 0;
+int           g_btnPanelW  = 0;
+int           g_btnTradeW  = 0;
+bool          g_accountHedging = false;
+
+//--- Tlacitka, ktera se mimo rucni rezim nekresli, staci smazat jednou
+bool          g_tradeBtnCleared = false;
 
 //--- Referencni bar posledni detekce. Kanaly i reliefni primky jsou
 //--- vedene v indexech pole, ze ktereho vznikly; aby sly vyhodnotit i
@@ -288,6 +323,17 @@ int           g_channelRefIdx  = 0;    // jeho index v analyzovanem poli
 datetime      g_reliefRefTime  = 0;    // totez pro reliefni primky
 int           g_reliefRefIdx   = 0;
 int           g_reliefBarsSinceBuild = 0;  // baru od posledniho plneho prepoctu
+datetime      g_reliefCheckedBar     = 0;  // posledni prekontrolovana uzavrena svicka
+
+//--- Posledni spolehlive spocteny index prave otevreneho baru pro obe
+//--- geometrie. Kdyz rada jeste neni synchronizovana (po startu nebo
+//--- reconnectu), vrati se posledni znama hodnota - dopocet z
+//--- nastenneho casu by pres vikend pricetl tisice neexistujicich baru
+//--- (viz BarIndexNow).
+datetime      g_channelBarCacheRef = 0;
+double        g_channelBarCache    = 0.0;
+datetime      g_reliefBarCacheRef  = 0;
+double        g_reliefBarCache     = 0.0;
 
 //--- Vzorky spreadu pro ReferenceSpread (kruhovy buffer + jejich median)
 double        g_spreadSamples[PUNTIKY_SPREAD_SAMPLES];
@@ -295,6 +341,7 @@ int           g_spreadCount = 0;       // kolik vzorku uz je nasbirano
 int           g_spreadNext  = 0;       // kam se zapise dalsi vzorek
 datetime      g_spreadTime  = 0;       // cas posledniho odberu
 double        g_spreadRef   = 0.0;     // median vzorku (0 = jeste zadny)
+bool          g_spreadPrimed = false;  // vzorky uz naplneny z historickych svicek
 
 //--- Upozorneni Hue - pamet uz odeslanych upozorneni pro oba smery
 double        g_hueBuyLevel  = 0.0;    // uroven, pro kterou uz slo BUY upozorneni
@@ -303,20 +350,32 @@ datetime      g_hueBuyTime   = 0;      // cas posledniho BUY upozorneni
 datetime      g_hueSellTime  = 0;      // cas posledniho SELL upozorneni
 
 //+------------------------------------------------------------------+
+//| Ohlasi udalost do panelu i do Expert logu.                       |
+//| Obe cesty musi nest totez: panel jde tlacitkem schovat a log je  |
+//| pak jedine misto, kde se uzivatel dozvi, proc obchod nevznikl.   |
+//| Drive to byla dvojice prikazu opsana na osmnacti mistech a na    |
+//| trech z nich se na vypis do logu zapomnelo.                     |
+//|  text - text udalosti (bez prefixu strategie)                    |
+//+------------------------------------------------------------------+
+void ReportEvent(const string text)
+  {
+   g_lastEvent = text;
+   Print("PUNTIKY: ", text);
+  }
+
+//+------------------------------------------------------------------+
 //| Prepne zobrazeni textoveho panelu v grafu a zmenu ohlasi.        |
 //| Tyka se jen vypisu na obrazovce - Expert log bezi dal beze zmeny,|
 //| takze je se kam podivat i pri schovanem panelu.                  |
-//| Pri vypnuti se zapomene posledni znama vyska prvniho radku, aby  |
-//| se panel po opetovnem zapnuti vykreslil cely.                    |
+//| Pri vypnuti se cely panel maze, takze se po opetovnem zapnuti    |
+//| stejne vykresli od nuly (radky se porovnavaji s tim, co je       |
+//| skutecne v grafu) - poslednou vysku prvniho radku neni treba      |
+//| zapominat.                                                       |
 //+------------------------------------------------------------------+
 void TogglePanel()
   {
    g_showPanel = !g_showPanel;
-   if(!g_showPanel)
-      g_panelY = -1;
-
-   g_lastEvent = g_showPanel ? "panel v grafu zapnut" : "panel v grafu vypnut";
-   Print("PUNTIKY: ", g_lastEvent);
+   ReportEvent(g_showPanel ? "panel v grafu zapnut" : "panel v grafu vypnut");
   }
 
 //+------------------------------------------------------------------+
@@ -356,7 +415,8 @@ int OnInit()
      }
 
    InitParams();
-   SampleSpread();          // aby prvni vypocet nemeril proti nule
+   InitPanelMetrics();      // rozmery tlacitek a rezim uctu se za behu nemeni
+   PrimeSpreadSamples();    // referencni spread z historie, ne z jedineho vzorku
    ResetPlan(g_planBuy,  true);
    ResetPlan(g_planSell, false);
 
@@ -380,8 +440,13 @@ int OnInit()
    // uz zadny rezim neridi. V rucnim rezimu se prikazy naopak nechavaji
    // byt: zadal je uzivatel tlacitkem a nesou vlastni SL i PT, takze mu
    // rekompilace ani zmena parametru nesmi obchod zrusit.
-   if(InpEntryMode == PUNTIKY_ENTRY_M1_CLOSE && TradingEnabled())
-      CancelPendingOrders();
+   // Kdyz je obchodovani prave vypnute, uklid se odlozi a opakuje z
+   // timeru - zapnuti AutoTradingu uz zadny OnInit nevyvola.
+   if(InpEntryMode == PUNTIKY_ENTRY_M1_CLOSE)
+     {
+      g_cleanupOrders = true;
+      TryCleanupOrders();
+     }
 
    //--- Prvni vypocet hned pri startu, aby byl graf ihned popsany.
    //--- Kdyz jeste nejsou data indikatoru, odlozi se na prvni tick.
@@ -396,6 +461,32 @@ int OnInit()
   }
 
 //+------------------------------------------------------------------+
+//| Ma se pri ukonceni s timto duvodem uklidit lezici pending prikaz?|
+//| Expert se sam od sebe vraci jen pri rekompilaci, zmene parametru,|
+//| ukonceni terminalu, neuspesne inicializaci (zustava na grafu a   |
+//| ceka na opravu vstupu) a pri zmene uctu, kde uz na prikazy       |
+//| stareho uctu stejne nedosahne. Tam se prikazy nechavaji byt a    |
+//| srovna je nasledny OnInit.                                       |
+//| Ve vsech ostatnich pripadech - odebrani z grafu, zavreni grafu,  |
+//| nova sablona, zmena symbolu, ExpertRemove - uz zadny OnInit      |
+//| neprijde a GTC prikaz by na trhu zustal bez dozoru: jeho plneni  |
+//| by otevrelo pozici, kterou nikdo neridi.                         |
+//| Zmenu periody sice expert prezije, jenze ji pri deinitu nelze od |
+//| zmeny symbolu odlisit (obe hlasi REASON_CHARTCHANGE). Zruseny    |
+//| prikaz zada nasledny OnInit v pending rezimu stejne hned znovu,  |
+//| kdezto prikaz zapomenuty na jinem symbolu uz nezrusi nikdo.      |
+//|  reason - duvod ukonceni (viz REASON_*)                          |
+//+------------------------------------------------------------------+
+bool DeinitShouldCancel(const int reason)
+  {
+   return(reason != REASON_RECOMPILE &&
+          reason != REASON_PARAMETERS &&
+          reason != REASON_CLOSE &&
+          reason != REASON_INITFAILED &&
+          reason != REASON_ACCOUNT);
+  }
+
+//+------------------------------------------------------------------+
 //| Deinicializace - uklid vlastnich objektu a handlu.               |
 //|  reason - duvod ukonceni (viz REASON_*)                          |
 //+------------------------------------------------------------------+
@@ -405,23 +496,26 @@ void OnDeinit(const int reason)
    if(g_atrHandle != INVALID_HANDLE)
       IndicatorRelease(g_atrHandle);
 
-   // Pri odebrani experta z grafu by GTC prikazy zustaly lezet bez
-   // dozoru a jejich plneni by otevrelo neridenou pozici. Pri zmene
-   // parametru nebo rekompilaci se expert hned vraci, takze se prikazy
-   // nechavaji byt a srovna je nasledny OnInit.
-   // V rucnim rezimu prikaz vedome zadal uzivatel a nese vlastni SL i
-   // PT - ten se nerusi, jen se do logu napise, co na trhu zustava.
-   if(reason == REASON_REMOVE && TradingEnabled())
+   if(DeinitShouldCancel(reason))
      {
-      if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
+      const int left = CountOrders();
+      if(left > 0)
         {
-         const int left = CountOrders();
-         if(left > 0)
+         // V rucnim rezimu prikaz vedome zadal uzivatel a nese vlastni
+         // SL i PT - ten se nerusi, jen se do logu napise, co na trhu
+         // zustava. Totez pri vypnutem obchodovani, kde by OrderDelete
+         // stejne skoncil chybou - at je aspon videt, ze prikazy na
+         // trhu zustavaji bez dozoru.
+         if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
             PrintFormat("PUNTIKY: ruční režim - na trhu zůstává %d příkaz(ů) "
                         "zadaných tlačítkem.", left);
+         else
+            if(!TradingEnabled())
+               PrintFormat("PUNTIKY: obchodování je vypnuté - na trhu zůstává %d "
+                           "příkaz(ů) bez dozoru experta.", left);
+            else
+               CancelPendingOrders();
         }
-      else
-         CancelPendingOrders();
      }
 
    PuntikyDeleteObjects();
@@ -443,55 +537,96 @@ void OnTick()
 
    //--- Nove bary se zjistuji najednou na zacatku: vyhodnoceni vstupu
    //--- musi probehnout jeste nad urovnemi platnymi v okamziku
-   //--- uzavreni svicky vstupniho TF (viz krok 1)
+   //--- uzavreni svicky vstupniho TF (viz krok 2)
    const bool newChannelBar  = IsNewBar(InpChannelTF,  g_lastChannelBar);
    const bool newBreakoutBar = IsNewBar(InpBreakoutTF, g_lastBreakoutBar);
    const bool newEntryBar    = IsNewBar(InpEntryTF,    g_lastEntryBar);
 
-   //--- 1) Vstup potvrzeny uzavrenou svickou vstupniho TF.
+   //--- Navrhy se prepocitaji nejvyse JEDNOU za tick, az kdyz je vse
+   //--- ostatni srovnane. Drive to na hodinove hranici bylo az trikrat
+   //--- a mezivysledek stejne nikdo necetl - kazdy prepocet pritom
+   //--- znamena pruchod pozicemi, ctyri vypocty objemu, hledani hran i
+   //--- reliefu a pres sto volani do terminalu pri kresleni.
+   bool plansDirty = false;
+
+   //--- 1) Reliefni primky prorazene prave uzavrenou svickou musi
+   //---    zmizet JESTE PRED vyhodnocenim vstupu. Prurazova svicka
+   //---    casto prorazi i primku kotvenou na svem vlastnim swingu, a
+   //---    dokud primka drzi, zamitne si vstup sama sebou; o par kroku
+   //---    niz uz ji revalidace smaze, jenze dalsi svicka uz prechodem
+   //---    pres uroven neni a signal je nenavratne pryc.
+   bool reliefDropped = false;
+   if(newEntryBar)
+      reliefDropped = RevalidateRelief();
+
+   //--- 2) Vstup potvrzeny uzavrenou svickou vstupniho TF.
    //---    Kdyby se urovne prepocitaly driv, na hodinove hranici by se
    //---    prechod pres uroven meril proti uz jine (starsi) urovni a
    //---    platny signal by zmizel.
    if(InpEntryMode == PUNTIKY_ENTRY_M1_CLOSE && newEntryBar)
       CheckEntryOnEntryTF();
 
-   //--- 2) Novy bar TF kanalu -> prepocet a prekresleni kanalu.
+   //--- 3) Novy bar TF kanalu -> prepocet a prekresleni kanalu.
    //---    Hrany se posunuly, takze SL i PT navrhu uz neodpovidaji.
    if(newChannelBar)
      {
       RecalcChannels();
-      RebuildPlans();
+      plansDirty = true;
      }
 
-   //--- 3) Novy bar TF vstupu -> prepocet reliefnich primek
+   //--- 4) Novy bar TF vstupu -> prepocet reliefnich primek
    if(newEntryBar)
-      RecalcRelief();
+     {
+      RecalcRelief(false, reliefDropped);
+      plansDirty = true;
+     }
 
-   //--- 4) Novy bar TF prurazu -> nove urovne high/low a nove navrhy
+   //--- 5) Novy bar TF prurazu -> nove urovne high/low
    if(newBreakoutBar)
+     {
       RefreshBreakoutLevels();
+      plansDirty = true;
+     }
 
-   //--- 5) Pruraz urovne se hlida na kazdem ticku, aby se prikaz na
+   //--- 6) Pruraz urovne se hlida na kazdem ticku, aby se prikaz na
    //---    spotrebovanou uroven zrusil hned, ne az za minutu
    const bool wasBuyBroken  = g_buyBroken;
    const bool wasSellBroken = g_sellBroken;
    UpdateArming();
-   const bool brokenChanged = (g_buyBroken != wasBuyBroken || g_sellBroken != wasSellBroken);
+   if(g_buyBroken != wasBuyBroken || g_sellBroken != wasSellBroken)
+     {
+      // Uroven padla, je spotrebovana - hleda se dalsi swing (vcetne
+      // prave otevrene svicky TF prurazu), jinak by expert cekal az na
+      // otevreni dalsi svicky TF prurazu
+      g_breakSwapPending = true;
+      g_breakSwapBar     = g_lastEntryBar;
+     }
 
-   // Kdyz uroven padla, je spotrebovana - hned se hleda dalsi swing
-   // (vcetne prave otevrene svicky TF prurazu), jinak by expert cekal
-   // az na otevreni dalsi svicky TF prurazu
-   if(brokenChanged)
+   //--- 7) Vymena spotrebovane urovne za dalsi swing. V rezimu
+   //---    M1_CLOSE se odklada az za PRVNI novy bar vstupniho TF po
+   //---    prurazu, tedy az za krok 2: vstup se potvrzuje uzavrenim
+   //---    svicky a musi se merit proti urovni, kterou svicka
+   //---    prorazila. Vymena uvnitr svicky znamenala, ze se close
+   //---    porovnal uz s dalsim (vyssim) swingem, takze rezim se
+   //---    swingovymi urovnemi prakticky nikdy nevstoupil.
+   if(g_breakSwapPending &&
+      (InpEntryMode != PUNTIKY_ENTRY_M1_CLOSE ||
+       (newEntryBar && g_lastEntryBar != g_breakSwapBar)))
+     {
+      g_breakSwapPending = false;
       RefreshBreakoutLevels();
-   else
-      if(newEntryBar)
-         RebuildPlans();
+      plansDirty = true;
+     }
 
-   //--- 6) Skutecne prikazy se srovnaji s navrhy nejvyse jednou za tick
+   //--- 8) Jediny prepocet navrhu za tick
+   if(plansDirty)
+      RebuildPlans();
+
+   //--- 9) Skutecne prikazy se srovnaji s navrhy nejvyse jednou za tick
    if(InpEntryMode == PUNTIKY_ENTRY_PENDING && g_ordersDirty)
       SyncPendingOrders();
 
-   //--- 7) Priblizeni k urovni vstupu rozblika zarovky Hue
+   //--- 10) Priblizeni k urovni vstupu rozblika zarovky Hue
    CheckHueAlerts();
   }
 
@@ -511,8 +646,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeResult &result)
   {
    // Zajima nas jen pridani obchodu do historie tohoto symbolu; obchod
-   // musi patrit teto strategii (magic) a musi to byt VSTUP do pozice -
-   // vystup (DEAL_ENTRY_OUT) zadnou uroven nespotrebovava. Podrobnosti
+   // musi patrit teto strategii (magic) a musi to byt VSTUP do pozice.
+   // Vystup (DEAL_ENTRY_OUT) zadnou uroven nespotrebovava, zato obrat
+   // pozice na nettingovem uctu (DEAL_ENTRY_INOUT) ano - jednim
+   // obchodem se tam stara pozice zavre a opacna otevre. Podrobnosti
    // obchodu jdou precist az po jeho vyberu z historie.
    if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
       return;
@@ -522,7 +659,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       return;
    if(HistoryDealGetInteger(trans.deal, DEAL_MAGIC) != InpMagic)
       return;
-   if(HistoryDealGetInteger(trans.deal, DEAL_ENTRY) != DEAL_ENTRY_IN)
+   const long dealEntry = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   if(dealEntry != DEAL_ENTRY_IN && dealEntry != DEAL_ENTRY_INOUT)
       return;
 
    const long   dealType  = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
@@ -534,15 +672,28 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    const string dir   = isBuy ? "BUY" : "SELL";
 
    // Prikaz, ze ktereho obchod vznikl, se vybira jednou: jeho cena urcuje
-   // uroven, ke ktere obchod patri, a jeho SL / PT slouzi nize k dorovnani
-   // stopu. Kdyz uz prikaz neni k dispozici, poslouzi cena obchodu - od
-   // ceny prikazu se lisi jen o skluz.
+   // uroven, ke ktere obchod patri, jeho typ rozhoduje o dorovnani stopu
+   // a jeho SL / PT davaji delky, na ktere se stopy dorovnaji. Kdyz uz
+   // prikaz k dispozici neni, poslouzi pro urceni urovne cena obchodu -
+   // od ceny prikazu se lisi jen o skluz.
    double orderPrice = 0.0, orderSL = 0.0, orderTP = 0.0;
-   if(trans.order != 0 && HistoryOrderSelect(trans.order))
+   long   orderType  = -1;
+   if(trans.order != 0)
      {
-      orderPrice = HistoryOrderGetDouble(trans.order, ORDER_PRICE_OPEN);
-      orderSL    = HistoryOrderGetDouble(trans.order, ORDER_SL);
-      orderTP    = HistoryOrderGetDouble(trans.order, ORDER_TP);
+      if(HistoryOrderSelect(trans.order))
+        {
+         orderType  = HistoryOrderGetInteger(trans.order, ORDER_TYPE);
+         orderPrice = HistoryOrderGetDouble(trans.order, ORDER_PRICE_OPEN);
+         orderSL    = HistoryOrderGetDouble(trans.order, ORDER_SL);
+         orderTP    = HistoryOrderGetDouble(trans.order, ORDER_TP);
+        }
+      else
+         // Bez prikazu nejsou zname ZADANE delky SL a PT (z obchodu jdou
+         // precist jen delky vcetne skluzu, tedy prave to, co se ma
+         // dorovnat), takze dorovnani odpada - at je to aspon v logu
+         PrintFormat("PUNTIKY: příkaz #%I64u k obchodu #%I64u nelze načíst z historie "
+                     "(chyba %d), stopy zůstávají tak, jak je vyplnil broker.",
+                     trans.order, trans.deal, GetLastError());
      }
    const double entryPrice = (orderPrice > 0.0) ? orderPrice : dealPrice;
 
@@ -568,29 +719,41 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          g_sellArmed = false;
         }
       MarkLevelTaken(isBuy, level);
-      g_lastEvent = StringFormat("%s vyplněn @ %s", dir,
-                                 DoubleToString(dealPrice, _Digits));
+      ReportEvent(StringFormat("%s vyplněn @ %s", dir,
+                               DoubleToString(dealPrice, _Digits)));
      }
    else
-      g_lastEvent = StringFormat("%s vyplněn @ %s (úroveň už posunuta na %s)", dir,
-                                 DoubleToString(dealPrice, _Digits),
-                                 DoubleToString(level, _Digits));
-   Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(StringFormat("%s vyplněn @ %s (úroveň už posunuta na %s)", dir,
+                               DoubleToString(dealPrice, _Digits),
+                               DoubleToString(level, _Digits)));
+
+   // Odtud dal se uz saha na obchodni ucet, takze instance urcena jen
+   // ke kresleni (vypnute obchodovani nebo jiny ucet) konci. Stav
+   // urovni si vede i ona, aby kreslila totez co obchodujici instance.
+   if(!TradingEnabled())
+     {
+      UpdatePanel();
+      return;
+     }
 
    // Pending prikaz nese absolutni SL a PT spoctene pro nominalni
    // vstupni cenu. Pri plneni se skluzem by pak SL a PT nemely stejnou
    // delku (RRR by nebylo 1:1), proto se dorovnaji na skutecny vstup.
    // Delky se berou z vyplneneho prikazu, SL i PT zvlast - u druhe
-   // pozice dvojiteho vstupu je PT na nasobku SL a musi mu zustat
-   const ulong posId = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
-   double slDistance = 0.0;
-   double tpDistance = 0.0;
-   if(orderPrice > 0.0 && orderSL > 0.0)
-      slDistance = MathAbs(orderPrice - orderSL);
-   if(orderPrice > 0.0 && orderTP > 0.0)
-      tpDistance = MathAbs(orderTP - orderPrice);
-   if(slDistance > 0.0)
+   // pozice dvojiteho vstupu je PT na nasobku SL a musi mu zustat.
+   // Trzni prikaz sem NEPATRI: jeho stopy uz dorovnal OpenMarket podle
+   // delky navrhu, kdezto jeho ORDER_PRICE_OPEN nese cenu PLNENI -
+   // delky by z nej vysly vcetne skluzu (SL o skluz delsi, PT o skluz
+   // kratsi) a druhe dorovnani by je vratilo na puvodni hodnoty.
+   const bool fromPending = (orderType != (long)ORDER_TYPE_BUY &&
+                             orderType != (long)ORDER_TYPE_SELL);
+   if(fromPending && orderPrice > 0.0 && orderSL > 0.0)
+     {
+      const ulong  posId      = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+      const double slDistance = MathAbs(orderPrice - orderSL);
+      const double tpDistance = (orderTP > 0.0) ? MathAbs(orderTP - orderPrice) : 0.0;
       AdjustPositionStops(posId, slDistance, tpDistance);
+     }
 
    // Opacny prikaz se rusi ADRESNE, ne pres rekonciliaci podle poctu
    // pozic: v okamziku teto obsluhy nemusi mit terminal novou pozici
@@ -599,14 +762,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    // (whipsaw by ho vyplnil pres InpMaxPositions = 1).
    RebuildPlans();
    if(InpEntryMode == PUNTIKY_ENTRY_PENDING)
-     {
       CancelOppositeOrder(isBuy);
-      SyncPendingOrders();
 
-      // Az dalsi tick uvidi ucet uz srovnany - navrhy se proto srovnaji
-      // jeste jednou, aby se pripadny rozdil dorovnal
-      g_ordersDirty = true;
-     }
+   // Rekonciliace se tu ZAMERNE nespousti. Bezela by nad uctem, ktery
+   // novou pozici jeste nemusi hlasit, takze by navrh protistrany
+   // zustal platny a prave zruseny opacny prikaz by se okamzite zadal
+   // znovu - OCO by neplatilo a pri InpMaxPositions = 1 by whipsaw
+   // otevrel druhou pozici. RebuildPlans uz nastavil g_ordersDirty,
+   // takze prikazy srovna dalsi tick nad srovnanym uctem.
    UpdatePanel();
   }
 
@@ -625,6 +788,10 @@ void OnTimer()
    // graf bez ticku (zavreny trh) by jinak zustal prazdny
    if(g_needInitCalc)
       TryInitialCalc();
+
+   // Uklid prikazu po prepnuti do rezimu M1_CLOSE muze cekat na
+   // povoleni obchodovani (viz TryCleanupOrders)
+   TryCleanupOrders();
 
    UpdatePanel();
    CheckScreenshotRequest();
@@ -771,8 +938,8 @@ bool ValidateInputs()
 
 //+------------------------------------------------------------------+
 //| Naplni parametry modulu a prepocty bodu na cenu.                 |
-//| Vstupy se za behu nemeni, takze staci jednou pri startu - drive  |
-//| se stejne struktury plnily znovu na kazdem baru.                 |
+//| Vstupy se za behu nemeni, takze cele struktury plati po celou    |
+//| dobu behu a naplni se jedinkrat pri startu.                      |
 //+------------------------------------------------------------------+
 void InitParams()
   {
@@ -887,11 +1054,19 @@ bool TryInitialCalc()
    if(!RefreshATR())
       return(false);
 
+   // Vzorky spreadu z historie - pri startu jeste nemusely byt k
+   // dispozici, ted uz data jsou
+   PrimeSpreadSamples();
+
    g_needInitCalc = false;
 
-   RecalcChannels();
+   // Nejdriv reliefni primky, pak kanaly: MT5 kresli objekty v poradi
+   // vzniku a kanal ma na spolecne usecce lezet NAD reliefem (viz
+   // RedrawChannels). V opacnem poradi se kanaly kreslily dvakrat.
    RecalcRelief(true);      // pri startu vzdy plny prepocet
+   RecalcChannels();
    RefreshBreakoutLevels();
+   RebuildPlans();
 
    // Casy prave otevrenych svicek se zapisou hned, aby prvni tick po
    // startu neopakoval tentyz vypocet jeste jednou jako "novy bar"
@@ -905,6 +1080,48 @@ bool TryInitialCalc()
       SyncPendingOrders();
 
    return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Uklidi pending prikazy, ktere v rezimu M1_CLOSE nemaji co delat. |
+//| Rezim M1_CLOSE otevira pozice na trhu a lezici prikazy vubec     |
+//| neridi - zbyly by po pending rezimu se starym SL a PT a jejich   |
+//| plneni by pridalo druhou pozici s plnym rizikem, kterou uz nikdo |
+//| nesleduje (EntryBlockReason pocita jen pozice, ne prikazy).      |
+//| Uklid se opakuje, dokud neprojde: pri startu byva obchodovani     |
+//| vypnute (AutoTrading, jiny ucet) a jeho zapnuti zadny OnInit      |
+//| nevyvola, takze jednorazovy pokus v OnInit se tise ztratil.      |
+//+------------------------------------------------------------------+
+void TryCleanupOrders()
+  {
+   if(!g_cleanupOrders)
+      return;
+
+   // Neni co uklizet - v tomto rezimu uz zadny prikaz vzniknout nemuze
+   const int left = CountOrders();
+   if(left == 0)
+     {
+      g_cleanupOrders = false;
+      return;
+     }
+
+   if(!TradingEnabled())
+     {
+      if(!g_cleanupWarned)
+        {
+         g_cleanupWarned = true;
+         PrintFormat("PUNTIKY: režim M1 - obchodování je vypnuté, %d ležící "
+                     "příkaz(ů) zatím nelze zrušit; uklidí se, jakmile bude "
+                     "obchodování povoleno.", left);
+        }
+      return;
+     }
+
+   if(CancelPendingOrders())
+     {
+      g_cleanupOrders = false;
+      PrintFormat("PUNTIKY: režim M1 - zrušeno %d ležících příkazů z pending režimu.", left);
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -945,12 +1162,21 @@ datetime FutureBarTime(const ENUM_TIMEFRAMES tf, const int bars)
 //| Geometrie kanalu i reliefnich primek je vedena v indexech pole,  |
 //| ze ktereho vznikla (viz hlavicka SChannel). Bars() spocita bary  |
 //| mezi referencnim barem a soucasnosti, takze se index nerozjede   |
-//| ani pres vikend; bez dat se dopocita podle delky baru.           |
-//|  tf      - timeframe, ve kterem geometrie vznikla                |
-//|  refTime - cas posledniho analyzovaneho baru                     |
-//|  refIdx  - jeho index v analyzovanem poli                        |
+//| ani pres vikend.                                                 |
+//| Kdyz rada jeste neni synchronizovana (po startu nebo reconnectu), |
+//| vrati Bars() nulu. Index se z casu NEDOPOCITAVA: pres vikend by  |
+//| z nej vyslo o stovky az tisice baru vic, sikme hrany i reliefni  |
+//| primky by odskocily o kus grafu, rekonciliace by prepsala SL a PT|
+//| lezicich prikazu a revalidace by kazdou sklonenou primku zahodila|
+//| jako "ujetou". Vraci se proto posledni spolehliva hodnota.       |
+//|  tf       - timeframe, ve kterem geometrie vznikla               |
+//|  refTime  - cas posledniho analyzovaneho baru                    |
+//|  refIdx   - jeho index v analyzovanem poli                       |
+//|  cacheRef - referencni bar, ke kteremu patri cache (in/out)      |
+//|  cache    - posledni spolehlive spocteny index (in/out)          |
 //+------------------------------------------------------------------+
-double BarIndexNow(const ENUM_TIMEFRAMES tf, const datetime refTime, const int refIdx)
+double BarIndexNow(const ENUM_TIMEFRAMES tf, const datetime refTime, const int refIdx,
+                   datetime &cacheRef, double &cache)
   {
    const datetime now = TimeCurrent();
    if(refTime <= 0 || now <= refTime)
@@ -959,15 +1185,28 @@ double BarIndexNow(const ENUM_TIMEFRAMES tf, const datetime refTime, const int r
    // Bars() zapocita oba krajni bary, referencni se tedy odecte
    const int bars = Bars(_Symbol, tf, refTime, now);
    if(bars > 0)
-      return((double)refIdx + (double)(bars - 1));
+     {
+      cacheRef = refTime;
+      cache    = (double)refIdx + (double)(bars - 1);
+      return(cache);
+     }
 
-   const int secs = MathMax(PeriodSeconds(tf), 1);
-   return((double)refIdx + (double)(now - refTime) / (double)secs);
+   // Cache patri jinemu referencnimu baru? Pak zbyva jen sam referencni
+   // index - geometrie tak zustane u posledniho analyzovaneho baru
+   return((cacheRef == refTime) ? cache : (double)refIdx);
   }
 
 //--- Index aktualniho baru v souradnicich kanalu / reliefnich primek
-double ChannelBarNow() { return(BarIndexNow(InpChannelTF, g_channelRefTime, g_channelRefIdx)); }
-double ReliefBarNow()  { return(BarIndexNow(InpEntryTF,   g_reliefRefTime,  g_reliefRefIdx)); }
+double ChannelBarNow()
+  {
+   return(BarIndexNow(InpChannelTF, g_channelRefTime, g_channelRefIdx,
+                      g_channelBarCacheRef, g_channelBarCache));
+  }
+double ReliefBarNow()
+  {
+   return(BarIndexNow(InpEntryTF, g_reliefRefTime, g_reliefRefIdx,
+                      g_reliefBarCacheRef, g_reliefBarCache));
+  }
 
 //+------------------------------------------------------------------+
 //| Horizont projekce prekazek prepocteny na bary zadaneho TF.       |
@@ -1019,8 +1258,9 @@ int LoadClosedBars(const ENUM_TIMEFRAMES tf, const int count, MqlRates &rates[])
    return(CopyRates(_Symbol, tf, 1, count, rates));
   }
 
-//--- Pocet kanalu / reliefnich primek. Drive to byly samostatne
-//--- citace, ktere se v predcasnych navratech rozesly s obsahem poli.
+//--- Pocet kanalu / reliefnich primek. Jedinym zdrojem pravdy je
+//--- velikost pole - samostatny citac by se pri predcasnem navratu z
+//--- prepoctu rozesel s tim, co v poli skutecne je.
 int ChannelCount() { return(ArraySize(g_channels)); }
 int ReliefCount()  { return(ArraySize(g_relief)); }
 
@@ -1039,19 +1279,62 @@ bool IsOurOrder()
   }
 
 //+------------------------------------------------------------------+
+//| Posbira tickety pozic strategie do pole.                         |
+//| Tickety se sbiraji PRED zpracovanim: kazde zavreni nebo zruseni  |
+//| meni seznam i to, co ma terminal prave vybrane, takze by se      |
+//| dalsi polozky cetly z rozpadleho kontextu. Sestupna smycka sama  |
+//| o sobe nestaci - je bezpecna jen dokud se maze prave ta polozka, |
+//| na ktere stoji.                                                  |
+//|  type    - pozadovany typ pozice (-1 = jakykoli)                 |
+//|  tickets - out: nalezene tickety                                 |
+//| Vraci jejich pocet.                                              |
+//+------------------------------------------------------------------+
+int CollectOurPositions(const long type, ulong &tickets[])
+  {
+   ArrayResize(tickets, 0);
+   int n = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      const ulong t = PositionGetTicket(i);
+      if(t == 0 || !IsOurPosition())
+         continue;
+      if(type >= 0 && PositionGetInteger(POSITION_TYPE) != type)
+         continue;
+      ArrayResize(tickets, n + 1, 8);
+      tickets[n++] = t;
+     }
+   return(n);
+  }
+
+//+------------------------------------------------------------------+
+//| Totez pro pending prikazy strategie (viz CollectOurPositions).   |
+//|  type    - pozadovany typ prikazu (-1 = jakykoli)                |
+//|  tickets - out: nalezene tickety                                 |
+//+------------------------------------------------------------------+
+int CollectOurOrders(const long type, ulong &tickets[])
+  {
+   ArrayResize(tickets, 0);
+   int n = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      const ulong t = OrderGetTicket(i);
+      if(t == 0 || !IsOurOrder())
+         continue;
+      if(type >= 0 && OrderGetInteger(ORDER_TYPE) != type)
+         continue;
+      ArrayResize(tickets, n + 1, 8);
+      tickets[n++] = t;
+     }
+   return(n);
+  }
+
+//+------------------------------------------------------------------+
 //| Pocet otevrenych pozic strategie na aktualnim symbolu            |
 //+------------------------------------------------------------------+
 int CountPositions()
   {
-   int cnt = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      if(PositionGetTicket(i) == 0)
-         continue;
-      if(IsOurPosition())
-         cnt++;
-     }
-   return(cnt);
+   ulong tickets[];
+   return(CollectOurPositions(-1, tickets));
   }
 
 //+------------------------------------------------------------------+
@@ -1068,6 +1351,14 @@ bool LooksDoubleEntry(const string comment, const double open,
   {
    if(StringFind(comment, PUNTIKY_DOUBLE_TAG) >= 0)
       return(true);
+
+   // Nas vlastni komentar bez znacky 2x je jasna odpoved: obchod
+   // pochazi z tlacitka LONG / SHORT. Geometrie se na nej pouzit nesmi -
+   // staci, aby uzivatel pritahl SL, a pomer PT:SL prekroci prah:
+   // tlacitko by zesedlo, klik prestal fungovat a pozice by se ohlasila
+   // jako "2x". Geometrie je zaloha JEN pro prepsany komentar.
+   if(StringFind(comment, "PUNTIKY") >= 0)
+      return(false);
 
    if(open <= 0.0 || sl <= 0.0 || tp <= 0.0)
       return(false);
@@ -1089,19 +1380,24 @@ bool LooksDoubleEntry(const string comment, const double open,
 //| Kdyz se ve smeru sejde jednoduchy i dvojity obchod (rucni zasah  |
 //| v terminalu), ma prednost dvojity - jinak by tlacitko 2x         |
 //| zesedlo a jeho druha noha by sla odebrat jen z terminalu.        |
-//|  stBuy, stSell - out: prehled obou smeru                         |
+//|  ms - out: prehled obou smeru vcetne souhrnu pro panel           |
 //+------------------------------------------------------------------+
-void ScanBothDirections(SDirectionState &stBuy, SDirectionState &stSell)
+void ScanBothDirections(SMarketState &ms)
   {
-   stBuy.Reset();
-   stSell.Reset();
+   ms.Reset();
 
    bool buyDouble = false, sellDouble = false;
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
-      if(PositionGetTicket(i) == 0 || !IsOurPosition())
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !IsOurPosition())
          continue;
+
+      // Prvni nalezena pozice se pamatuje pro radek panelu - ten uz
+      // seznam neprochazi znovu
+      if(ms.firstPosition == 0)
+         ms.firstPosition = ticket;
 
       const bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
       const bool dbl   = LooksDoubleEntry(PositionGetString(POSITION_COMMENT),
@@ -1110,13 +1406,13 @@ void ScanBothDirections(SDirectionState &stBuy, SDirectionState &stSell)
                                           PositionGetDouble(POSITION_TP));
       if(isBuy)
         {
-         stBuy.positions++;
+         ms.buy.positions++;
          if(dbl)
             buyDouble = true;
         }
       else
         {
-         stSell.positions++;
+         ms.sell.positions++;
          if(dbl)
             sellDouble = true;
         }
@@ -1126,6 +1422,10 @@ void ScanBothDirections(SDirectionState &stBuy, SDirectionState &stSell)
      {
       if(OrderGetTicket(i) == 0 || !IsOurOrder())
          continue;
+
+      // Do souhrnu pro panel patri vsechny prikazy strategie, do
+      // prehledu smeru jen STOP prikazy, ktere rucni tlacitka ovladaji
+      ms.totalOrders++;
 
       const long type = OrderGetInteger(ORDER_TYPE);
       if(type != ORDER_TYPE_BUY_STOP && type != ORDER_TYPE_SELL_STOP)
@@ -1138,13 +1438,13 @@ void ScanBothDirections(SDirectionState &stBuy, SDirectionState &stSell)
                                           OrderGetDouble(ORDER_TP));
       if(isBuy)
         {
-         stBuy.orders++;
+         ms.buy.orders++;
          if(dbl)
             buyDouble = true;
         }
       else
         {
-         stSell.orders++;
+         ms.sell.orders++;
          if(dbl)
             sellDouble = true;
         }
@@ -1152,10 +1452,10 @@ void ScanBothDirections(SDirectionState &stBuy, SDirectionState &stSell)
 
    // Dvojity vstup se pozna i podle jedine nohy: po vyplneni PT1 zbyva
    // druha pozice a ta porad patri tlacitku 2x
-   if(stBuy.Busy())
-      stBuy.kind = buyDouble ? PUNTIKY_MANUAL_DOUBLE : PUNTIKY_MANUAL_SINGLE;
-   if(stSell.Busy())
-      stSell.kind = sellDouble ? PUNTIKY_MANUAL_DOUBLE : PUNTIKY_MANUAL_SINGLE;
+   if(ms.buy.Busy())
+      ms.buy.kind = buyDouble ? PUNTIKY_MANUAL_DOUBLE : PUNTIKY_MANUAL_SINGLE;
+   if(ms.sell.Busy())
+      ms.sell.kind = sellDouble ? PUNTIKY_MANUAL_DOUBLE : PUNTIKY_MANUAL_SINGLE;
   }
 
 //+------------------------------------------------------------------+
@@ -1166,14 +1466,14 @@ void ScanBothDirections(SDirectionState &stBuy, SDirectionState &stSell)
 //+------------------------------------------------------------------+
 void ScanDirection(const bool isBuy, SDirectionState &st)
   {
-   SDirectionState buy, sell;
-   ScanBothDirections(buy, sell);
+   SMarketState ms;
+   ScanBothDirections(ms);
 
    // Strukturu nelze vybrat podminenym vyrazem, proto vetveni
    if(isBuy)
-      st = buy;
+      st = ms.buy;
    else
-      st = sell;
+      st = ms.sell;
   }
 
 //+------------------------------------------------------------------+
@@ -1185,7 +1485,9 @@ void ScanDirection(const bool isBuy, SDirectionState &st)
 //+------------------------------------------------------------------+
 bool AccountIsHedging()
   {
-   return(AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING);
+   // Rezim uctu se za behu experta nemeni (zmena uctu znamena novy
+   // OnInit), takze se cte z hodnoty zjistene pri startu
+   return(g_accountHedging);
   }
 
 //+------------------------------------------------------------------+
@@ -1193,15 +1495,8 @@ bool AccountIsHedging()
 //+------------------------------------------------------------------+
 int CountOrders()
   {
-   int cnt = 0;
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-     {
-      if(OrderGetTicket(i) == 0)
-         continue;
-      if(IsOurOrder())
-         cnt++;
-     }
-   return(cnt);
+   ulong tickets[];
+   return(CollectOurOrders(-1, tickets));
   }
 
 //+------------------------------------------------------------------+
@@ -1237,10 +1532,11 @@ void ResetPlan(SEntryPlan &pl, const bool isBuy)
    pl.lots         = 0.0;
    pl.lotsDouble   = 0.0;
    pl.doubleReason = "";
+   pl.tpDouble     = 0.0;
    pl.barrier      = PUNTIKY_BARRIER_NONE;
-   pl.barrierPrice = 0.0;
    pl.channelIdx   = -1;
    pl.reason       = "";
+   pl.block        = PUNTIKY_BLOCK_NONE;
   }
 
 //--- Nazev prekazky pro texty panelu a logu
@@ -1253,10 +1549,66 @@ string BarrierText(const ENUM_PUNTIKY_BARRIER barrier)
    return("cíli");
   }
 
-//--- Stop level brokera prepocteny na cenu
-double StopsLevelPrice()
+//--- Uroven brokera (stop level, freeze level) prepoctena na cenu
+double SymbolLevelPrice(const ENUM_SYMBOL_INFO_INTEGER prop)
   {
-   return((double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point);
+   return((double)SymbolInfoInteger(_Symbol, prop) * _Point);
+  }
+
+//--- Stop level brokera prepocteny na cenu
+double StopsLevelPrice() { return(SymbolLevelPrice(SYMBOL_TRADE_STOPS_LEVEL)); }
+
+//+------------------------------------------------------------------+
+//| Zarovna cenu na krok kotace nastroje.                            |
+//| Zaokrouhleni na _Digits nestaci vsude: na nastroji, kde je krok  |
+//| kotace vetsi nez bod (indexove CFD s krokem 0.25), by broker cenu|
+//| mimo krok odmitl chybou INVALID_PRICE - a protoze se navrh       |
+//| prepocitava kazdou minutu, expert by ho zkousel zadat porad      |
+//| dokola a panel by mezitim hlasil "pripraven".                    |
+//| Kdyz symbol krok nehlasi, pouzije se bod.                        |
+//|  price - cena k zarovnani                                        |
+//+------------------------------------------------------------------+
+double AlignToTick(const double price)
+  {
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(step <= 0.0)
+      step = _Point;
+   if(step <= 0.0)
+      return(NormalizeDouble(price, _Digits));
+   return(NormalizeDouble(MathRound(price / step) * step, _Digits));
+  }
+
+//+------------------------------------------------------------------+
+//| Lezi STOP cena prilis blizko trhu?                               |
+//| Broker nedovoli zadat ani upravit STOP prikaz bliz k trhu, nez   |
+//| je jeho stop level; kdyz uz cena urovni prosla, prikaz nad (pod) |
+//| trhem nelze zadat vubec. Jedina definice pro obe mista, ktera se |
+//| na to ptaji - drive to byly kopie s ruznymi kraji a klik po      |
+//| prurazu hlasil "blíž než stop-level" tam, kde navrh spravne      |
+//| rikal "průraz už proběhl".                                       |
+//|  isBuy  - smer prikazu, price - jeho vstupni cena                |
+//|  margin - pozadovany odstup od trhu v cene                       |
+//|  reason - out: duvod pro panel a log ("" = cena je v poradku)    |
+//| Vraci true, kdyz je cena prilis blizko nebo uz za trhem. Bez     |
+//| kotaci se netvrdi nic (false) - zadani prikazu si je overi samo. |
+//+------------------------------------------------------------------+
+bool StopTooClose(const bool isBuy, const double price, const double margin, string &reason)
+  {
+   reason = "";
+
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(ask <= 0.0 || bid <= 0.0)
+      return(false);
+
+   const double market = isBuy ? ask : bid;
+   if(isBuy ? (price > market + margin) : (price < market - margin))
+      return(false);
+
+   const bool passed = isBuy ? (price <= market) : (price >= market);
+   reason = passed ? "průraz už proběhl"
+                   : StringFormat("blíž než stop-level brokera (%.0f b)", margin / _Point);
+   return(true);
   }
 
 //+------------------------------------------------------------------+
@@ -1271,6 +1623,24 @@ double CurrentSpread()
    if(ask > 0.0 && bid > 0.0 && ask >= bid)
       return(ask - bid);
    return((double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) * _Point);
+  }
+
+//+------------------------------------------------------------------+
+//| Prepocita median z nasbiranych vzorku spreadu.                   |
+//| Radi se KOPIE - poradi v kruhovem bufferu musi zustat, jinak by  |
+//| se nejstarsi vzorek prepsal na spatnem miste.                    |
+//+------------------------------------------------------------------+
+void RecalcSpreadMedian()
+  {
+   if(g_spreadCount <= 0)
+      return;
+
+   double sorted[];
+   ArrayResize(sorted, g_spreadCount);
+   for(int i = 0; i < g_spreadCount; i++)
+      sorted[i] = g_spreadSamples[i];
+   ArraySort(sorted);
+   g_spreadRef = sorted[g_spreadCount / 2];
   }
 
 //+------------------------------------------------------------------+
@@ -1295,13 +1665,77 @@ void SampleSpread()
    if(g_spreadCount < PUNTIKY_SPREAD_SAMPLES)
       g_spreadCount++;
 
-   // Median se pocita z kopie - poradi v kruhovem bufferu musi zustat
-   double sorted[];
-   ArrayResize(sorted, g_spreadCount);
-   for(int i = 0; i < g_spreadCount; i++)
-      sorted[i] = g_spreadSamples[i];
-   ArraySort(sorted);
-   g_spreadRef = sorted[g_spreadCount / 2];
+   RecalcSpreadMedian();
+  }
+
+//+------------------------------------------------------------------+
+//| Naplni vzorky spreadu ze SPREADU HISTORICKYCH SVICEK vstupniho   |
+//| TF, aby prvni vypocet nestal na jedinem vzorku.                  |
+//| Jediny vzorek odebrany pri startu urcoval median pro cely prvni   |
+//| vyber urovni prurazu. Kdyz expert nabehl behem rolloveru, byl to  |
+//| spread nekolikanasobne nad normalem (500 b misto 25 b) a vyber    |
+//| swingu prohlasil za prorazeny kazdy vrchol, ke kteremu se cena    |
+//| kdy priblizila na tuto vzdalenost - uroven odskocila o stovky     |
+//| bodu na davno neplatny swing a v pending rezimu tam expert rovnou |
+//| zadal prikaz. Normalizovalo se to az po tretim vzorku, tedy po    |
+//| dvou minutach.                                                    |
+//| Vraci true, kdyz se vzorky podarilo naplnit; jinak se to zkusi    |
+//| znovu, az budou data (viz TryInitialCalc).                       |
+//+------------------------------------------------------------------+
+bool PrimeSpreadSamples()
+  {
+   if(g_spreadPrimed)
+      return(true);
+
+   MqlRates rates[];
+   const int copied = LoadClosedBars(InpEntryTF, PUNTIKY_SPREAD_SAMPLES, rates);
+
+   int n = 0;
+   for(int i = 0; i < copied && n < PUNTIKY_SPREAD_SAMPLES; i++)
+     {
+      // Nekteri brokeri spread do historie neplni (0) - takova svicka
+      // se preskoci, at median neklesne k nule
+      if(rates[i].spread <= 0)
+         continue;
+      g_spreadSamples[n++] = (double)rates[i].spread * _Point;
+     }
+
+   if(n <= 0)
+     {
+      SampleSpread();      // aspon jeden zivy vzorek, at se nemeri proti nule
+      return(false);
+     }
+
+   g_spreadCount = n;
+   g_spreadNext  = n % PUNTIKY_SPREAD_SAMPLES;
+   g_spreadTime  = TimeCurrent();
+   RecalcSpreadMedian();
+
+   g_spreadPrimed = true;
+   PrintFormat("PUNTIKY: referenční spread z historie %s - %d vzorků, medián %.0f b",
+               EnumToString(InpEntryTF), n, g_spreadRef / _Point);
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Spread uzavrene svicky zadaneho TF v cene.                       |
+//| Historicka svicka nese vlastni spread, takze se na ni nemusi     |
+//| aplikovat dnesni median: ten se s casem posouva, a protoze se    |
+//| pricita k historickemu high, menil uzavreny swing stav           |
+//| "prorazeno / neprorazeno" bez jedineho pohybu ceny.              |
+//| Kdyz broker spread do historie neplni, pouzije se median.        |
+//|  tf, shift - svicka                                              |
+//+------------------------------------------------------------------+
+double BarSpread(const ENUM_TIMEFRAMES tf, const int shift)
+  {
+   const int sp = iSpread(_Symbol, tf, shift);
+   return(sp > 0 ? (double)sp * _Point : ReferenceSpread());
+  }
+
+//--- Totez pro svicku, kterou uz ma volajici nactenou v poli
+double RatesSpread(const MqlRates &r)
+  {
+   return(r.spread > 0 ? (double)r.spread * _Point : ReferenceSpread());
   }
 
 //+------------------------------------------------------------------+
@@ -1323,15 +1757,21 @@ double ReferenceSpread()
 //| plni. Graf i historie jsou v BID, ale BuyStop se plni za ASK -   |
 //| kdyz se pruraz nahoru meril bidem, nakup se plnil uz o spread    |
 //| POD urovni a zadna svicka pak pruraz nezaznamenala.              |
-//| Pouziva se referencni (medianovy) spread, protoze tentyz prepocet|
-//| se aplikuje i na historicke svicky - tam je okamzita hodnota     |
-//| nesmyslna a jeji spicka by prepsala vyber urovne prurazu.        |
+//| Spread si vybira volajici podle toho, co testuje:                |
+//|   - probihajici tick -> CurrentSpread (z bidu vyjde presne ask)  |
+//|   - uzavrena svicka  -> BarSpread / RatesSpread (spread te svicky)|
+//|   - jinak            -> ReferenceSpread (median vzorku)          |
+//| Jediny medianovy spread pro vsechno drive znamenal dvoji chybu:  |
+//| na ziveho ticku prohlasil uroven za prorazenou driv, nez k ni    |
+//| ask dosahl, a na historicke svicce menil jeji stav pri kazdem    |
+//| posunu medianu, tedy bez jedineho pohybu ceny.                   |
 //|  isBuy    - smer obchodu                                         |
 //|  bidPrice - cena v bidovem vyjadreni (high svicky, tick, close)  |
+//|  spread   - spread platny pro tuto cenu                          |
 //+------------------------------------------------------------------+
-double ExecPrice(const bool isBuy, const double bidPrice)
+double ExecPrice(const bool isBuy, const double bidPrice, const double spread)
   {
-   return(isBuy ? bidPrice + ReferenceSpread() : bidPrice);
+   return(isBuy ? bidPrice + spread : bidPrice);
   }
 
 //+------------------------------------------------------------------+
@@ -1346,13 +1786,14 @@ double ExecPrice(const bool isBuy, const double bidPrice)
 //|  bidPrice - testovana cena v bidovem vyjadreni                   |
 //|  level    - uroven prurazu                                       |
 //|  buffer   - rezerva nad (pod) urovni v cene                      |
+//|  spread   - spread platny pro testovanou cenu (viz ExecPrice)    |
 //+------------------------------------------------------------------+
 bool PriceBeyondLevel(const bool isBuy, const double bidPrice,
-                      const double level, const double buffer)
+                      const double level, const double buffer, const double spread)
   {
    if(level <= 0.0 || bidPrice <= 0.0)
       return(false);
-   const double price = ExecPrice(isBuy, bidPrice);
+   const double price = ExecPrice(isBuy, bidPrice, spread);
    return(isBuy ? (price >= level + buffer) : (price <= level - buffer));
   }
 
@@ -1384,6 +1825,12 @@ void MarkLevelTaken(const bool isBuy, const double level)
 //| urovni, na ktere nikdo neobchodoval - a ta by zustala            |
 //| zablokovana, dokud by ji nekdo rucne nesmazal (F3). Zaznam bez   |
 //| odpovidajiciho obchodu se proto zahodi.                          |
+//| Zaznam se maze jen tehdy, kdyz historie SKUTECNE odpovedela.     |
+//| Prazdna odpoved neni dukaz: po pripojeni nebo restartu nemusi byt|
+//| historie uctu jeste dosynchronizovana, a protoze zaznam je jedina|
+//| ochrana proti druhemu vstupu na teze urovni (napr. kdyz pruraz    |
+//| zustal pri spreadove spicce nezdetekovany), jeho nevratne smazani |
+//| naslepo by tuhle ochranu zahodilo.                                |
 //|  isBuy     - smer obchodu, level - uroven prurazu                |
 //|  levelTime - cas svicky urovne (obchod na ni mohl vzniknout az   |
 //|              po ni, starsi historie se neprochazi)               |
@@ -1395,11 +1842,12 @@ bool LevelWasTaken(const bool isBuy, const double level, const datetime levelTim
    double stored = 0.0;
    if(!GlobalVariableGet(TakenVarName(isBuy), stored))
       return(false);
-   if(MathAbs(stored - level) > _Point)
+   if(!PriceWithin(stored, level, 1.0))
       return(false);
 
-   if(LevelRecordConfirmed(isBuy, level, levelTime))
-      return(true);
+   const int check = LevelRecordCheck(isBuy, level, levelTime);
+   if(check != 0)
+      return(true);      // potvrzeno, nebo se to nedalo zjistit
 
    GlobalVariableDel(TakenVarName(isBuy));
    PrintFormat("PUNTIKY: záznam o obchodované úrovni %s %s nemá v historii žádný "
@@ -1408,21 +1856,30 @@ bool LevelWasTaken(const bool isBuy, const double level, const datetime levelTim
   }
 
 //+------------------------------------------------------------------+
-//| Potvrzuje historie uctu, ze na dane urovni strategie obchodovala?|
+//| Co rika historie uctu o obchodu na dane urovni?                  |
 //| Prochazi obchody od casu svicky urovne (drivejsi k ni patrit     |
-//| nemohou) a hleda vstup (DEAL_ENTRY_IN) teto strategie ve         |
-//| spravnem smeru s cenou za urovni v toleranci EntryBelongsToLevel.|
-//| Kdyz historii nejde nacist, zaznam se nevyvraci a veri se mu.    |
+//| nemohou) a hleda VSTUP teto strategie ve spravnem smeru s cenou  |
+//| za urovni v toleranci EntryBelongsToLevel. Na nettingovem uctu je|
+//| vstupem i obrat pozice (DEAL_ENTRY_INOUT).                       |
 //|  isBuy - smer, level - uroven prurazu, since - cas svicky urovne |
+//| Vraci  1 = obchod nalezen (zaznam sedi),                         |
+//|        0 = historie je k dispozici a obchod v ni neni,           |
+//|       -1 = historii nejde precist nebo je prazdna, takze se z ni |
+//|            nic vyvodit neda (po pripojeni byva jeste             |
+//|            nedosynchronizovana).                                 |
 //+------------------------------------------------------------------+
-bool LevelRecordConfirmed(const bool isBuy, const double level, const datetime since)
+int LevelRecordCheck(const bool isBuy, const double level, const datetime since)
   {
    // Horni mez s rezervou - historie se vybira po posledni obchod
    if(!HistorySelect(since, TimeCurrent() + 86400))
-      return(true);
+      return(-1);
+
+   const int total = HistoryDealsTotal();
+   if(total <= 0)
+      return(-1);      // prazdny vyber neni dukaz neexistence obchodu
 
    const long wantType = isBuy ? DEAL_TYPE_BUY : DEAL_TYPE_SELL;
-   for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+   for(int i = total - 1; i >= 0; i--)
      {
       const ulong ticket = HistoryDealGetTicket(i);
       if(ticket == 0)
@@ -1431,14 +1888,15 @@ bool LevelRecordConfirmed(const bool isBuy, const double level, const datetime s
          continue;
       if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != InpMagic)
          continue;
-      if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_IN)
+      const long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_IN && entry != DEAL_ENTRY_INOUT)
          continue;
       if(HistoryDealGetInteger(ticket, DEAL_TYPE) != wantType)
          continue;
       if(EntryBelongsToLevel(isBuy, HistoryDealGetDouble(ticket, DEAL_PRICE), level))
-         return(true);
+         return(1);
      }
-   return(false);
+   return(0);
   }
 
 //+------------------------------------------------------------------+
@@ -1482,8 +1940,8 @@ void RecalcChannels()
       return;
      }
 
-   // ATR se cte jednou za prepocet - drive se stejna hodnota tahala
-   // z terminalu trikrat (vypocet, diagnostika, kresleni)
+   // ATR se cte jednou za prepocet a odtud ho berou vsichni
+   // (vypocet, diagnostika i kresleni)
    RefreshATR();
 
    // Kanaly jsou vedene v indexech tohoto pole - referencni bar se musi
@@ -1686,14 +2144,26 @@ void RedrawChannels()
 //| Prepocet reliefnich primek z historie vstupniho timeframu.       |
 //| Primky vznikaji z hlavnich swingu M1 a musi cenu obalovat -      |
 //| prorazena primka uz neni prekazkou a mezi kandidaty se nedostane.|
+//|  force   - true = plny prepocet hned, bez ohledu na pocitadlo    |
+//|            baru (pouziva se pri startu)                          |
+//|  dropped - revalidace uz probehla drive v temze ticku (viz       |
+//|            OnTick) a nejaka primka pri ni odpadla; plny prepocet |
+//|            tedy musi bezet, at je pocitadlo kdekoli              |
 //+------------------------------------------------------------------+
-void RecalcRelief(const bool force = false)
+void RecalcRelief(const bool force = false, const bool dropped = false)
   {
+   // Bez hlidani reliefu neni co pocitat ani kreslit. Prazdne pole se
+   // uklidi jednou - drive se kazdou minutu smazaly a znovu vykreslily
+   // vsechny objekty kanalu (pres sto volani do terminalu) jen kvuli
+   // vyprazdneni pole, ktere uz prazdne bylo.
    if(!InpUseRelief)
      {
-      ArrayResize(g_relief, 0);
-      g_reliefStats.Reset();
-      DrawRelief();
+      if(ReliefCount() > 0)
+        {
+         ArrayResize(g_relief, 0);
+         g_reliefStats.Reset();
+         DrawRelief();
+        }
       return;
      }
 
@@ -1706,10 +2176,17 @@ void RecalcRelief(const bool force = false)
    // Jakmile nektera drzena primka padne, prepocet se udela HNED -
    // jinak by na jejim miste az 15 baru nebylo nic a graf i zkraceni
    // PT by zustaly bez reliefu, prestoze cerstva primka existuje.
-   g_reliefBarsSinceBuild++;
-   if(!force && g_reliefBarsSinceBuild < PUNTIKY_RELIEF_REBUILD_BARS && !RevalidateRelief())
-      return;
+   // Revalidace zaroven posune pocitadlo baru do plneho prepoctu.
+   // Kdyz uz probehla drive v temze ticku (viz OnTick), je jeji
+   // vysledek v parametru dropped a druhe volani se jen tise vrati.
+   if(!force)
+     {
+      const bool fell = dropped || RevalidateRelief();
+      if(g_reliefBarsSinceBuild < PUNTIKY_RELIEF_REBUILD_BARS && !fell)
+         return;
+     }
    g_reliefBarsSinceBuild = 0;
+   g_reliefCheckedBar     = iTime(_Symbol, InpEntryTF, 1);
 
    MqlRates rates[];
    const int copied = LoadClosedBars(InpEntryTF, InpReliefLookback, rates);
@@ -1735,57 +2212,79 @@ void RecalcRelief(const bool force = false)
 //| Levne prekontroluje drzene reliefni primky mezi plnymi prepocty. |
 //| Overuje presne ty filtry, ktere se meni s kazdym novym barem:    |
 //| prorazeni nove uzavrenou svickou, vzdaleni od druhe opory a jeji |
-//| stari. Testuje se stejne jako v PuntikyReliefScan ZA druhou      |
-//| oporou, kde je primka tvrdou hranici i pro knot.                 |
+//| stari. Predikaty jsou metody SReliefLine, tedy tytez, ktere      |
+//| pouziva plny prepocet - drive to byly kopie a jejich rozejiti by |
+//| znamenalo primky blikajici kazdych PUNTIKY_RELIEF_REBUILD_BARS.  |
 //| Odlozit se smi jen OBJEVENI nove primky - novy swing potrebuje   |
 //| k potvrzeni aspon InpReliefSwingDepth baru, takze o nej neni     |
 //| nouze. Zanik primky odlozit nelze: prorazena primka uz prekazkou |
 //| neni a nesmi dal zkracovat PT.                                   |
+//| Prochazi VSECHNY svicky uzavrene od posledni kontroly, ne jen tu |
+//| posledni: po vypadku spojeni vznikne bez jedineho ticku i vic    |
+//| baru najednou a primka prorazena v nekterem z nich by jinak      |
+//| zustala v pameti az do plneho prepoctu.                          |
+//| Volani navic (dvakrat v jednom ticku) nic nestoji - kdyz od      |
+//| posledni kontroly nepribyla svicka, funkce se hned vrati.        |
 //| Vraci true, kdyz nektera primka odpadla - volajici pak spusti    |
 //| plny prepocet hned.                                              |
 //+------------------------------------------------------------------+
 bool RevalidateRelief()
   {
+   const datetime lastClosed = iTime(_Symbol, InpEntryTF, 1);
+   if(lastClosed <= 0 || lastClosed == g_reliefCheckedBar)
+      return(false);
+
+   // Kolik svicek se od posledni kontroly uzavrelo. Pocitadlo do
+   // plneho prepoctu se zvysuje o skutecny pocet baru, ne o pocet
+   // volani - jinak by se cyklus prepoctu pri vypadku spojeni protahl.
+   int bars = 1;
+   if(g_reliefCheckedBar > 0)
+     {
+      const int b = Bars(_Symbol, InpEntryTF, g_reliefCheckedBar, lastClosed);
+      if(b > 1)
+         bars = b - 1;
+     }
+   g_reliefCheckedBar      = lastClosed;
+   g_reliefBarsSinceBuild += bars;
+
    const int cnt = ReliefCount();
    if(cnt <= 0)
       return(false);
 
-   const double high  = iHigh(_Symbol,  InpEntryTF, 1);
-   const double low   = iLow(_Symbol,   InpEntryTF, 1);
-   const double open  = iOpen(_Symbol,  InpEntryTF, 1);
-   const double close = iClose(_Symbol, InpEntryTF, 1);
-   if(high <= 0.0 || low <= 0.0 || open <= 0.0 || close <= 0.0)
-      return(false);
-
-   // Posledni UZAVRENA svicka lezi o bar zpet za prave otevrenou
-   const double bar        = ReliefBarNow() - 1.0;
+   // Prochazet vic nez PUNTIKY_RELIEF_REBUILD_BARS svicek nema smysl -
+   // pocitadlo uz stejne vynutilo plny prepocet, ktery projde vsechny
+   const int    scan       = MathMin(bars, PUNTIKY_RELIEF_REBUILD_BARS);
+   const double barNow     = ReliefBarNow();
    const double tol        = g_reliefParams.pierceTol;
    const double driftLimit = PuntikyReliefDriftLimit(g_reliefParams);
 
    int kept = 0;
    for(int i = 0; i < cnt; i++)
      {
-      const double v = g_relief[i].ValueAtBar(bar);
+      // Primka se s kazdym barem vzdaluje od sve druhe opory a ta
+      // zaroven starne; za prahem uz to neni relief, ale artefakt.
+      // Posledni UZAVRENA svicka lezi o bar zpet za prave otevrenou.
+      const double lastBar = barNow - 1.0;
+      bool dead = g_relief[i].Drifted(lastBar, driftLimit) ||
+                  g_relief[i].Expired(lastBar, g_reliefParams.maxAgeFactor);
 
-      // Telo pres primku je prorazeni; za druhou oporou plati totez
-      // i pro knot - novy extrem primku rusi
-      const bool body = g_relief[i].isHigh ? (MathMax(open, close) > v + tol)
-                                           : (MathMin(open, close) < v - tol);
-      const bool wick = (-g_relief[i].GapFrom(v, high, low) > tol);
+      // Vsechny svicky uzavrene od posledni kontroly. Jsou to bary za
+      // druhou oporou, kde je primka tvrdou hranici i pro knot - proto
+      // je tolerance knotu tataz jako u tela.
+      for(int sh = scan; sh >= 1 && !dead; sh--)
+        {
+         const double high  = iHigh(_Symbol,  InpEntryTF, sh);
+         const double low   = iLow(_Symbol,   InpEntryTF, sh);
+         const double open  = iOpen(_Symbol,  InpEntryTF, sh);
+         const double close = iClose(_Symbol, InpEntryTF, sh);
+         if(high <= 0.0 || low <= 0.0 || open <= 0.0 || close <= 0.0)
+            continue;
 
-      // Primka se s kazdym barem vzdaluje od sve druhe opory; za
-      // prahem uz to neni relief, ale artefakt. Prah se bere ze
-      // spolecne definice, aby se revalidace nerozesla s prepoctem.
-      const bool drifted = (driftLimit > 0.0 &&
-                            MathAbs(v - g_relief[i].p2) > driftLimit);
+         if(g_relief[i].BarPierces(barNow - (double)sh, open, high, low, close, tol, tol))
+            dead = true;
+        }
 
-      // Stari druhe opory roste s kazdym barem take
-      bool tooOld = false;
-      if(g_reliefParams.maxAgeFactor > 0.0)
-         tooOld = ((bar - (double)g_relief[i].i2) >
-                   g_reliefParams.maxAgeFactor * (double)g_relief[i].spanBars);
-
-      if(body || wick || drifted || tooOld)
+      if(dead)
          continue;
 
       if(kept != i)
@@ -1886,9 +2385,12 @@ bool LevelBrokenNow(const bool isBuy, const double level)
    if(level <= 0.0)
       return(false);
 
+   // Prave otevrena svicka je "ted", takze se pouziva ZIVY spread.
+   // S medianem (ktery byva vetsi nez okamzity spread) expert uroven
+   // prohlasil za prorazenou driv, nez k ni ask dosahl.
    const double ext = isBuy ? iHigh(_Symbol, InpBreakoutTF, 0)
                             : iLow(_Symbol, InpBreakoutTF, 0);
-   return(PriceBeyondLevel(isBuy, ext, level, g_breakBuffer));
+   return(PriceBeyondLevel(isBuy, ext, level, g_breakBuffer, CurrentSpread()));
   }
 
 //+------------------------------------------------------------------+
@@ -1906,8 +2408,10 @@ bool SwingBroken(const MqlRates &rates[], const SSwing &s, const bool isHigh,
    const int n = ArraySize(rates);
    for(int i = s.index + 1; i < n; i++)
      {
+      // Uzavrena svicka se posuzuje SVYM spreadem, ne dnesnim medianem -
+      // ten se s casem posouva a menil by stav davno uzavreneho swingu
       const double ext = isHigh ? rates[i].high : rates[i].low;
-      if(PriceBeyondLevel(isHigh, ext, s.price, buffer))
+      if(PriceBeyondLevel(isHigh, ext, s.price, buffer, RatesSpread(rates[i])))
          return(true);
      }
    return(LevelBrokenNow(isHigh, s.price));
@@ -1965,6 +2469,36 @@ void FindBreakoutSwings(double &hi, datetime &hiTime, bool &foundHi,
   }
 
 //+------------------------------------------------------------------+
+//| Nastavi priznak "uroven prorazena" a pri prvnim prurazu si       |
+//| zapamatuje jeho cas. Podle nej pozna rezim M1_CLOSE, jestli      |
+//| pruraz patri k prave uzavrene svicce vstupniho TF, nebo je       |
+//| starsi a uroven uz svou prilezitost mela (viz EntryBlockReason). |
+//|  isBuy  - strana urovne                                          |
+//|  broken - novy stav priznaku                                     |
+//+------------------------------------------------------------------+
+void MarkBroken(const bool isBuy, const bool broken)
+  {
+   if(isBuy)
+     {
+      // Cas se zapisuje jen pri PRECHODU do prorazeneho stavu, aby
+      // opakovany pruraz teze urovne nepredstiral cerstvy signal
+      if(broken && !g_buyBroken)
+         g_buyBrokenTime = TimeCurrent();
+      if(!broken)
+         g_buyBrokenTime = 0;
+      g_buyBroken = broken;
+     }
+   else
+     {
+      if(broken && !g_sellBroken)
+         g_sellBrokenTime = TimeCurrent();
+      if(!broken)
+         g_sellBrokenTime = 0;
+      g_sellBroken = broken;
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| Ulozi novou uroven prurazu jedne strany a srovna jeji priznaky.  |
 //| Priznaky se resetuji jen pri zmene urovne - na jednom swingu se  |
 //| tedy obchoduje nejvyse jednou. Jestli uz se na urovni            |
@@ -1995,6 +2529,8 @@ void ApplyBreakLevel(const bool isBuy, const double price, const datetime levelT
 
    if(changed)
      {
+      // Nova uroven zacina s cistymi priznaky vcetne casu prurazu
+      MarkBroken(isBuy, false);
       if(isBuy)
         {
          g_buyTaken = LevelWasTaken(true, price, levelTime);
@@ -2010,13 +2546,8 @@ void ApplyBreakLevel(const bool isBuy, const double price, const datetime levelT
    // Uzavrene svicky TF prurazu uz prosel vyber swingu, zbyva prave
    // otevrena svicka. Pri nezmenene urovni se drzi i to, co mezitim
    // zjistil tick - jinak by se prorazeni pri vypadku dat ztratilo.
-   const bool wasBroken = changed ? false : (isBuy ? g_buyBroken : g_sellBroken);
-   const bool broken    = wasBroken || LevelBrokenNow(isBuy, price);
-
-   if(isBuy)
-      g_buyBroken = broken;
-   else
-      g_sellBroken = broken;
+   if(!(isBuy ? g_buyBroken : g_sellBroken) && LevelBrokenNow(isBuy, price))
+      MarkBroken(isBuy, true);
   }
 
 //+------------------------------------------------------------------+
@@ -2052,10 +2583,9 @@ void RefreshBreakoutLevels()
 
    UpdateArming();
 
-   // Navrhy se prepocitaji vzdy, i kdyz se zadna uroven najit
-   // nepodarila - jinak by v grafu i v prikazech zustal navrh
-   // postaveny na urovni, kterou uz cena prorazila
-   RebuildPlans();
+   // Navrhy se prepocitavaji az na konci ticku (viz OnTick) - tady by
+   // to bylo uz druhe ze tri volani v jedinem ticku a jeho vysledek by
+   // stejne nikdo neprecetl. Volajici si nastavi priznak plansDirty.
    DrawBreakoutLevels();
   }
 
@@ -2074,14 +2604,22 @@ void UpdateArming()
    if(bid <= 0.0)
       return;
 
-   if(PriceBeyondLevel(true, bid, g_breakHigh, g_breakBuffer))
-      g_buyBroken = true;
-   if(PriceBeyondLevel(false, bid, g_breakLow, g_breakBuffer))
-      g_sellBroken = true;
+   // Probihajici tick se posuzuje ZIVYM spreadem: pro BUY z nej vyjde
+   // presne aktualni ask, tedy cena, za kterou by se STOP prikaz
+   // vyplnil. S medianem (ktery byva vetsi nez okamzity spread) expert
+   // uroven prohlasil za prorazenou driv, nez k ni ask dosahl - lezici
+   // prikaz se pak zrusil nebo presunul tesne pred svym vyplnenim a
+   // pruraz, na ktery cekal, propasl.
+   const double spread = CurrentSpread();
+
+   if(PriceBeyondLevel(true, bid, g_breakHigh, g_breakBuffer, spread))
+      MarkBroken(true, true);
+   if(PriceBeyondLevel(false, bid, g_breakLow, g_breakBuffer, spread))
+      MarkBroken(false, true);
 
    // Nabiji se proti exekucni cene smeru: nakup se plni za ask, takze
    // dokud je ask jeste pod urovni, ma pruraz teprve prijit
-   if(g_breakHigh > 0.0 && ExecPrice(true, bid) <= g_breakHigh)
+   if(g_breakHigh > 0.0 && ExecPrice(true, bid, spread) <= g_breakHigh)
       g_buyArmed = true;
    if(g_breakLow > 0.0 && bid >= g_breakLow)
       g_sellArmed = true;
@@ -2124,12 +2662,18 @@ void RebuildPlans()
 //|  entry    - planovana cena vstupu                                |
 //|  trigger  - uroven prurazu                                       |
 //|  atMarket - vstup se otevira na trhu (rezim M1_CLOSE): pruraz    |
-//|             prave probehl, takze se netestuje dosazitelnost ani  |
-//|             priznak "prorazeno", zato se hlida odstup od urovne  |
+//|             prave probehl, takze se netestuje dosazitelnost a    |
+//|             priznak "prorazeno" se posuzuje podle casu prurazu,  |
+//|             zato se hlida odstup od urovne                       |
+//|  block    - out: druh zamitnuti; rozhoduje o osudu uz leziciho   |
+//|             prikazu pri rekonciliaci (viz SyncOneDirection)      |
 //+------------------------------------------------------------------+
 string EntryBlockReason(const bool isBuy, const double entry, const double trigger,
-                        const bool atMarket)
+                        const bool atMarket, ENUM_PUNTIKY_BLOCK &block)
   {
+   // Vychozi je "uroven neni k dispozici" - prikaz na ni lezet nema
+   block = PUNTIKY_BLOCK_LEVEL;
+
    if(isBuy ? !InpAllowBuy : !InpAllowSell)
       return("směr vypnut");
 
@@ -2148,12 +2692,27 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
 
    if(atMarket)
      {
+      // Uroven prorazenou driv, nez se otevrela prave uzavrena svicka,
+      // uz nelze obchodovat: vstup by nevznikl z prurazu, ale z navratu
+      // ceny k urovni, ktera svou prilezitost mela. Pruraz z PRAVE
+      // uzavrene svicky se naopak propustit musi - jeho priznak nastavil
+      // nektery tick uvnitr teze svicky, takze samotny priznak
+      // "prorazeno" tu rozhodnout nemuze (drive se proto netestoval
+      // vubec a rezim vstupoval i na davno spotrebovane urovni).
+      const datetime brokenTime = isBuy ? g_buyBrokenTime : g_sellBrokenTime;
+      const datetime barOpen    = iTime(_Symbol, InpEntryTF, 1);
+      if((isBuy ? g_buyBroken : g_sellBroken) &&
+         brokenTime > 0 && barOpen > 0 && brokenTime < barOpen)
+         return("úroveň už byla proražena");
+
       // Po gapu nebo dlouhe svicce muze byt trh uz stovky bodu za
       // urovni; takovy vstup uz s prurazem nema nic spolecneho a nesl
       // by plnou delku PT z mista, kde uz pohyb probehl
       const double offset = isBuy ? (entry - trigger) : (trigger - entry);
       if(offset > g_maxLevelOffset)
          return(StringFormat("vstup %.0f b od úrovně", offset / _Point));
+
+      block = PUNTIKY_BLOCK_NONE;
       return("");
      }
 
@@ -2163,17 +2722,19 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
       return("úroveň už byla proražena");
 
    // Navrh ma smysl jen dokud pruraz teprve ceka. Kdyz uz cena urovni
-   // prosla, STOP prikaz nad/pod trhem by stejne neslo zadat. Zapocitava
-   // se i stop level brokera, aby panel nehlasil "pripraven" u navrhu,
-   // ktery by broker odmitl.
-   const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   const double stops = StopsLevelPrice();
-   if(isBuy && ask > 0.0 && entry <= ask + stops)
-      return(entry <= ask ? "průraz už proběhl" : "blíž než stop-level brokera");
-   if(!isBuy && bid > 0.0 && entry >= bid - stops)
-      return(entry >= bid ? "průraz už proběhl" : "blíž než stop-level brokera");
+   // prosla, STOP prikaz nad (pod) trhem by stejne neslo zadat.
+   // Zapocitava se i stop level brokera, aby panel nehlasil "pripraven"
+   // u navrhu, ktery by broker odmitl. Tohle omezeni se ale tyka jen
+   // ZADANI a upravy prikazu, ne jeho drzeni - proto ma vlastni druh
+   // blokace a uz lezici prikaz podle nej rusit nelze.
+   string tooClose = "";
+   if(StopTooClose(isBuy, entry, StopsLevelPrice(), tooClose))
+     {
+      block = PUNTIKY_BLOCK_REACH;
+      return(tooClose);
+     }
 
+   block = PUNTIKY_BLOCK_NONE;
    return("");
   }
 
@@ -2197,9 +2758,9 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
    SEntryPlan pl;
    ResetPlan(pl, isBuy);
    pl.trigger = trigger;
-   pl.entry   = NormalizeDouble(entryPrice, _Digits);
+   pl.entry   = AlignToTick(entryPrice);
 
-   pl.reason = EntryBlockReason(isBuy, pl.entry, trigger, atMarket);
+   pl.reason = EntryBlockReason(isBuy, pl.entry, trigger, atMarket, pl.block);
    if(pl.reason != "")
       return(pl);
 
@@ -2219,15 +2780,25 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
    const double minDist = InpMinEntryPoints * _Point;
    double dist = maxDist;
 
-   //--- Nejblizsi hrana ve smeru obchodu (vcetne hran vnorenych kanalu).
-   //--- Hleda se od SPOUSTECE, tedy od stejne ceny, proti ktere se
-   //--- testovalo "pruraz uvnitr kanalu". Kdyz se hledalo az od vstupu,
-   //--- hrana lezici mezi spoustecem a vstupem se povazovala za
-   //--- neexistujici a PT pak mirilo v plne delce za hranu kanalu -
+   //--- Referencni cena, od ktere se hledaji prekazky.
+   //--- U pending prikazu je to SPOUSTEC, tedy stejna cena, proti ktere
+   //--- se testovalo "pruraz uvnitr kanalu". Kdyz se hledalo az od
+   //--- vstupu, prekazka lezici mezi spoustecem a vstupem se povazovala
+   //--- za neexistujici a PT pak mirilo v plne delce za hranu kanalu -
    //--- presne v pripade, kdy swing sedi na hrane.
+   //--- U trzniho vstupu je ale trh uz ZA spoustecem: prekazka mezi
+   //--- spoustecem a vstupem je prave prorazena a misto k ni vyjde vzdy
+   //--- nula ("malo mista k reliefni primce (0 b)"), takze by vstup
+   //--- zamitla prava ta prekazka, kterou prurazova svicka sama zrusila.
+   //--- Proto se v tom rezimu hleda az od vstupu.
+   const double refPrice = atMarket
+                           ? (isBuy ? MathMax(trigger, pl.entry) : MathMin(trigger, pl.entry))
+                           : trigger;
+
+   //--- Nejblizsi hrana ve smeru obchodu (vcetne hran vnorenych kanalu)
    const double barProj = barNow + ProjBars(InpChannelTF);
    double edge = 0.0;
-   const double edgeGap = PuntikyDistanceToNextEdge(g_channels, barNow, barProj, trigger, isBuy, edge);
+   const double edgeGap = PuntikyDistanceToNextEdge(g_channels, barNow, barProj, refPrice, isBuy, edge);
    if(edgeGap >= 0.0)
      {
       // Misto pro PT se ale meri od skutecneho vstupu
@@ -2235,9 +2806,8 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
                            - InpEdgeBuffer * _Point;
       if(avail < dist)
         {
-         dist            = MathMax(avail, 0.0);
-         pl.barrier      = PUNTIKY_BARRIER_EDGE;
-         pl.barrierPrice = edge;
+         dist       = MathMax(avail, 0.0);
+         pl.barrier = PUNTIKY_BARRIER_EDGE;
         }
      }
 
@@ -2254,7 +2824,7 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
 
       double relPrice = 0.0;
       const double relGap = PuntikyNearestRelief(g_relief, relBarNow, relBarProj,
-                                                 trigger, isBuy, relPrice);
+                                                 refPrice, isBuy, relPrice);
       if(relGap >= 0.0)
         {
          const double relFromEntry = MathMax(isBuy ? (relPrice - pl.entry)
@@ -2263,23 +2833,25 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
            {
             if(InpReliefMode == PUNTIKY_RELIEF_SKIP)
               {
-               pl.barrier      = PUNTIKY_BARRIER_RELIEF;
-               pl.barrierPrice = relPrice;
-               pl.reason = StringFormat("v cestě reliéfní přímka (%.0f b, %s)",
-                                        relFromEntry / _Point,
-                                        DoubleToString(relPrice, _Digits));
+               pl.barrier = PUNTIKY_BARRIER_RELIEF;
+               pl.block   = PUNTIKY_BLOCK_LEVEL;
+               pl.reason  = StringFormat("v cestě reliéfní přímka (%.0f b, %s)",
+                                         relFromEntry / _Point,
+                                         DoubleToString(relPrice, _Digits));
                return(pl);
               }
 
             // Zkraceni PT pred primku, SL se zkrati stejne (RRR 1:1)
-            dist            = MathMax(relFromEntry - InpReliefBuffer * _Point, 0.0);
-            pl.barrier      = PUNTIKY_BARRIER_RELIEF;
-            pl.barrierPrice = relPrice;
+            dist       = MathMax(relFromEntry - InpReliefBuffer * _Point, 0.0);
+            pl.barrier = PUNTIKY_BARRIER_RELIEF;
            }
         }
      }
 
-   //--- Kontrola minimalni delky vstupu a stop-levelu brokera
+   //--- Kontrola minimalni delky vstupu a stop-levelu brokera.
+   //--- Zamitnuti se tyka teto konkretni urovne, takze prikaz na ni
+   //--- lezet nema (na rozdil od priblizeni trhu ke stop-levelu).
+   pl.block = PUNTIKY_BLOCK_LEVEL;
    if(dist < minDist)
      {
       pl.reason = StringFormat("málo místa k %s (%.0f b)", BarrierText(pl.barrier),
@@ -2293,8 +2865,8 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
      }
 
    pl.distance = dist;
-   pl.sl = NormalizeDouble(isBuy ? pl.entry - dist : pl.entry + dist, _Digits);
-   pl.tp = NormalizeDouble(isBuy ? pl.entry + dist : pl.entry - dist, _Digits);
+   pl.sl = AlignToTick(isBuy ? pl.entry - dist : pl.entry + dist);
+   pl.tp = AlignToTick(isBuy ? pl.entry + dist : pl.entry - dist);
 
    string lotReason = "";
    pl.lots = CalcLot(dist, lotReason);
@@ -2304,12 +2876,17 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
       return(pl);
      }
 
-   // Objem jedne nohy dvojiteho vstupu se pocita uz tady - bublina
-   // tlacitka 2x ho pak nemusi dopocitavat pri kazdem obnoveni panelu,
-   // tedy kazdou sekundu znovu
+   // Objem i vzdalenejsi cil druhe nohy dvojiteho vstupu se pocitaji uz
+   // tady, na jednom miste: bublina tlacitka 2x je pak jen cte (misto
+   // aby je dopocitavala pri kazdem obnoveni panelu, tedy kazdou
+   // sekundu) a klik zada presne to, co bublina slibuje - drive si
+   // obe strany pocitaly vlastni cislo z jine equity.
    pl.lotsDouble = CalcLot(dist, pl.doubleReason, PUNTIKY_DOUBLE_RISK);
+   pl.tpDouble   = AlignToTick(isBuy ? pl.entry + dist * PUNTIKY_DOUBLE_PT_MULT
+                                     : pl.entry - dist * PUNTIKY_DOUBLE_PT_MULT);
 
    pl.valid = true;
+   pl.block = PUNTIKY_BLOCK_NONE;
    return(pl);
   }
 
@@ -2429,10 +3006,20 @@ double CalcLot(const double slDistance, string &reason, const double riskFractio
    return(NormalizeDouble(lot, digits));
   }
 
-//--- Shoda dvou cen na uroven jednoho bodu (double se presne neporovnava)
+//--- Prisna shoda dvou cen (double se presne neporovnava): rozdil pod
+//--- polovinou bodu, tedy tataz cena po normalizaci
 bool SamePrice(const double a, const double b)
   {
    return(MathAbs(a - b) < _Point / 2.0);
+  }
+
+//--- Shoda dvou cen s tolerance v bodech. Pouziva se tam, kde druhou
+//--- cenu urcil nekdo jiny (ulozena uroven, stopy pozice od brokera,
+//--- uroven uz odeslaneho upozorneni), takze na presnou shodu
+//--- spolehnout nelze.
+bool PriceWithin(const double a, const double b, const double points)
+  {
+   return(MathAbs(a - b) <= points * _Point);
   }
 
 //+------------------------------------------------------------------+
@@ -2445,7 +3032,10 @@ bool SamePrice(const double a, const double b)
 //+------------------------------------------------------------------+
 bool OrderIsFrozen(const bool isBuy, const double price)
   {
-   const double freeze = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL) * _Point;
+   // Vlastni test, ne StopTooClose: nulovy freeze level znamena, ze
+   // broker zonu nema vubec, kdezto nulovy stop level jen to, ze prikaz
+   // smi lezet tesne u trhu
+   const double freeze = SymbolLevelPrice(SYMBOL_TRADE_FREEZE_LEVEL);
    if(freeze <= 0.0)
       return(false);
 
@@ -2459,7 +3049,9 @@ bool OrderIsFrozen(const bool isBuy, const double price)
 
 //+------------------------------------------------------------------+
 //| Zrusi jeden pending prikaz a vysledek zapise do logu.            |
-//| Navratovou hodnotu drive nikdo nekontroloval.                    |
+//| Navratovou hodnotu musi volajici testovat: zamitnute ruseni       |
+//| necha prikaz na trhu, a kdo na jeho misto rovnou zada novy,       |
+//| zdvojnasobi expozici.                                             |
 //|  ticket - ticket ruseneho prikazu                                |
 //| Vraci true pri uspechu.                                          |
 //+------------------------------------------------------------------+
@@ -2479,15 +3071,13 @@ bool DeleteOrder(const ulong ticket)
 //+------------------------------------------------------------------+
 bool CancelPendingOrders()
   {
+   ulong tickets[];
+   const int n = CollectOurOrders(-1, tickets);
+
    bool all = true;
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-     {
-      const ulong ticket = OrderGetTicket(i);
-      if(ticket == 0 || !IsOurOrder())
-         continue;
-      if(!DeleteOrder(ticket))
+   for(int i = 0; i < n; i++)
+      if(!DeleteOrder(tickets[i]))
          all = false;
-     }
    return(all);
   }
 
@@ -2503,19 +3093,25 @@ bool CancelPendingOrders()
 //+------------------------------------------------------------------+
 bool PlaceStopOrder(SEntryPlan &pl, const bool isDouble = false)
   {
-   const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   const double stops = StopsLevelPrice();
-   if(ask <= 0.0 || bid <= 0.0)
+   const string dir = pl.isBuy ? "BUY" : "SELL";
+
+   // Bez kotaci nelze cenu prikazu vubec posoudit. Drive se tenhle
+   // pripad tise preskocil, takze volajici vypsal duvod, ktery v
+   // g_lastEvent zbyl po nejake starsi (a uplne jine) udalosti.
+   if(SymbolInfoDouble(_Symbol, SYMBOL_ASK) <= 0.0 ||
+      SymbolInfoDouble(_Symbol, SYMBOL_BID) <= 0.0)
+     {
+      g_lastEvent = dir + " nezadán - chybí kotace";
       return(false);
+     }
 
    // Broker nedovoli STOP prikaz bliz k trhu, nez je jeho stop level.
    // Drive se takovy pripad jen tise preskocil a panel dal hlasil
    // "pripraven", i kdyz na trhu zadny prikaz nelezel.
-   if(pl.isBuy ? (pl.entry <= ask + stops) : (pl.entry >= bid - stops))
+   string tooClose = "";
+   if(StopTooClose(pl.isBuy, pl.entry, StopsLevelPrice(), tooClose))
      {
-      g_lastEvent = StringFormat("%s nezadán - blíž než stop-level brokera (%.0f b)",
-                                 pl.isBuy ? "BUY" : "SELL", stops / _Point);
+      g_lastEvent = dir + " nezadán - " + tooClose;
       return(false);
      }
 
@@ -2528,11 +3124,11 @@ bool PlaceStopOrder(SEntryPlan &pl, const bool isDouble = false)
                    : g_trade.SellStop(pl.lots, pl.entry, _Symbol, pl.sl, pl.tp,
                                       ORDER_TIME_GTC, 0, comment);
    if(!ok)
-     {
-      g_lastEvent = StringFormat("%s STOP příkaz selhal, retcode %d",
-                                 pl.isBuy ? "BUY" : "SELL", g_trade.ResultRetcode());
-      Print("PUNTIKY: ", g_lastEvent, " (", g_trade.ResultRetcodeDescription(), ")");
-     }
+      g_lastEvent = StringFormat("%s STOP příkaz selhal, retcode %d (%s)", dir,
+                                 g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+
+   // Do logu pise VOLAJICI - jen on vi, jestli slo o rekonciliaci nebo
+   // o klik na tlacitko, a jen tak se hlaska nevypise dvakrat
    return(ok);
   }
 
@@ -2546,10 +3142,18 @@ bool PlaceStopOrder(SEntryPlan &pl, const bool isDouble = false)
 void SyncOneDirection(SEntryPlan &pl, const ulong ticket, const double price,
                       const double sl, const double tp, const double volume)
   {
-   //--- Navrh neplati -> zadny prikaz lezet nema
+   //--- Navrh neplati -> zadny prikaz lezet nema.
+   //--- Vyjimka: prikaz uz lezi presne na planovane cene a jedinou
+   //--- vadou navrhu je, ze se k nemu trh priblizil na stop level
+   //--- brokera. Ten omezuje ZADANI a upravu prikazu, ne jeho drzeni -
+   //--- rusit ho tesne pred vyplnenim by znamenalo propast prave ten
+   //--- pruraz, kvuli kteremu prikaz lezi. Vsechny ostatni duvody
+   //--- (spotrebovana nebo vymenena uroven, limit pozic, vypnuty smer)
+   //--- znamenaji, ze prikaz na trhu byt nema.
    if(!pl.valid)
      {
-      if(ticket != 0 && !OrderIsFrozen(pl.isBuy, price))
+      const bool keep = (pl.block == PUNTIKY_BLOCK_REACH) && SamePrice(price, pl.entry);
+      if(ticket != 0 && !keep && !OrderIsFrozen(pl.isBuy, price))
          DeleteOrder(ticket);
       return;
      }
@@ -2557,7 +3161,8 @@ void SyncOneDirection(SEntryPlan &pl, const ulong ticket, const double price,
    //--- Navrh plati a prikaz chybi -> zadat novy
    if(ticket == 0)
      {
-      PlaceStopOrder(pl);
+      if(!PlaceStopOrder(pl))
+         Print("PUNTIKY: ", g_lastEvent);
       return;
      }
 
@@ -2575,11 +3180,11 @@ void SyncOneDirection(SEntryPlan &pl, const ulong ticket, const double price,
       return;
      }
 
-   // Objem lezicího prikazu zmenit nelze - musi se zadat znovu
+   // Objem leziciho prikazu zmenit nelze - musi se zadat znovu
    if(!sameVolume)
      {
-      if(DeleteOrder(ticket))
-         PlaceStopOrder(pl);
+      if(DeleteOrder(ticket) && !PlaceStopOrder(pl))
+         Print("PUNTIKY: ", g_lastEvent);
       return;
      }
 
@@ -2605,21 +3210,21 @@ void CancelOppositeOrder(const bool filledIsBuy)
    const bool opposite = !filledIsBuy;
    const long wanted   = filledIsBuy ? ORDER_TYPE_SELL_STOP : ORDER_TYPE_BUY_STOP;
 
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   ulong tickets[];
+   const int n = CollectOurOrders(wanted, tickets);
+
+   for(int i = 0; i < n; i++)
      {
-      const ulong t = OrderGetTicket(i);
-      if(t == 0 || !IsOurOrder())
-         continue;
-      if(OrderGetInteger(ORDER_TYPE) != wanted)
+      if(!OrderSelect(tickets[i]))
          continue;
 
       if(OrderIsFrozen(opposite, OrderGetDouble(ORDER_PRICE_OPEN)))
         {
          PrintFormat("PUNTIKY: opačný příkaz #%I64u je ve freeze zóně brokera, "
-                     "zrušení odloženo.", t);
+                     "zrušení odloženo.", tickets[i]);
          continue;
         }
-      DeleteOrder(t);
+      DeleteOrder(tickets[i]);
      }
   }
 
@@ -2716,20 +3321,26 @@ void AdjustPositionStops(const ulong ticket, const double slDistance,
    if(ticket == 0 || slDistance <= 0.0)
       return;
    if(!PositionSelectByTicket(ticket))
+     {
+      // Terminal jeste nemusi mit novou pozici v seznamu; dorovnani se
+      // uz nezopakuje, takze o tom musi byt aspon zaznam v logu
+      PrintFormat("PUNTIKY: pozici #%I64u nelze vybrat (chyba %d), SL a PT "
+                  "zůstávají tak, jak je vyplnil broker.", ticket, GetLastError());
       return;
+     }
    if(!IsOurPosition())
       return;
 
-   // Nezname delky PT (napr. prikaz bez PT) se chova jako drive - 1:1
+   // Neznama delka PT (napr. prikaz zadany bez PT) znamena RRR 1:1
    const double tpDist = (tpDistance > 0.0) ? tpDistance : slDistance;
 
    const bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
    const double open  = PositionGetDouble(POSITION_PRICE_OPEN);
-   const double sl    = NormalizeDouble(isBuy ? open - slDistance : open + slDistance, _Digits);
-   const double tp    = NormalizeDouble(isBuy ? open + tpDist : open - tpDist, _Digits);
+   const double sl    = AlignToTick(isBuy ? open - slDistance : open + slDistance);
+   const double tp    = AlignToTick(isBuy ? open + tpDist : open - tpDist);
 
-   if(MathAbs(PositionGetDouble(POSITION_SL) - sl) <= _Point &&
-      MathAbs(PositionGetDouble(POSITION_TP) - tp) <= _Point)
+   if(PriceWithin(PositionGetDouble(POSITION_SL), sl, 1.0) &&
+      PriceWithin(PositionGetDouble(POSITION_TP), tp, 1.0))
       return;
 
    if(!g_trade.PositionModify(ticket, sl, tp))
@@ -2746,7 +3357,7 @@ bool OpenMarket(SEntryPlan &pl)
   {
    if(!TradingEnabled())
      {
-      g_lastEvent = "obchodování vypnuto";
+      ReportEvent("tržní vstup nezadán - obchodování je vypnuté");
       return(false);
      }
 
@@ -2757,9 +3368,8 @@ bool OpenMarket(SEntryPlan &pl)
 
    if(!ok)
      {
-      g_lastEvent = StringFormat("Chyba vstupu %d / %d",
-                                 g_trade.ResultRetcode(), GetLastError());
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(StringFormat("Chyba vstupu %d / %d",
+                               g_trade.ResultRetcode(), GetLastError()));
       return(false);
      }
 
@@ -2767,15 +3377,14 @@ bool OpenMarket(SEntryPlan &pl)
    // dorovnaji na realny vstup, aby RRR zustalo presne 1:1
    AdjustPositionStops(ResultPositionId(), pl.distance, pl.distance);
 
-   g_lastEvent = StringFormat("%s %.2f lot @ %s  SL %s  PT %s  (%.0f b%s)",
-                              pl.isBuy ? "BUY" : "SELL", pl.lots,
-                              DoubleToString(pl.entry, _Digits),
-                              DoubleToString(pl.sl, _Digits),
-                              DoubleToString(pl.tp, _Digits),
-                              pl.distance / _Point,
-                              pl.barrier == PUNTIKY_BARRIER_NONE
-                              ? "" : ", zkráceno k " + BarrierText(pl.barrier));
-   Print("PUNTIKY: ", g_lastEvent);
+   ReportEvent(StringFormat("%s %.2f lot @ %s  SL %s  PT %s  (%.0f b%s)",
+                            pl.isBuy ? "BUY" : "SELL", pl.lots,
+                            DoubleToString(pl.entry, _Digits),
+                            DoubleToString(pl.sl, _Digits),
+                            DoubleToString(pl.tp, _Digits),
+                            pl.distance / _Point,
+                            pl.barrier == PUNTIKY_BARRIER_NONE
+                            ? "" : ", zkráceno k " + BarrierText(pl.barrier)));
    return(true);
   }
 
@@ -2793,9 +3402,8 @@ void ManualPlace(SEntryPlan &pl)
 
    if(!pl.valid)
      {
-      g_lastEvent = StringFormat("%s nelze zadat - %s", dir,
-                                 pl.reason == "" ? "návrh není platný" : pl.reason);
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(StringFormat("%s nelze zadat - %s", dir,
+                               pl.reason == "" ? "návrh není platný" : pl.reason));
       return;
      }
 
@@ -2806,13 +3414,12 @@ void ManualPlace(SEntryPlan &pl)
       return;
      }
 
-   g_lastEvent = StringFormat("%s zadán tlačítkem @ %s  SL %s  PT %s  %.2f lot",
-                              dir,
-                              DoubleToString(pl.entry, _Digits),
-                              DoubleToString(pl.sl, _Digits),
-                              DoubleToString(pl.tp, _Digits),
-                              pl.lots);
-   Print("PUNTIKY: ", g_lastEvent);
+   ReportEvent(StringFormat("%s zadán tlačítkem @ %s  SL %s  PT %s  %.2f lot",
+                            dir,
+                            DoubleToString(pl.entry, _Digits),
+                            DoubleToString(pl.sl, _Digits),
+                            DoubleToString(pl.tp, _Digits),
+                            pl.lots));
   }
 
 //+------------------------------------------------------------------+
@@ -2830,9 +3437,8 @@ void ManualPlaceDouble(SEntryPlan &pl)
 
    if(!pl.valid)
      {
-      g_lastEvent = StringFormat("%s nelze zadat - %s", dir,
-                                 pl.reason == "" ? "návrh není platný" : pl.reason);
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(StringFormat("%s nelze zadat - %s", dir,
+                               pl.reason == "" ? "návrh není platný" : pl.reason));
       return;
      }
 
@@ -2840,19 +3446,19 @@ void ManualPlaceDouble(SEntryPlan &pl)
    // dvojity vstup tise zmenil v jeden obchod se spatnym PT
    if(!AccountIsHedging())
      {
-      g_lastEvent = dir + " nelze zadat - účet není hedgovací";
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(dir + " nelze zadat - účet není hedgovací");
       return;
      }
 
-   //--- Objem jedne z obou pozic - polovina rizika bezneho obchodu
-   string lotReason = "";
-   const double lots = CalcLot(pl.distance, lotReason, PUNTIKY_DOUBLE_RISK);
+   //--- Objem jedne z obou pozic - polovina rizika bezneho obchodu.
+   //--- Bere se z navrhu, tedy presne to cislo, ktere ukazuje bublina
+   //--- tlacitka; drive se pocital znovu z aktualni equity a klik pak
+   //--- zadal jiny objem, nez bublina slibovala.
+   const double lots = pl.lotsDouble;
    if(lots <= 0.0)
      {
-      g_lastEvent = StringFormat("%s nelze zadat - %s", dir,
-                                 lotReason == "" ? "nelze určit objem" : lotReason);
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(StringFormat("%s nelze zadat - %s", dir,
+                               pl.doubleReason == "" ? "nelze určit objem" : pl.doubleReason));
       return;
      }
 
@@ -2861,12 +3467,11 @@ void ManualPlaceDouble(SEntryPlan &pl)
    first.lots = lots;
 
    //--- Druhy obchod: stejny vstup i SL, cil na nasobku delky vstupu
+   //--- (spocteny uz v BuildPlan, aby ho bublina a zadani nemely kazde
+   //--- vlastni)
    SEntryPlan second = pl;
    second.lots = lots;
-   second.tp   = NormalizeDouble(pl.isBuy
-                                 ? pl.entry + pl.distance * PUNTIKY_DOUBLE_PT_MULT
-                                 : pl.entry - pl.distance * PUNTIKY_DOUBLE_PT_MULT,
-                                 _Digits);
+   second.tp   = pl.tpDouble;
 
    if(!PlaceStopOrder(first, true))
      {
@@ -2881,29 +3486,25 @@ void ManualPlaceDouble(SEntryPlan &pl)
    // Zbyva tedy polovicni objem a hlaska o tom jde do logu i do panelu.
    if(!PlaceStopOrder(second, true))
      {
-      g_lastEvent = StringFormat("%s zadán jen zpola - druhý příkaz selhal (%s)",
-                                 dir, g_lastEvent);
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(StringFormat("%s zadán jen zpola - druhý příkaz selhal (%s)",
+                               dir, g_lastEvent));
       return;
      }
 
-   g_lastEvent = StringFormat("%s zadán tlačítkem @ %s  SL %s  PT1 %s  PT2 %s  2x %.2f lot",
-                              dir,
-                              DoubleToString(pl.entry, _Digits),
-                              DoubleToString(pl.sl, _Digits),
-                              DoubleToString(first.tp, _Digits),
-                              DoubleToString(second.tp, _Digits),
-                              lots);
-   Print("PUNTIKY: ", g_lastEvent);
+   ReportEvent(StringFormat("%s zadán tlačítkem @ %s  SL %s  PT1 %s  PT2 %s  2x %.2f lot",
+                            dir,
+                            DoubleToString(pl.entry, _Digits),
+                            DoubleToString(pl.sl, _Digits),
+                            DoubleToString(first.tp, _Digits),
+                            DoubleToString(second.tp, _Digits),
+                            lots));
   }
 
 //+------------------------------------------------------------------+
 //| Odebere z trhu vsechno, co strategie v danem smeru drzi.         |
 //| Resi pozice i prikazy najednou - dvojity vstup jich zaklada po   |
 //| dvou a po vyplneni prvniho z nich muze vedle bezici pozice lezet |
-//| jeste druhy prikaz. Tickety se nejdriv posbiraji do pole a az    |
-//| pak rusi: mazani za chodu meni OrdersTotal a cast seznamu by se  |
-//| preskocila.                                                      |
+//| jeste druhy prikaz.                                              |
 //|  isBuy - smer (true = LONG, false = SHORT)                       |
 //|  label - popis tlacitka pro hlaseni ("LONG", "SHORT 2x", ...)    |
 //+------------------------------------------------------------------+
@@ -2911,39 +3512,16 @@ void ManualRemoveDirection(const bool isBuy, const string label)
   {
    const string dir = isBuy ? "LONG" : "SHORT";
 
-   //--- Otevrene pozice tohoto smeru
-   ulong posTickets[];
-   const long wantedPos = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      const ulong t = PositionGetTicket(i);
-      if(t == 0 || !IsOurPosition())
-         continue;
-      if(PositionGetInteger(POSITION_TYPE) != wantedPos)
-         continue;
-      const int n = ArraySize(posTickets);
-      ArrayResize(posTickets, n + 1);
-      posTickets[n] = t;
-     }
-
-   //--- Jeste nevyplnene prikazy tohoto smeru
-   ulong ordTickets[];
-   const long wantedOrd = isBuy ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-     {
-      const ulong t = OrderGetTicket(i);
-      if(t == 0 || !IsOurOrder())
-         continue;
-      if(OrderGetInteger(ORDER_TYPE) != wantedOrd)
-         continue;
-      const int n = ArraySize(ordTickets);
-      ArrayResize(ordTickets, n + 1);
-      ordTickets[n] = t;
-     }
+   //--- Otevrene pozice a jeste nevyplnene prikazy tohoto smeru
+   ulong posTickets[], ordTickets[];
+   const int nPos = CollectOurPositions(isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL,
+                                        posTickets);
+   const int nOrd = CollectOurOrders(isBuy ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP,
+                                     ordTickets);
 
    int closed = 0, closeFail = 0, deleted = 0, deleteFail = 0;
 
-   for(int i = 0; i < ArraySize(posTickets); i++)
+   for(int i = 0; i < nPos; i++)
      {
       if(g_trade.PositionClose(posTickets[i]))
          closed++;
@@ -2956,7 +3534,7 @@ void ManualRemoveDirection(const bool isBuy, const string label)
         }
      }
 
-   for(int i = 0; i < ArraySize(ordTickets); i++)
+   for(int i = 0; i < nOrd; i++)
      {
       // Neuspech uz vypsal DeleteOrder do logu
       if(DeleteOrder(ordTickets[i]))
@@ -2978,9 +3556,8 @@ void ManualRemoveDirection(const bool isBuy, const string label)
    if(closeFail > 0 || deleteFail > 0)
       failed = StringFormat("  (neúspěch: %d pozic, %d příkazů)", closeFail, deleteFail);
 
-   // Pripadny neuspech uz je soucasti g_lastEvent, vypis je tedy jeden
-   g_lastEvent = label + " tlačítkem - " + done + failed;
-   Print("PUNTIKY: ", g_lastEvent);
+   // Pripadny neuspech uz je soucasti hlaseni, vypis je tedy jeden
+   ReportEvent(label + " tlačítkem - " + done + failed);
   }
 
 //+------------------------------------------------------------------+
@@ -2997,8 +3574,7 @@ void ManualToggle(const bool isBuy)
 
    if(!TradingEnabled())
      {
-      g_lastEvent = dir + " - obchodování je vypnuto";
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(dir + " - obchodování je vypnuto");
       return;
      }
 
@@ -3008,9 +3584,8 @@ void ManualToggle(const bool isBuy)
    //--- Dvojity vstup patri tlacitku 2x
    if(st.kind == PUNTIKY_MANUAL_DOUBLE)
      {
-      g_lastEvent = StringFormat("%s - ve směru leží dvojitý vstup, odebere se "
-                                 "tlačítkem %s 2x", dir, dir);
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(StringFormat("%s - ve směru leží dvojitý vstup, odebere se "
+                               "tlačítkem %s 2x", dir, dir));
       return;
      }
 
@@ -3043,8 +3618,7 @@ void ManualDouble(const bool isBuy)
 
    if(!TradingEnabled())
      {
-      g_lastEvent = dir + " - obchodování je vypnuto";
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(dir + " - obchodování je vypnuto");
       return;
      }
 
@@ -3061,9 +3635,8 @@ void ManualDouble(const bool isBuy)
    //--- Jednoduchy obchod patri tlacitku LONG / SHORT
    if(st.Busy())
      {
-      g_lastEvent = StringFormat("%s nelze zadat - ve směru leží obchod z tlačítka "
-                                 "%s (tím se také odebere)", dir, plain);
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(StringFormat("%s nelze zadat - ve směru leží obchod z tlačítka "
+                               "%s (tím se také odebere)", dir, plain));
       return;
      }
 
@@ -3096,8 +3669,12 @@ void CheckEntryOnEntryTF()
       if(level <= 0.0)
          continue;
 
-      const bool wasBefore = !PriceBeyondLevel(isBuy, prevTF,  level, g_breakBuffer);
-      const bool crossed   =  PriceBeyondLevel(isBuy, closeTF, level, g_breakBuffer);
+      // Obe svicky uz jsou uzavrene, takze se posuzuji svym vlastnim
+      // spreadem - dnesni median na ne nepatri
+      const bool wasBefore = !PriceBeyondLevel(isBuy, prevTF,  level, g_breakBuffer,
+                                               BarSpread(InpEntryTF, 2));
+      const bool crossed   =  PriceBeyondLevel(isBuy, closeTF, level, g_breakBuffer,
+                                               BarSpread(InpEntryTF, 1));
       if(!wasBefore || !crossed)
          continue;
 
@@ -3109,7 +3686,9 @@ void CheckEntryOnEntryTF()
       SEntryPlan pl = BuildPlan(isBuy, price, level, true);
       if(!pl.valid)
         {
-         g_lastEvent = (isBuy ? "BUY" : "SELL") + " zamítnut: " + pl.reason;
+         // Duvod patri i do logu - pri schovanem panelu je jinak
+         // zamitnuty vstup nedohledatelny
+         ReportEvent((isBuy ? "BUY" : "SELL") + " zamítnut: " + pl.reason);
          continue;
         }
 
@@ -3193,7 +3772,7 @@ void HueCheckDirection(const bool isBuy, const double level, const double dist,
       return;
 
    // Na stejnou uroven se hlasi jen jednou, dokud neni zapnute opakovani
-   if(sentLevel > 0.0 && MathAbs(sentLevel - level) <= _Point)
+   if(sentLevel > 0.0 && PriceWithin(sentLevel, level, 1.0))
      {
       if(InpHueRepeatMinutes <= 0)
          return;
@@ -3265,25 +3844,23 @@ bool HueSend(const bool isBuy, const double level, const double dist, const bool
       // panel rovnou nese i navod, co v terminalu zaskrtnout.
       if(err == ERR_FUNCTION_NOT_ALLOWED)
         {
-         g_lastEvent = StringFormat("Hue %s: chyba 4014 - povol adresu %s "
-                                    "v Nástroje > Možnosti > Strategie > "
-                                    "Povolit WebRequest pro uvedené URL",
-                                    co, HueBaseUrl());
-         Print("PUNTIKY: ", g_lastEvent);
+         ReportEvent(StringFormat("Hue %s: chyba 4014 - povol adresu %s "
+                                  "v Nástroje > Možnosti > Strategie > "
+                                  "Povolit WebRequest pro uvedené URL",
+                                  co, HueBaseUrl()));
          return(false);
         }
 
-      g_lastEvent = StringFormat("Hue %s selhalo: chyba %d (%s)", co, err, InpHueUrl);
-      Print("PUNTIKY: ", g_lastEvent);
+      ReportEvent(StringFormat("Hue %s selhalo: chyba %d (%s)", co, err, InpHueUrl));
       return(false);
      }
 
-   g_lastEvent = isTest
-                 ? StringFormat("Hue test: HTTP %d", code)
-                 : StringFormat("Hue %s: %.0f b k %s (HTTP %d)",
-                                isBuy ? "BUY" : "SELL", dist / _Point,
-                                DoubleToString(level, _Digits), code);
-   Print("PUNTIKY: ", g_lastEvent, "  tělo: ", body);
+   ReportEvent(isTest
+               ? StringFormat("Hue test: HTTP %d", code)
+               : StringFormat("Hue %s: %.0f b k %s (HTTP %d)",
+                              isBuy ? "BUY" : "SELL", dist / _Point,
+                              DoubleToString(level, _Digits), code));
+   Print("PUNTIKY: tělo požadavku Hue: ", body);
 
    return(code >= 200 && code < 300);
   }
@@ -3305,24 +3882,29 @@ void HueSendTest()
 //| Vyska tlacitek v pixelech.                                       |
 //| Odvozuje se od pisma panelu, aby tlacitka sedela k jeho radkum,  |
 //| a je zamerne dvojnasobna - na tlacitka se klika za behu trhu a   |
-//| nizky prouzek se trefuje spatne.                                 |
+//| nizky prouzek se trefuje spatne. Hodnotu spocita InitPanelMetrics|
+//| pri startu; nez k tomu dojde, dopocita se tady.                  |
 //+------------------------------------------------------------------+
 int ButtonHeight()
   {
-   return(MathMax(InpPanelFontSize * 2 + 4, 20) * 2);
+   return(g_btnHeight > 0 ? g_btnHeight : MathMax(InpPanelFontSize * 2 + 4, 20) * 2);
   }
 
 //+------------------------------------------------------------------+
 //| Sirka textu v pixelech pri pismu panelu.                         |
-//| Kladna velikost pisma znamena stejny prepocet podle rozliseni     |
-//| obrazovky, jaky pouzivaji graficke objekty - namerena sirka tedy  |
-//| odpovida tomu, co MT5 do tlacitka opravdu vykresli.               |
+//| Velikost se predava ZAPORNA, v desetinach bodu: kladna hodnota    |
+//| znamena podle dokumentace pixely nezavisle na rozliseni, kdezto   |
+//| graficke objekty (OBJPROP_FONTSIZE) berou body a skaluji se podle |
+//| DPI obrazovky. S kladnym cislem se merilo mensi pismo, nez        |
+//| tlacitko doopravdy vykresli, a pri vetsim pisme nebo skalovani    |
+//| 150 % se text useknul uprostred slova ("AVŘÍT SHORT 2x") - presne |
+//| to, cemu ma mereni predchazet.                                    |
 //|  text - merany retezec                                           |
 //| Vraci sirku v pixelech, nebo 0 kdyz mereni selhalo.              |
 //+------------------------------------------------------------------+
 int PanelTextWidth(const string text)
   {
-   if(!TextSetFont("Consolas", InpPanelFontSize))
+   if(!TextSetFont("Consolas", -InpPanelFontSize * 10))
       return(0);
 
    uint w = 0, h = 0;
@@ -3348,6 +3930,23 @@ int ButtonWidth(const string longest, const int fallback)
    if(w <= 0)
       return(fallback);
    return(MathMax(w + PUNTIKY_BTN_TEXT_PAD, fallback));
+  }
+
+//+------------------------------------------------------------------+
+//| Spocita rozmery tlacitek a zjisti rezim uctu.                    |
+//| Vse to plyne z nemennych vstupu a z uctu, na kterem expert bezi, |
+//| takze staci jednou pri startu - drive se sirky merily a rezim     |
+//| uctu cetl pri kazdem obnoveni panelu, tedy kazdou sekundu.        |
+//+------------------------------------------------------------------+
+void InitPanelMetrics()
+  {
+   g_btnHeight = MathMax(InpPanelFontSize * 2 + 4, 20) * 2;
+   g_btnHueW   = ButtonWidth("TEST Hue", PUNTIKY_BTN_HUE_W);
+   g_btnPanelW = ButtonWidth("PANEL VYP", PUNTIKY_BTN_PANEL_W);
+   g_btnTradeW = ButtonWidth(PUNTIKY_BTN_TRADE_MAX, PUNTIKY_BTN_TRADE_W);
+
+   g_accountHedging = (AccountInfoInteger(ACCOUNT_MARGIN_MODE) ==
+                       ACCOUNT_MARGIN_MODE_RETAIL_HEDGING);
   }
 
 //+------------------------------------------------------------------+
@@ -3399,11 +3998,12 @@ int DrawHueTestButton(const int x, const int y)
      }
 
    const string text = "TEST Hue";
-   const int    w    = ButtonWidth(text, PUNTIKY_BTN_HUE_W);
+   const int    w    = g_btnHueW;
 
-   PuntikyButton(name, x, y, w, ButtonHeight(), text,
-              InpColorPanel, PUNTIKY_BTN_BG_HUE, InpPanelFontSize, "Consolas",
-              "Odešle testovací upozornění na " + InpHueUrl);
+   if(PuntikyButton(name, x, y, w, ButtonHeight(), text,
+                    InpColorPanel, PUNTIKY_BTN_BG_HUE, InpPanelFontSize, "Consolas",
+                    "Odešle testovací upozornění na " + InpHueUrl))
+      ChartRedraw();
 
    return(w + PUNTIKY_PANEL_BTN_GAP);
   }
@@ -3417,18 +4017,19 @@ int DrawHueTestButton(const int x, const int y)
 //| bubliny - obchod se nabizi jen tam, kde je na nej misto.         |
 //| Odebira se cely smer, tedy i obe casti dvojiteho vstupu naraz -  |
 //| bublina proto uvadi, kolik pozic a prikazu klik odklidi.         |
-//|  name  - jmeno objektu, isBuy - smer tlacitka                    |
+//|  name  - jmeno objektu                                           |
+//|  pl    - navrh vstupu tohoto smeru (nese i smer tlacitka)        |
 //|  x, y  - poloha leveho horniho rohu v pixelech                   |
 //|  st    - prehled smeru z jedineho skenu (viz ScanBothDirections) |
 //+------------------------------------------------------------------+
-void DrawManualButton(const string name, const bool isBuy, const int x, const int y,
+void DrawManualButton(const string name, SEntryPlan &pl, const int x, const int y,
                       SDirectionState &st)
   {
-   const string dir = isBuy ? "LONG" : "SHORT";
+   const string dir = pl.isBuy ? "LONG" : "SHORT";
 
    string text    = dir;
    string tooltip = "";
-   color  bg      = isBuy ? PUNTIKY_BTN_BG_LONG : PUNTIKY_BTN_BG_SHORT;
+   color  bg      = pl.isBuy ? PUNTIKY_BTN_BG_LONG : PUNTIKY_BTN_BG_SHORT;
 
    if(st.kind == PUNTIKY_MANUAL_DOUBLE)
      {
@@ -3459,42 +4060,26 @@ void DrawManualButton(const string name, const bool isBuy, const int x, const in
         }
       else
         {
-         // Cteni po polozkach - strukturu SEntryPlan nelze vybrat
-         // podminenym vyrazem, takze se bere clen po clenu
-         const bool   valid  = isBuy ? g_planBuy.valid  : g_planSell.valid;
-         const string reason = isBuy ? g_planBuy.reason : g_planSell.reason;
-
-         if(valid)
+         if(pl.valid)
             tooltip = StringFormat("Zadá %s STOP příkaz @ %s  SL %s  PT %s  %.2f lot.",
                                    dir,
-                                   DoubleToString(isBuy ? g_planBuy.entry : g_planSell.entry, _Digits),
-                                   DoubleToString(isBuy ? g_planBuy.sl    : g_planSell.sl,    _Digits),
-                                   DoubleToString(isBuy ? g_planBuy.tp    : g_planSell.tp,    _Digits),
-                                   isBuy ? g_planBuy.lots : g_planSell.lots);
+                                   DoubleToString(pl.entry, _Digits),
+                                   DoubleToString(pl.sl, _Digits),
+                                   DoubleToString(pl.tp, _Digits),
+                                   pl.lots);
          else
            {
             bg      = PUNTIKY_BTN_BG_OFF;   // na obchod zatim neni misto
             tooltip = "Návrh " + dir + " teď není platný" +
-                      (reason == "" ? "." : " (" + reason + ").");
+                      (pl.reason == "" ? "." : " (" + pl.reason + ").");
            }
         }
 
-   PuntikyButton(name, x, y, ButtonWidth(PUNTIKY_BTN_TRADE_MAX, PUNTIKY_BTN_TRADE_W),
-              ButtonHeight(), text,
-              InpColorPanel, bg, InpPanelFontSize, "Consolas", tooltip);
-
-   // PuntikyButton nastavuje text a barvy jen pri vzniku objektu, takze
-   // zmenu stavu je treba promitnout zvlast - a jen pri skutecne zmene,
-   // protoze tudy chodi kazde obnoveni panelu
-   const bool textChanged = (ObjectGetString(0, name, OBJPROP_TEXT) != text);
-   const bool bgChanged   = ((color)ObjectGetInteger(0, name, OBJPROP_BGCOLOR) != bg);
-   if(textChanged || bgChanged)
-     {
-      ObjectSetString(0, name, OBJPROP_TEXT, text);
-      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   // Text, pozadi i bublinu srovna PuntikyButton a rekne, jestli se
+   // zmenilo neco viditelneho
+   if(PuntikyButton(name, x, y, g_btnTradeW, ButtonHeight(), text,
+                    InpColorPanel, bg, InpPanelFontSize, "Consolas", tooltip))
       ChartRedraw();
-     }
-   ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
   }
 
 //+------------------------------------------------------------------+
@@ -3518,20 +4103,11 @@ int DrawPanelToggleButton(const int x, const int y)
                        : "Textový panel pod tlačítky je vypnutý - klik ho zobrazí. ") +
                       "Týká se jen výpisu v grafu, do Expert logu se píše dál.";
 
-   const int w = ButtonWidth("PANEL VYP", PUNTIKY_BTN_PANEL_W);
+   const int w = g_btnPanelW;
 
-   PuntikyButton(name, x, y, w, ButtonHeight(), text,
-              InpColorPanel, bg, InpPanelFontSize, "Consolas", tip);
-
-   // PuntikyButton plni text a barvu jen pri vzniku objektu, prepnuti
-   // stavu se proto promita zvlast (a jen pri skutecne zmene)
-   if(ObjectGetString(0, name, OBJPROP_TEXT) != text)
-     {
-      ObjectSetString(0, name, OBJPROP_TEXT, text);
-      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   if(PuntikyButton(name, x, y, w, ButtonHeight(), text,
+                    InpColorPanel, bg, InpPanelFontSize, "Consolas", tip))
       ChartRedraw();
-     }
-   ObjectSetString(0, name, OBJPROP_TOOLTIP, tip);
 
    return(w + PUNTIKY_PANEL_BTN_GAP);
   }
@@ -3543,18 +4119,19 @@ int DrawPanelToggleButton(const int x, const int y)
 //| odebere. Zesedne, kdyz ve smeru lezi jednoduchy obchod (ten      |
 //| patri tlacitku LONG / SHORT), kdyz navrh neni platny, kdyz na    |
 //| polovicni riziko nevyjde lot nebo kdyz ucet neni hedgovaci.      |
-//|  name  - jmeno objektu, isBuy - smer tlacitka                    |
+//|  name  - jmeno objektu                                           |
+//|  pl    - navrh vstupu tohoto smeru (nese i smer tlacitka)        |
 //|  x, y  - poloha leveho horniho rohu v pixelech                   |
 //|  st    - prehled smeru z jedineho skenu (viz ScanBothDirections) |
 //+------------------------------------------------------------------+
-void DrawManualDoubleButton(const string name, const bool isBuy, const int x, const int y,
+void DrawManualDoubleButton(const string name, SEntryPlan &pl, const int x, const int y,
                             SDirectionState &st)
   {
-   const string dir = isBuy ? "LONG" : "SHORT";
+   const string dir = pl.isBuy ? "LONG" : "SHORT";
 
    string text    = dir + " 2x";
    string tooltip = "";
-   color  bg      = isBuy ? PUNTIKY_BTN_BG_LONG : PUNTIKY_BTN_BG_SHORT;
+   color  bg      = pl.isBuy ? PUNTIKY_BTN_BG_LONG : PUNTIKY_BTN_BG_SHORT;
 
    if(st.kind == PUNTIKY_MANUAL_DOUBLE)
      {
@@ -3583,77 +4160,50 @@ void DrawManualDoubleButton(const string name, const bool isBuy, const int x, co
         }
       else
         {
-         // Cteni po polozkach - strukturu SEntryPlan nelze vybrat
-         // podminenym vyrazem, takze se bere clen po clenu
-         const bool   valid  = isBuy ? g_planBuy.valid    : g_planSell.valid;
-         const string reason = isBuy ? g_planBuy.reason   : g_planSell.reason;
-         const double entry  = isBuy ? g_planBuy.entry    : g_planSell.entry;
-         const double sl     = isBuy ? g_planBuy.sl       : g_planSell.sl;
-         const double tp     = isBuy ? g_planBuy.tp       : g_planSell.tp;
-         const double dist   = isBuy ? g_planBuy.distance : g_planSell.distance;
-
-         if(valid)
+         if(pl.valid)
            {
-            // Objem s polovicnim rizikem uz spocital BuildPlan - tady
-            // se jen cte, aby se pri kazdem obnoveni panelu nedopocital
-            // znovu (tudy chodi kazda sekunda)
-            const double lots      = isBuy ? g_planBuy.lotsDouble   : g_planSell.lotsDouble;
-            const string lotReason = isBuy ? g_planBuy.doubleReason : g_planSell.doubleReason;
-            const double tp2       = NormalizeDouble(isBuy ? entry + dist * PUNTIKY_DOUBLE_PT_MULT
-                                                           : entry - dist * PUNTIKY_DOUBLE_PT_MULT,
-                                                     _Digits);
-
-            if(lots > 0.0)
+            // Objem i vzdalenejsi cil uz spocital BuildPlan - tady se
+            // jen ctou, aby se pri kazdem obnoveni panelu nedopocitavaly
+            // znovu (tudy chodi kazda sekunda) a aby klik zadal presne
+            // to, co bublina slibuje
+            if(pl.lotsDouble > 0.0)
                tooltip = StringFormat("Zadá dva %s STOP příkazy @ %s  SL %s, "
                                       "PT1 %s a PT2 %s, každý %.2f lot "
                                       "(poloviční riziko na obchod).",
                                       dir,
-                                      DoubleToString(entry, _Digits),
-                                      DoubleToString(sl, _Digits),
-                                      DoubleToString(tp, _Digits),
-                                      DoubleToString(tp2, _Digits),
-                                      lots);
+                                      DoubleToString(pl.entry, _Digits),
+                                      DoubleToString(pl.sl, _Digits),
+                                      DoubleToString(pl.tp, _Digits),
+                                      DoubleToString(pl.tpDouble, _Digits),
+                                      pl.lotsDouble);
             else
               {
                bg      = PUNTIKY_BTN_BG_OFF;   // na polovicni objem to nevyjde
                tooltip = "Dvojitý vstup " + dir + " nelze zadat" +
-                         (lotReason == "" ? "." : " (" + lotReason + ").");
+                         (pl.doubleReason == "" ? "." : " (" + pl.doubleReason + ").");
               }
            }
          else
            {
             bg      = PUNTIKY_BTN_BG_OFF;   // na obchod zatim neni misto
             tooltip = "Návrh " + dir + " teď není platný" +
-                      (reason == "" ? "." : " (" + reason + ").");
+                      (pl.reason == "" ? "." : " (" + pl.reason + ").");
            }
         }
 
-   PuntikyButton(name, x, y, ButtonWidth(PUNTIKY_BTN_TRADE_MAX, PUNTIKY_BTN_TRADE_W),
-              ButtonHeight(), text,
-              InpColorPanel, bg, InpPanelFontSize, "Consolas", tooltip);
-
-   // PuntikyButton nastavuje text a barvy jen pri vzniku objektu, zmenu
-   // stavu je proto treba promitnout zvlast a jen pri skutecne zmene
-   const bool textChanged = (ObjectGetString(0, name, OBJPROP_TEXT) != text);
-   const bool bgChanged   = ((color)ObjectGetInteger(0, name, OBJPROP_BGCOLOR) != bg);
-   if(textChanged || bgChanged)
-     {
-      ObjectSetString(0, name, OBJPROP_TEXT, text);
-      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+   if(PuntikyButton(name, x, y, g_btnTradeW, ButtonHeight(), text,
+                    InpColorPanel, bg, InpPanelFontSize, "Consolas", tooltip))
       ChartRedraw();
-     }
-   ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
   }
 
 //+------------------------------------------------------------------+
 //| Vykresli ctverici rucnich tlacitek LONG / SHORT / LONG 2x /      |
 //| SHORT 2x. Mimo rucni rezim obchoduje expert sam a rucni zasah by |
 //| mu lezl do rekonciliace prikazu, proto se tam tlacitka nekresli. |
-//|  x, y         - poloha prvniho tlacitka v pixelech               |
-//|  stBuy, stSell- prehled obou smeru z jedineho skenu              |
+//|  x, y - poloha prvniho tlacitka v pixelech                       |
+//|  ms   - prehled trhu z jedineho skenu                            |
 //+------------------------------------------------------------------+
-void DrawManualButtons(const int x, const int y,
-                       SDirectionState &stBuy, SDirectionState &stSell)
+void DrawManualButtons(const int x, const int y, SMarketState &ms)
   {
    const string nameLong   = PUNTIKY_PREFIX + "BTN_LONG";
    const string nameShort  = PUNTIKY_PREFIX + "BTN_SHORT";
@@ -3662,23 +4212,28 @@ void DrawManualButtons(const int x, const int y,
 
    if(InpEntryMode != PUNTIKY_ENTRY_MANUAL)
      {
-      ObjectDelete(0, nameLong);
-      ObjectDelete(0, nameShort);
-      ObjectDelete(0, nameLong2);
-      ObjectDelete(0, nameShort2);
+      // Mimo rucni rezim tlacitka nikdy nevzniknou, takze staci smazat
+      // je jednou - ne ctyrikrat za sekundu po celou dobu behu
+      if(!g_tradeBtnCleared)
+        {
+         g_tradeBtnCleared = true;
+         ObjectDelete(0, nameLong);
+         ObjectDelete(0, nameShort);
+         ObjectDelete(0, nameLong2);
+         ObjectDelete(0, nameShort2);
+        }
       return;
      }
 
    // Vsechna ctyri tlacitka maji stejnou sirku, takze dvojite varianty
    // sedi presne pod svymi protejsky (LONG 2x pod LONG, SHORT 2x pod SHORT)
-   const int w  = ButtonWidth(PUNTIKY_BTN_TRADE_MAX, PUNTIKY_BTN_TRADE_W);
-   const int x2 = x + w + PUNTIKY_PANEL_BTN_GAP;
+   const int x2 = x + g_btnTradeW + PUNTIKY_PANEL_BTN_GAP;
    const int y2 = y + ButtonHeight() + PUNTIKY_PANEL_BTN_GAP;
 
-   DrawManualButton(nameLong,  true,  x,  y,  stBuy);
-   DrawManualButton(nameShort, false, x2, y,  stSell);
-   DrawManualDoubleButton(nameLong2,  true,  x,  y2, stBuy);
-   DrawManualDoubleButton(nameShort2, false, x2, y2, stSell);
+   DrawManualButton(nameLong,  g_planBuy,  x,  y,  ms.buy);
+   DrawManualButton(nameShort, g_planSell, x2, y,  ms.sell);
+   DrawManualDoubleButton(nameLong2,  g_planBuy,  x,  y2, ms.buy);
+   DrawManualDoubleButton(nameShort2, g_planSell, x2, y2, ms.sell);
   }
 
 //+------------------------------------------------------------------+
@@ -3689,10 +4244,10 @@ void DrawManualButtons(const int x, const int y,
 //| Sest tlacitek vedle sebe by preteklo pres graf a dvojite varianty|
 //| by nebylo videt pod jejich jednoduchymi protejsky.               |
 //| Text panelu zacina az pod posledni radou.                        |
-//|  y            - svisle odsazeni prvni rady v pixelech            |
-//|  stBuy, stSell- prehled obou smeru z jedineho skenu              |
+//|  y  - svisle odsazeni prvni rady v pixelech                      |
+//|  ms - prehled trhu z jedineho skenu                              |
 //+------------------------------------------------------------------+
-void DrawPanelButtons(const int y, SDirectionState &stBuy, SDirectionState &stSell)
+void DrawPanelButtons(const int y, SMarketState &ms)
   {
    //--- 1. rada: obsluzna tlacitka
    int x = InpPanelX;
@@ -3700,26 +4255,26 @@ void DrawPanelButtons(const int y, SDirectionState &stBuy, SDirectionState &stSe
    DrawPanelToggleButton(x, y);
 
    //--- 2. a 3. rada: obchodni tlacitka (mimo rucni rezim se jen smazou)
-   DrawManualButtons(InpPanelX, y + ButtonHeight() + PUNTIKY_PANEL_BTN_GAP, stBuy, stSell);
+   DrawManualButtons(InpPanelX, y + ButtonHeight() + PUNTIKY_PANEL_BTN_GAP, ms);
   }
 
 //+------------------------------------------------------------------+
 //| Textovy popis stavu jednoho smeru pro panel.                     |
 //| Rozlisuje, jestli uz bylo obchodovano, jestli je navrh vubec     |
 //| proveditelny a jestli je smer nabity (cena na spravne strane).   |
-//|  isBuy - smer, pl - navrh vstupu tohoto smeru                    |
+//|  pl - navrh vstupu (nese i smer)                                 |
 //+------------------------------------------------------------------+
-string StateText(const bool isBuy, SEntryPlan &pl)
+string StateText(SEntryPlan &pl)
   {
-   const string dir   = isBuy ? "BUY" : "SELL";
-   const bool   taken = isBuy ? g_buyTaken : g_sellTaken;
+   const string dir   = pl.isBuy ? "BUY" : "SELL";
+   const bool   taken = pl.isBuy ? g_buyTaken : g_sellTaken;
 
    if(taken)
       return(dir + " obchodován");
 
    // Nenabity smer uz zamitl EntryBlockReason ("čeká na návrat pod
-   // úroveň"), takze se sem dostane jen s neplatnym navrhem a duvodem.
-   // Samostatna vetev "blokován" tu drive byla, ale nesla vypsat.
+   // úroveň"), takze se sem dostane jen s neplatnym navrhem a duvodem -
+   // vlastni vetev pro "blokován" by proto nemela co vypsat.
    if(!pl.valid)
       return(dir + " nelze" + (pl.reason == "" ? "" : " (" + pl.reason + ")"));
    return(dir + " připraven");
@@ -3731,13 +4286,13 @@ string StateText(const bool isBuy, SEntryPlan &pl)
 //| jeden vyloucen, cislo by tam jen zabiralo misto na radku.        |
 //| U dvojiteho vstupu se prida znacka 2x, aby bylo videt, ktere     |
 //| tlacitko obchod odebira.                                         |
-//|  isBuy - smer                                                    |
+//|  pl    - navrh vstupu tohoto smeru                               |
 //|  st    - prehled smeru z jedineho skenu (viz ScanBothDirections) |
 //+------------------------------------------------------------------+
-string ManualStateText(const bool isBuy, SDirectionState &st)
+string ManualStateText(SEntryPlan &pl, SDirectionState &st)
   {
    if(!st.Busy())
-      return((isBuy ? g_planBuy.valid : g_planSell.valid) ? "lze zadat" : "není místo");
+      return(pl.valid ? "lze zadat" : "není místo");
 
    string state = "";
    if(st.positions > 0)
@@ -3782,29 +4337,26 @@ string PlanToText(SEntryPlan &pl)
   }
 
 //+------------------------------------------------------------------+
-//| Textovy popis aktualni pozice strategie pro panel                |
+//| Textovy popis aktualni pozice strategie pro panel.               |
+//| Pozice i pocet prikazu prichazeji z jedineho skenu (viz          |
+//| ScanBothDirections) - drive si tenhle radek prochazel oba seznamy|
+//| jeste jednou, tedy kazdou sekundu navic.                         |
+//|  ms - souhrn toho, co strategie drzi na trhu                     |
 //+------------------------------------------------------------------+
-string PositionText()
+string PositionText(SMarketState &ms)
   {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-     {
-      if(PositionGetTicket(i) == 0)
-         continue;
-      if(!IsOurPosition())
-         continue;
+   if(ms.firstPosition == 0 || !PositionSelectByTicket(ms.firstPosition))
+      return(StringFormat("pozice: žádná   (pending %d)", ms.totalOrders));
 
-      const bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-      return(StringFormat("pozice: %s %.2f lot  vstup %s  SL %s  PT %s  zisk %.2f %s",
-                          isBuy ? "BUY" : "SELL",
-                          PositionGetDouble(POSITION_VOLUME),
-                          DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), _Digits),
-                          DoubleToString(PositionGetDouble(POSITION_SL), _Digits),
-                          DoubleToString(PositionGetDouble(POSITION_TP), _Digits),
-                          PositionGetDouble(POSITION_PROFIT),
-                          AccountInfoString(ACCOUNT_CURRENCY)));
-     }
-
-   return(StringFormat("pozice: žádná   (pending %d)", CountOrders()));
+   const bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+   return(StringFormat("pozice: %s %.2f lot  vstup %s  SL %s  PT %s  zisk %.2f %s",
+                       isBuy ? "BUY" : "SELL",
+                       PositionGetDouble(POSITION_VOLUME),
+                       DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN), _Digits),
+                       DoubleToString(PositionGetDouble(POSITION_SL), _Digits),
+                       DoubleToString(PositionGetDouble(POSITION_TP), _Digits),
+                       PositionGetDouble(POSITION_PROFIT),
+                       AccountInfoString(ACCOUNT_CURRENCY)));
   }
 
 //+------------------------------------------------------------------+
@@ -3886,18 +4438,15 @@ void PanelAdd(string &lines[], int &n, const string text)
 //+------------------------------------------------------------------+
 void UpdatePanel()
   {
-   // Prehled obou smeru se ziska jedinym pruchodem pozicemi a prikazy;
-   // ctou ho texty tlacitek, jejich bubliny i radek panelu. Mimo rucni
-   // rezim se obchodni tlacitka nekresli a panel je nepouziva, takze se
-   // seznam neprochazi vubec.
-   SDirectionState stBuy, stSell;
-   if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
-      ScanBothDirections(stBuy, stSell);
+   // Prehled trhu se ziska JEDINYM pruchodem pozicemi a prikazy; ctou
+   // ho texty tlacitek, jejich bubliny i radky panelu. Sken je potreba
+   // jen tam, kde ho nekdo cte: v rucnim rezimu kvuli tlacitkum a pri
+   // zobrazenem panelu kvuli radku s pozici.
+   SMarketState ms;
+   if(InpEntryMode == PUNTIKY_ENTRY_MANUAL || g_showPanel)
+      ScanBothDirections(ms);
    else
-     {
-      stBuy.Reset();
-      stSell.Reset();
-     }
+      ms.Reset();
 
    if(!g_showPanel)
      {
@@ -3907,7 +4456,7 @@ void UpdatePanel()
          PuntikyDeleteObjects("PNL_");
          g_panelShown = 0;
         }
-      DrawPanelButtons(PanelTopY(), stBuy, stSell);
+      DrawPanelButtons(PanelTopY(), ms);
       return;
      }
 
@@ -3973,16 +4522,16 @@ void UpdatePanel()
 
    //--- Rucni rezim - co je v jednotlivych smerech na trhu
    if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
-      PanelAdd(lines, n, "ruční režim: LONG " + ManualStateText(true, stBuy) +
-                         "   SHORT " + ManualStateText(false, stSell));
+      PanelAdd(lines, n, "ruční režim: LONG " + ManualStateText(g_planBuy, ms.buy) +
+                         "   SHORT " + ManualStateText(g_planSell, ms.sell));
 
    // Kazdy smer na vlastnim radku - duvody zamitnuti byvaji dlouhe a
    // spolecny radek by se stejne zalomil
-   PanelAdd(lines, n, "stav: " + StateText(true,  g_planBuy));
-   PanelAdd(lines, n, "      " + StateText(false, g_planSell));
+   PanelAdd(lines, n, "stav: " + StateText(g_planBuy));
+   PanelAdd(lines, n, "      " + StateText(g_planSell));
    PanelAdd(lines, n, PlanToText(g_planBuy));
    PanelAdd(lines, n, PlanToText(g_planSell));
-   PanelAdd(lines, n, PositionText());
+   PanelAdd(lines, n, PositionText(ms));
 
    if(g_lastEvent != "")
       PanelAdd(lines, n, "poslední: " + g_lastEvent);
@@ -3990,7 +4539,7 @@ void UpdatePanel()
    //--- Tlacitka jsou nahore, text panelu zacina az pod nimi
    const int panelY = PanelTopY();
    const int textY  = panelY + ButtonRowHeight();
-   DrawPanelButtons(panelY, stBuy, stSell);
+   DrawPanelButtons(panelY, ms);
 
    // Vyska radku je samostatny parametr - odvozeni od velikosti pisma
    // nestaci na obrazovkach s vyssim DPI, kde se radky slepuji

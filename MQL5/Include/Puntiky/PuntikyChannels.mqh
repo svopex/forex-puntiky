@@ -269,7 +269,6 @@ bool PuntikyEvaluateChannel(const MqlRates &rates[], SChannel &ch, const SChanne
    sc -= MathMin((double)ch.ageBars / (double)MathMax(p.maxAgeBars, 1), 1.0) * 2.0;
 
    ch.score = sc;
-   ch.valid = true;
    st.passed++;
    return(true);
   }
@@ -428,7 +427,6 @@ int PuntikyCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const 
          st.generated++;
 
          SChannel ch;
-         ch.valid     = false;
          ch.scaleIdx  = scaleIdx;
          ch.baseIsLow = !sw[i].isHigh;   // A,C jsou dna -> zakladni je LOW usecka
          ch.tA = sw[i].time; ch.pA = sw[i].price; ch.iA = sw[i].index;
@@ -522,18 +520,29 @@ int PuntikySelectChannels(const MqlRates &rates[], SChannel &cand[], const SChan
    //--- Hrube meritko dava velky kanal, jemne ten vnoreny - jinak by
    //--- vsechna mista obsadily varianty jedineho nejsilnejsiho kanalu
    //--- a "kanal v kanalu" by se nikdy nevykreslil.
-   for(int s = 0; s < MathMax(p.scales, 1) && taken < p.maxChannels; s++)
-     {
+   //--- Kandidati se nejprve posbiraji a teprve pak radi podle skore:
+   //--- pri maxChannels < scales by jinak sloty rozebrala meritka v
+   //--- poradi, v jakem jdou za sebou (tedy od nejjemnejsiho), a
+   //--- globalne nejlepsi kanal hrubeho meritka - tedy prave ten velky,
+   //--- kvuli kteremu se meritka pocitaji - by se do vyberu nedostal.
+   SChannel best[];
+   int nb = 0;
+   ArrayResize(best, MathMax(p.scales, 1));
+   for(int s = 0; s < MathMax(p.scales, 1); s++)
       for(int i = 0; i < nc; i++)
-        {
-         if(cand[i].scaleIdx != s)
-            continue;
-         if(PuntikyChannelIsDuplicate(cand[i], out, taken, barLast, barPast, p.dedupFrac))
-            continue;
+         if(cand[i].scaleIdx == s)
+           {
+            best[nb++] = cand[i];   // kandidati jsou serazeni, prvni je nejlepsi
+            break;
+           }
+   ArrayResize(best, nb);
+   PuntikySortByScoreDesc(best);
 
-         out[taken++] = cand[i];
-         break;   // z tohoto meritka staci nejlepsi kandidat
-        }
+   for(int i = 0; i < nb && taken < p.maxChannels; i++)
+     {
+      if(PuntikyChannelIsDuplicate(best[i], out, taken, barLast, barPast, p.dedupFrac))
+         continue;
+      out[taken++] = best[i];
      }
 
    //--- 2. faze: zbyla mista se doplni podle skore bez ohledu na meritko
@@ -601,6 +610,16 @@ int PuntikyBuildChannels(const MqlRates &rates[], const SChannelParams &p,
 //| takze "dalsi hrana" muze patrit i mensimu kanalu uvnitr vetsiho. |
 //| Kvuli sklonu hran se bere konzervativnejsi hodnota z aktualniho  |
 //| baru a z baru projekce (barProj) - pro BUY nizsi, pro SELL vyssi.|
+//|                                                                  |
+//| Test "hrana lezi ve smeru obchodu" je ZAMERNE bez tolerance, na   |
+//| rozdil od pasma v SChannel::TouchesUpperAtBar. Obe cisla resi     |
+//| jinou otazku: dotyk s tolerancni zonou je hodnoceni kvality       |
+//| kanalu (knot smi hranu lehce presahnout a porad je to dotyk),     |
+//| kdezto tady jde o planovani obchodu - hrana pod referencni cenou  |
+//| uz je prorazena a prekazkou neni, hrana nad ni prekazkou je.      |
+//| Tolerance kolem reference by tu udelala pasmo, ve kterem by hrana |
+//| nebyla ani prekazkou, ani prorazenou - PT by pak mirilo v plne    |
+//| delce skrz hranu, na ktere spoustec sedi.                        |
 //| Kdyz sikma hrana do casu projekce klesne az za zadanou cenu,     |
 //| vraci se vzdalenost 0 (misto pro PT uz neni zadne) - zaporna     |
 //| delka by se jinak protlacila do panelu i do vypoctu. Do          |

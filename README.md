@@ -1,6 +1,6 @@
 # Puntiky Channel Breakout — strategie pro MetaTrader 5
 
-Expert Advisor pro MT5 (verze 1.20), který detekuje ABCD kanály na M15, kreslí je
+Expert Advisor pro MT5 (verze 1.21), který detekuje ABCD kanály na M15, kreslí je
 do grafu a obchoduje průrazy swingových H1 úrovní. Vstup se
 vyhodnocuje na M1. Do grafu vykresluje **pouze kanály, reliéfní přímky
 a informace o vstupu** — žádné jiné indikátory ani pomocnou grafiku.
@@ -12,6 +12,10 @@ viz [Ruční režim](#ruční-režim--obchodování-tlačítky). Automatické re
 k dispozici přes `InpEntryMode`.
 
 Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
+Cílem jsou **forexové páry a XAUUSD**, tedy nástroje, kde se krok kotace rovná
+bodu. Ceny se přesto zarovnávají na `SYMBOL_TRADE_TICK_SIZE`, takže nástroj
+s hrubším krokem (indexové CFD s krokem 0,25) nekončí odmítnutým příkazem —
+otestovaný ale není.
 
 ## Jak strategie funguje
 
@@ -117,12 +121,20 @@ Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
   i historie jsou v BID, ale BuyStop se plní za ASK, takže se u nákupu k ceně
   přičítá spread. Bez toho se BUY při širokém spreadu plnil ještě *pod* úrovní
   a žádná svíčka průraz nezaznamenala.
-  Nepoužívá se okamžitý spread, ale **medián posledních vzorků** (jeden za minutu,
-  půlhodinové okno). Tentýž přepočet totiž běží i na historických svíčkách a jedna
-  špička při rolloveru (na zlatě z 20 na 500 bodů) by naráz prohlásila za proražené
-  i swingy stovky bodů daleko — úroveň průrazu by odskočila na dávno neplatný swing
-  a příznak „proraženo“ by zaklapl, aniž by se cena k úrovni přiblížila. Chyba
-  přitom byla jednostranná (týkala se jen nákupů), takže se špatně všímala.
+  Spread se bere podle toho, co se zrovna testuje:
+  - **probíhající tick** — živý spread, takže u nákupu vyjde přesně aktuální ASK.
+    Úroveň tak padne právě ve chvíli, kdy by se STOP příkaz vyplnil. S mediánem
+    (který bývá větší než okamžitý spread) ji expert prohlašoval za proraženou
+    dřív, než k ní ASK dosáhl, a ležící příkaz se rušil nebo přesouval těsně před
+    vlastním vyplněním — právě ten průraz, na který čekal, pak propásl.
+  - **uzavřená svíčka** — spread té svíčky (`MqlRates.spread`). Dnešní medián na ni
+    nepatří: přičítá se k historickému high, takže se s každým jeho posunem měnil
+    stav dávno uzavřeného swingu, aniž by se cena pohnula.
+  - **jinde** — medián posledních vzorků (jeden za minutu, půlhodinové okno).
+    Vzorky se při startu naplní ze spreadů historických M1 svíček; jediný vzorek
+    odebraný v rolloveru (na zlatě 500 bodů místo 25) by jinak určoval medián pro
+    celý první výběr úrovní a ten by prohlásil za proražený každý vrchol, ke
+    kterému se cena kdy přiblížila na tuto vzdálenost.
 - Obě strany se aktualizují **samostatně**: když se pro jeden směr žádný
   neproražený swing nenajde (v silném trendu jsou všechny starší vrcholy
   proražené), druhá strana se přesto přepočítá.
@@ -138,6 +150,10 @@ Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
   proměnné se navíc při každém načtení úrovně **ověřuje proti historii účtu**:
   když k němu od času svíčky úrovně neexistuje vstup strategie za úrovní, zahodí
   se (uklidí to i falešné záznamy po starších verzích, bez ručního mazání přes F3).
+  Zahodí se ale **jen když historie skutečně odpověděla**. Prázdný výběr není důkaz:
+  po připojení nebo restartu nemusí být historie účtu dosynchronizovaná, a protože
+  je záznam jediná ochrana proti druhému vstupu na téže úrovni (třeba když průraz
+  zůstal při spreadové špičce nedetekovaný), naslepo se nemaže.
 - Směr je **zablokovaný**, dokud cena nebyla na správné straně úrovně (pod HIGH pro
   BUY, nad LOW pro SELL) — zabraňuje vstupu do už proběhlého pohybu (gap, start EA
   uprostřed pohybu).
@@ -170,7 +186,12 @@ pošle na trh. Režim vstupu určuje `InpEntryMode`:
   (dřív vedle sebe mohly zůstat dva identické příkazy a expozice byla dvojnásobná);
   příkaz uvnitř freeze zóny brokera se nechá být a zkusí se při dalším přepočtu.
   Příkaz se zadá jen tehdy, je-li úroveň dál od trhu než stop-level brokera —
-  jinak je návrh označený jako neproveditelný a důvod je vidět v panelu.
+  jinak je návrh označený jako neproveditelný a důvod je vidět v panelu. **Už
+  ležící příkaz se kvůli tomu ale neruší**: stop-level omezuje zadání a úpravu
+  příkazu, ne jeho držení, takže by příkaz mizel z trhu přesně ve chvíli, kdy se
+  k němu cena blíží — tedy těsně před vlastním vyplněním. Ležící příkaz opouští
+  trh jen z důvodů, které se týkají samotné úrovně (spotřebovaná nebo vyměněná
+  úroveň, limit pozic, vypnutý směr), nebo když už neleží na plánované ceně.
   Po otevření pozice se zbylý příkaz zruší (OCO), a to až při dosažení
   `InpMaxPositions` — s `InpMaxPositions = 2` tedy může běžet i druhý směr.
 - **`PUNTIKY_ENTRY_M1_CLOSE`**: čeká na uzavření M1 svíčky za úrovní (o
@@ -182,6 +203,13 @@ pošle na trh. Režim vstupu určuje `InpEntryMode`:
   na hodinové hranici neporovnával s úrovní, která platí až od další H1 svíčky.
   Vstup dál od úrovně než `InpMaxLevelOffset` bodů se zamítne — po gapu nebo
   dlouhé svíčce už s průrazem nemá nic společného.
+  Ze stejného důvodu se v tomto režimu **výměna spotřebované úrovně za další swing
+  odkládá** až za první novou M1 svíčku po průrazu: průraz se hlídá na každém ticku,
+  takže by se úroveň vyměnila uprostřed svíčky a při jejím uzavření by se close
+  porovnával už s dalším (vyšším) swingem — se swingovými úrovněmi by režim
+  prakticky nikdy nevstoupil. Příznak „proraženo“ přitom vstup neblokuje, pokud
+  k průrazu došlo **až během právě uzavřené svíčky**; starší průraz už úroveň
+  spotřeboval a tržní vstup se zamítne.
 - **`PUNTIKY_ENTRY_MANUAL` (výchozí)**: režim pro ostré obchodování pod dohledem. Expert
   **sám neobchoduje** — jen detekuje, kreslí návrhy do grafu a blikáním žárovek
   hlásí přiblížení k úrovni vstupu. STOP příkaz (a s ním SL i PT) se zapíná
@@ -194,7 +222,12 @@ Společné pro oba režimy:
 
 - Vyplnění příkazu se zachytává v `OnTradeTransaction`, takže o něm expert ví
   i v případě, že pending příkaz vyplnil broker bez jeho přičinění; návrhy se
-  hned přepočítají a druhý příkaz se zruší.
+  hned přepočítají a v **pending režimu** se opačný příkaz zruší (OCO).
+  V ručním režimu expert na příkazy zadané tlačítky nesahá, takže tam OCO neplatí
+  a `InpMaxPositions` je ani neomezuje — mohou ležet oba směry a vyplnit se oba.
+  Rekonciliace příkazů se v obsluze vyplnění **záměrně nespouští**: běžela by nad
+  účtem, který novou pozici ještě nemusí hlásit, takže by právě zrušený opačný
+  příkaz okamžitě zadala zpátky. Příkazy srovná až následující tick.
 - **Po vyplnění se SL a PT dorovnají na skutečnou plnicí cenu** (v obou režimech),
   aby poměr zůstal přesně 1:1 — pending příkaz nese absolutní SL a PT spočtené pro
   nominální cenu, takže při plnění se skluzem by jinak byla jedna strana delší.
@@ -211,10 +244,22 @@ Společné pro oba režimy:
   stejným magic (dřív je mazala při každém přepočtu). Při `InpAllowedAccount ≠ 0`
   a jiném čísle účtu se obchodování vypne (kreslení zůstává). Obchoduje se jen při
   povoleném algoritmickém obchodování v terminálu i na účtu.
-- Při odebrání experta z grafu se jeho pending příkazy zruší (jinak by ležely bez
-  dozoru a jejich vyplnění by otevřelo neřízenou pozici); při změně parametrů nebo
-  rekompilaci zůstávají a jen se srovnají s novým návrhem. Po přepnutí do režimu
-  `PUNTIKY_ENTRY_M1_CLOSE` se osiřelé příkazy zruší při startu.
+- Pending příkazy se ruší při **každém ukončení, po kterém se expert sám nevrátí**:
+  odebrání z grafu, zavření grafu, nová šablona, změna symbolu i `ExpertRemove()`.
+  Jinak by ležely bez dozoru a jejich vyplnění by otevřelo neřízenou pozici.
+  Zůstávají naopak při rekompilaci, změně parametrů, ukončení terminálu, neúspěšné
+  inicializaci a změně účtu — tam se expert vrací a jen je srovná s novým návrhem.
+  Změnu periody sice expert přežije, jenže ji při deinitu nelze odlišit od změny
+  symbolu; zrušený příkaz zadá následný `OnInit` v pending režimu stejně hned znovu,
+  kdežto příkaz zapomenutý na jiném symbolu už nezruší nikdo.
+  V ručním režimu se příkazy nikdy neruší (zadal je uživatel a nesou vlastní SL i
+  PT) — do logu se jen napíše, kolik jich na trhu zůstává. Totéž při vypnutém
+  obchodování, kde by zrušení stejně skončilo chybou.
+- Po přepnutí do režimu `PUNTIKY_ENTRY_M1_CLOSE` se osiřelé příkazy z pending režimu
+  zruší při startu. Když je zrovna vypnuté obchodování (AutoTrading), úklid se
+  **opakuje z timeru**, dokud neprojde — jeho zapnutí totiž žádný `OnInit` nevyvolá
+  a příkaz by na trhu zůstal bez dozoru (tržní vstup příkazy nepočítá, takže by se
+  vedle pozice vyplnil ještě on).
 
 ### Reliéfní přímky (timeframe M1)
 
@@ -296,7 +341,19 @@ Zkrácení podléhá stejnému prahu jako hrana kanálu: když po odečtení
 `InpReliefBuffer` zbývá méně než `InpMinEntryPoints`, obchod se neotevře.
 
 Přímky se přepočítávají s každou novou M1 svíčkou a kreslí se do grafu tečkovaně
-(`InpColorRelief`), prodloužené o `InpReliefForwardBars` svíček doprava.
+(`InpColorRelief`), prodloužené o `InpReliefForwardBars` svíček doprava. Plný
+přepočet běží jednou za `PUNTIKY_RELIEF_REBUILD_BARS` svíček (prochází celou
+historii), mezi tím se držené přímky jen kontrolují proti nově uzavřeným svíčkám —
+prohlédnou se **všechny** svíčky od poslední kontroly, takže se přímka proražená
+v baru, který vznikl bez ticku (výpadek spojení), nedrží dál.
+
+Tahle kontrola běží **ještě před vyhodnocením vstupu**: průrazová svíčka často
+prorazí i přímku kotvenou na svém vlastním swingu, a dokud přímka drží, zamítne si
+vstup sama sebou (`v cestě reliéfní přímka`). O pár kroků později by ji revalidace
+stejně smazala, jenže další svíčka už přechodem přes úroveň není a signál je
+nenávratně pryč. U **tržního vstupu** se navíc překážky hledají až od skutečného
+vstupu, ne od úrovně: trh je už za úrovní, takže překážka mezi nimi je právě
+proražená a měřit k ní místo pro PT by vždy dalo nulu.
 
 ### Délka vstupu a stopy
 
@@ -400,17 +457,24 @@ Tlačítka jsou nad panelem ve **třech řadách** — v první obslužná (`TES
 a `SHORT 2x` **přesně pod svými protějšky**. Všechna čtyři obchodní tlačítka mají
 stejnou šířku, takže řada nevypadá rozházeně.
 
-Šířka se počítá ze skutečné šířky nejdelšího možného textu (`TextGetSize` se
-stejným přepočtem podle rozlišení, jaký používají grafické objekty), takže se
-text vejde i při jiném DPI nebo jiném `InpPanelFontSize`. Počítá se z nejdelšího
-**stavu** (`ZAVŘÍT SHORT 2x`), ne z aktuálního textu, aby tlačítko při přepnutí
-neskákalo.
+Šířka se počítá ze skutečné šířky nejdelšího možného textu (`TextGetSize`), takže
+se text vejde i při jiném DPI nebo jiném `InpPanelFontSize`. Velikost písma se do
+`TextSetFont` předává **záporná, v desetinách bodu** — kladná hodnota znamená podle
+dokumentace pixely nezávislé na rozlišení, kdežto grafické objekty berou body a
+škálují se podle DPI; s kladným číslem se měřilo menší písmo, než tlačítko
+doopravdy vykreslí, a při škálování 150 % se text usekl uprostřed slova. Počítá se
+z nejdelšího **stavu** (`ZAVŘÍT SHORT 2x`), ne z aktuálního textu, aby tlačítko při
+přepnutí neskákalo. Naměřené šířky se zjišťují jednou při startu — vstupy se za
+běhu nemění, takže není proč měřit při každém obnovení panelu.
 
 **Obchod odebírá vždy totéž tlačítko, které ho zadalo.** Dokud ve směru leží
 jednoduchý obchod, je tlačítko `2x` zešedlé a naopak — takže je od pohledu jasné,
 kam kliknout. Expert pozná dvojitý vstup podle značky `2x` v komentáři příkazu;
 kdyby ji broker přepsal, zaskočí geometrie (druhá noha má PT výrazně delší
-než SL, což obchod s RRR 1:1 nikdy nemá).
+než SL, což obchod s RRR 1:1 nikdy nemá). Geometrie se ale použije **jen na
+obchod s cizím komentářem**: náš vlastní komentář bez značky `2x` je jasná
+odpověď, že obchod patří tlačítku `LONG` / `SHORT`. Jinak by stačilo přitáhnout
+SL a poměr PT:SL by práh překročil — tlačítko by zešedlo a klik přestal fungovat.
 
 #### `LONG` / `SHORT` — jeden obchod
 

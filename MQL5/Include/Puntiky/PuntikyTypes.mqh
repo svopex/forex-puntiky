@@ -73,6 +73,34 @@ struct SDirectionState
   };
 
 //+------------------------------------------------------------------+
+//| Co strategie prave drzi na trhu - vysledek JEDINEHO pruchodu     |
+//| seznamem pozic a prikazu. Ctou ho texty tlacitek, jejich bubliny |
+//| i radky panelu; drive si kazdy z nich sahal do seznamu sam a pri |
+//| kazdem obnoveni panelu, tedy kazdou sekundu, se seznam prochazel |
+//| nekolikrat.                                                      |
+//|  buy, sell     - prehled obou smeru                              |
+//|  firstPosition - ticket prvni nalezene pozice strategie (0 =     |
+//|                  zadna); panel z nej vypisuje radek "pozice"     |
+//|  totalOrders   - vsechny prikazy strategie, i jineho typu nez    |
+//|                  STOP (napr. pozustatek po jinem rezimu)         |
+//+------------------------------------------------------------------+
+struct SMarketState
+  {
+   SDirectionState   buy;
+   SDirectionState   sell;
+   ulong             firstPosition;
+   int               totalOrders;
+
+   void              Reset()
+     {
+      buy.Reset();
+      sell.Reset();
+      firstPosition = 0;
+      totalOrders   = 0;
+     }
+  };
+
+//+------------------------------------------------------------------+
 //| Druh prekazky, ktera zkratila PT navrhu.                         |
 //| Bez tohoto rozliseni by se typ prekazky rekonstruoval porovnanim |
 //| doublu (edgePrice == reliefPrice) a panel by hlasil "zkraceno    |
@@ -83,6 +111,22 @@ enum ENUM_PUNTIKY_BARRIER
    PUNTIKY_BARRIER_NONE   = 0, // PT je v plne delce
    PUNTIKY_BARRIER_EDGE   = 1, // PT zkracen hranou kanalu
    PUNTIKY_BARRIER_RELIEF = 2  // PT zkracen reliefni primkou
+  };
+
+//+------------------------------------------------------------------+
+//| Proc navrh vstupu neplati.                                       |
+//| Rozliseni potrebuje rekonciliace prikazu: spotrebovanou nebo      |
+//| vymenenou uroven musi lezici prikaz opustit, kdezto priblizeni    |
+//| trhu ke stop-levelu brokera brani jen ZADANI a uprave prikazu -   |
+//| ten, ktery uz na te same cene lezi, smi zustat a v klidu se       |
+//| vyplnit (rusit ho tesne pred vyplnenim by znamenalo propast prave |
+//| ten pruraz, na ktery cekal).                                      |
+//+------------------------------------------------------------------+
+enum ENUM_PUNTIKY_BLOCK
+  {
+   PUNTIKY_BLOCK_NONE  = 0, // navrh plati
+   PUNTIKY_BLOCK_LEVEL = 1, // uroven je spotrebovana, smer nelze obchodovat
+   PUNTIKY_BLOCK_REACH = 2  // trh je uz u ceny vstupu (stop level brokera)
   };
 
 //+------------------------------------------------------------------+
@@ -187,7 +231,6 @@ void PuntikySortByScoreDesc(T &arr[])
 //+------------------------------------------------------------------+
 struct SChannel
   {
-   bool              valid;        // kanal prosel filtry a je pouzitelny
    bool              baseIsLow;    // orientace zakladni usecky
 
    //--- opory kanalu
@@ -320,10 +363,14 @@ struct SEntryPlan
    // dopocitavat pri kazdem obnoveni panelu, tedy kazdou sekundu.
    double            lotsDouble;   // 0 = dvojity vstup nelze zadat
    string            doubleReason; // proc dvojity vstup nelze ("" = lze)
+   // Cil druhe nohy dvojiteho vstupu (PT na nasobku delky vstupu).
+   // Pocita se na jednom miste v BuildPlan - drive si ho stejnym
+   // vzorcem dopocitavala jak bublina tlacitka 2x, tak zadani obchodu.
+   double            tpDouble;     // 0 = navrh neni platny
    ENUM_PUNTIKY_BARRIER barrier;      // co PT zkratilo (hrana kanalu / reliefni primka)
-   double            barrierPrice; // cena teto prekazky
    int               channelIdx;   // index kanalu, uvnitr ktereho vstupujeme
    string            reason;       // duvod pripadneho zamitnuti
+   ENUM_PUNTIKY_BLOCK block;       // druh zamitnuti (rozhoduje o osudu prikazu)
   };
 
 #endif // __PUNTIKY_TYPES_MQH__

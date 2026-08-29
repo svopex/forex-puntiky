@@ -157,11 +157,24 @@ struct SChannelLabel
 //|  tooltip  - text bubliny po najeti mysi                          |
 //| Tlacitko se po kliknuti vraci do nestisknuteho stavu az v        |
 //| obsluze udalosti - MT5 ho jinak necha "zamacknute".              |
+//|                                                                  |
+//| Text, pozadi i bublina se srovnavaji na KAZDEM volani, ale jen    |
+//| pri skutecnem rozdilu. Drive se plnily jen pri vzniku objektu a   |
+//| kazdy volajici si obchazeni psal sam (tri kopie, jedno tlacitko   |
+//| bez nej uplne) - zmena stavu se tam pak neprojevila.              |
+//| Porovnava se s hodnotou SKUTECNE ulozenou v objektu, ne se        |
+//| stinovou kopii v pameti: kdyz objekt z grafu zmizi (nova sablona, |
+//| uklid grafu), vrati ObjectGetString prazdny retezec a tlacitko se |
+//| obnovi.                                                           |
+//| Vraci true, kdyz se zmenilo neco viditelneho - volajici pak       |
+//| jedinkrat prekresli graf.                                        |
 //+------------------------------------------------------------------+
-void PuntikyButton(const string name, const int x, const int y, const int w, const int h,
+bool PuntikyButton(const string name, const int x, const int y, const int w, const int h,
                 const string text, const color clr, const color bg,
                 const int fontSize, const string font, const string tooltip)
   {
+   bool changed = false;
+
    if(ObjectFind(0, name) < 0)
      {
       ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
@@ -177,12 +190,31 @@ void PuntikyButton(const string name, const int x, const int y, const int w, con
       ObjectSetInteger(0, name, OBJPROP_BACK, false);
       ObjectSetString(0, name, OBJPROP_TEXT, text);
       ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
+      changed = true;
+     }
+   else
+     {
+      if(ObjectGetString(0, name, OBJPROP_TEXT) != text)
+        {
+         ObjectSetString(0, name, OBJPROP_TEXT, text);
+         changed = true;
+        }
+      if((color)ObjectGetInteger(0, name, OBJPROP_BGCOLOR) != bg)
+        {
+         ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+         changed = true;
+        }
+      // Bublina se v grafu nekresli, takze ji prekreslovat netreba
+      if(ObjectGetString(0, name, OBJPROP_TOOLTIP) != tooltip)
+         ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
      }
 
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
    ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
    ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+
+   return(changed);
   }
 
 //+------------------------------------------------------------------+

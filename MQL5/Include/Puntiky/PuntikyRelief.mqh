@@ -60,6 +60,47 @@ struct SReliefLine
      {
       return (gap >= -tol && gap <= tol);
      }
+   //--- Prorazi svicka primku? Rozhoduje se z uz spoctene hodnoty
+   //--- primky a odstupu svicky, aby se v nejcastejsi smycce cele
+   //--- detekce nepocitaly znovu. Telo primku prekrocit nesmi vubec
+   //--- (tolerance pierceTol), knot ji smi presahnout az o wickTol,
+   //--- ale JEN MEZI oporami - za druhou oporou je primka tvrda
+   //--- hranice a novy extrem ji rusi.
+   //---  idx        - index baru (rozliseni "za druhou oporou")
+   //---  v          - hodnota primky na tomto baru
+   //---  gap        - odstup svicky od primky (viz GapFrom)
+   //---  open,close - telo svicky
+   //---  pierceTol  - povolene proriznuti telem
+   //---  wickTol    - povoleny presah knotem mezi oporami
+   bool              PiercedAt(const double idx, const double v, const double gap,
+                               const double open, const double close,
+                               const double pierceTol, const double wickTol)
+     {
+      if(isHigh ? (MathMax(open, close) > v + pierceTol)
+                : (MathMin(open, close) < v - pierceTol))
+         return(true);
+      return(-gap > ((idx <= (double)i2) ? wickTol : pierceTol));
+     }
+   //--- Totez pro bar, jehoz hodnotu primky volajici jeste nema
+   bool              BarPierces(const double idx, const double open, const double high,
+                                const double low, const double close,
+                                const double pierceTol, const double wickTol)
+     {
+      const double v = ValueAtBar(idx);
+      return(PiercedAt(idx, v, GapFrom(v, high, low), open, close, pierceTol, wickTol));
+     }
+   //--- Ujela primka od sve druhe opory pres povoleny prah?
+   //--- (0 = filtr vypnuty; prah viz PuntikyReliefDriftLimit)
+   bool              Drifted(const double idx, const double driftLimit)
+     {
+      return(driftLimit > 0.0 && MathAbs(ValueAtBar(idx) - p2) > driftLimit);
+     }
+   //--- Je druha opora uz prilis stara? (0 = filtr vypnuty)
+   bool              Expired(const double idx, const double maxAgeFactor)
+     {
+      return(maxAgeFactor > 0.0 &&
+             (idx - (double)i2) > maxAgeFactor * (double)spanBars);
+     }
   };
 
 //+------------------------------------------------------------------+
@@ -187,23 +228,14 @@ bool PuntikyReliefScan(const MqlRates &rates[], SReliefLine &ln, const SReliefPa
       const double v   = ln.ValueAtBar((double)i);
       const double gap = ln.GapFrom(v, rates[i].high, rates[i].low);
 
-      //--- Telo svicky nesmi primku prekrocit
-      if(ln.isHigh)
-        {
-         if(MathMax(rates[i].open, rates[i].close) > v + p.pierceTol)
-            return(false);
-        }
-      else
-        {
-         if(MathMin(rates[i].open, rates[i].close) < v - p.pierceTol)
-            return(false);
-        }
-
-      //--- Knot smi presahnout jen mezi oporami, za druhou oporou ne
-      const double over    = -gap;
-      const double tolWick = (i <= ln.i2) ? p.wickTol : p.pierceTol;
-      if(over > tolWick)
+      //--- Telo pres primku i knot za druhou oporou znamenaji
+      //--- prorazeni - predikat je spolecny s revalidaci drzenych
+      //--- primek v expertovi, aby se obe cesty nemohly rozejit
+      if(ln.PiercedAt((double)i, v, gap, rates[i].open, rates[i].close,
+                      p.pierceTol, p.wickTol))
          return(false);
+
+      const double over = -gap;
       if(over > ln.maxOver)
          ln.maxOver = over;
 
@@ -260,9 +292,9 @@ bool PuntikyReliefSimilar(SReliefLine &a, SReliefLine &b, const double b1, const
 //| Kazda dvojice swingu stejneho typu dava kandidata; projdou jen   |
 //| primky, ktere cenu obaluji a maji dost dotyku. Vysledek je       |
 //| serazen podle vyznamnosti a zbaven duplicit.                     |
-//| Filtry jsou serazene od nejlevnejsiho k nejdrazsimu - pruchod    |
-//| svickami dostane az kandidat, ktery prosel testy delky, stari a  |
-//| driftu (drive bezel pruchod jako prvni pro kazdou dvojici).      |
+//| Filtry jsou serazene od nejlevnejsiho k nejdrazsimu: pruchod     |
+//| celou historii dostane az kandidat, ktery prosel testy delky,     |
+//| stari, driftu a predfiltrem pres swingove extremy.               |
 //|  rates - svicky vstupniho TF (index 0 = nejstarsi)               |
 //|  p     - parametry hledani                                       |
 //|  out   - vystupni pole vybranych primek                          |
@@ -355,6 +387,31 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
                   st.drift++;
                   continue;
                  }
+              }
+
+            // Levny predfiltr pred pruchodem celou historii: swing
+            // tehoz typu ZA druhou oporou, ktery primku presahuje vic
+            // nez pierceTol, ji prorazi urcite (tam uz je primka tvrdou
+            // hranici i pro knot). Je to nutna podminka testu ve
+            // PuntikyReliefScan, takze vysledek zustava stejny - jen se
+            // beznadejny kandidat zahodi za O(pocet swingu) misto
+            // O(pocet baru), coz je nejdrazsi cast cele detekce.
+            bool pierced = false;
+            for(int k = j + 1; k < ns; k++)
+              {
+               if(sw[k].isHigh != ln.isHigh)
+                  continue;
+               const double vs = ln.ValueAtBar((double)sw[k].index);
+               if(ln.GapFrom(vs, sw[k].price, sw[k].price) < -p.pierceTol)
+                 {
+                  pierced = true;
+                  break;
+                 }
+              }
+            if(pierced)
+              {
+               st.pierced++;
+               continue;
               }
 
             bool midTouch = false;
