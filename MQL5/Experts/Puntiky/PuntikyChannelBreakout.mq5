@@ -544,7 +544,7 @@ void OnTick()
    //---    niz uz ji revalidace smaze, jenze dalsi svicka uz prechodem
    //---    pres uroven neni a signal je nenavratne pryc.
    bool reliefDropped = false;
-   if(newEntryBar)
+   if(InpUseRelief && newEntryBar)
       reliefDropped = RevalidateRelief();
 
    //--- 2) Vstup potvrzeny uzavrenou svickou vstupniho TF.
