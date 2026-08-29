@@ -8,6 +8,10 @@
 //|   - vstup se vyhodnocuje na M1                                   |
 //|   - rezim MANUAL: expert sam neobchoduje, jen kresli a blika,    |
 //|     obchody zadava uzivatel tlacitky LONG / SHORT v grafu        |
+//|   - tlacitka LONG 2x / SHORT 2x zadaji dva obchody naraz:        |
+//|     prvni s PT 1:1, druhy s PT na dvojnasobku, oba se stejnym    |
+//|     SL a kazdy s polovicnim rizikem (celkem stejne jako 1 obchod);|
+//|     obchod odebira totez tlacitko, ktere ho zadalo               |
 //|   - delka vstupu max. InpMaxEntryPoints bodu, SL:PT = 1:1        |
 //|   - pokud je hrana kanalu bliz, PT se zkrati k teto hrane        |
 //|     a SL se zkrati stejne (RRR zustava 1:1)                      |
@@ -15,7 +19,7 @@
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
-#property version   "1.14"
+#property version   "1.17"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -114,7 +118,7 @@ input bool            InpShowPoints       = true;         // Kreslit opory A B C
 input bool            InpShowBreakLevels  = true;         // Kreslit urovne prurazu H1
 input bool            InpShowEntryLevels  = true;         // Kreslit urovne planovaneho vstupu
 input bool            InpShowRelief       = true;         // Kreslit reliefni primky
-input bool            InpShowPanel        = true;         // Zobrazit informacni panel
+input bool            InpShowPanel        = false;        // Zobrazit textovy panel (prepina tlacitko PANEL)
 input int             InpForwardBars      = 30;           // Prodlouzeni kanalu doprava (bary)
 input color           InpColorHigh        = clrTomato;    // Barva HIGH usecky
 input color           InpColorLow         = clrDodgerBlue;// Barva LOW usecky
@@ -155,8 +159,24 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 #define PUNTIKY_PANEL_MAX_LINES 40    // kapacita panelu (radku)
 #define PUNTIKY_PANEL_RESERVE   14    // radky drzene pro vypis pod kanaly
 #define PUNTIKY_PANEL_BTN_GAP   6     // mezera mezi tlacitky a panelem (px)
-#define PUNTIKY_BTN_HUE_W       150   // sirka tlacitka testu Hue (px)
-#define PUNTIKY_BTN_TRADE_W     182   // sirka rucnich tlacitek LONG / SHORT (px)
+
+// Sirka tlacitka se pocita ze skutecne sirky nejdelsiho textu, ktery se
+// v nem muze objevit (viz ButtonWidth). Pevne hodnoty v pixelech tuhle
+// praci nezvladly: MT5 skaluje pismo grafickych objektu podle rozliseni
+// obrazovky, takze stejne cislo jednou textu nechalo misto navic a
+// podruhe useklo "TEST Hue" na "EST Hue".
+#define PUNTIKY_BTN_TEXT_PAD    24    // volne misto kolem textu tlacitka (px)
+
+// Nouzove sirky pro pripad, ze mereni textu selze. Odpovidaji pismu o
+// velikosti 9 na bezne obrazovce (~13 px na znak).
+#define PUNTIKY_BTN_HUE_W       130   // sirka tlacitka testu Hue (px)
+#define PUNTIKY_BTN_PANEL_W     145   // sirka tlacitka prepinace panelu (px)
+#define PUNTIKY_BTN_TRADE_W     226   // sirka obchodnich tlacitek (px)
+
+// Nejdelsi text, ktery se v obchodnim tlacitku muze objevit. Sirku z nej
+// dostanou vsechna ctyri, aby tlacitka 2x sedela presne pod svymi
+// protejsky a rada nevypadala rozhozene.
+#define PUNTIKY_BTN_TRADE_MAX   "ZAVŘÍT SHORT 2x"
 
 // Pozadi tlacitek. Kazdy stav ma vlastni barvu, aby slo od pohledu poznat,
 // co je funkcni a co ne - tmava sed je vyhrazena jedine nedostupnemu
@@ -166,6 +186,26 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 #define PUNTIKY_BTN_BG_SHORT    C'130,0,0'     // zadat SHORT
 #define PUNTIKY_BTN_BG_REMOVE   C'150,90,0'    // zrusit prikaz / zavrit pozici
 #define PUNTIKY_BTN_BG_OFF      C'48,48,48'    // navrh neni platny, klik nic neudela
+#define PUNTIKY_BTN_BG_PANEL_ON  C'85,60,115'  // panel v grafu zapnuty
+#define PUNTIKY_BTN_BG_PANEL_OFF C'55,40,75'   // panel v grafu vypnuty
+
+// Parametry dvojiteho vstupu (tlacitka LONG 2x / SHORT 2x).
+// Prvni obchod ma PT presne podle navrhu (RRR 1:1), druhy ho ma na
+// nasobku teto delky; SL maji oba stejny. Riziko se mezi ne deli, takze
+// soucet obou obchodu odpovida riziku jednoho bezneho obchodu.
+#define PUNTIKY_DOUBLE_PT_MULT  2.0   // nasobek delky PT pro druhy obchod
+#define PUNTIKY_DOUBLE_RISK     0.5   // podil rizika pripadajici na jeden obchod
+
+// Znacka v komentari prikazu, podle ktere se pozna obchod z dvojiteho
+// vstupu. Cely komentar se vejde do limitu MT5 (31 znaku).
+// Podle ni se rozhoduje, ktere tlacitko obchod odebira - dvojity vstup
+// se rusi tlacitkem 2x, jednoduchy tlacitkem LONG / SHORT.
+#define PUNTIKY_DOUBLE_TAG      "2x"
+
+// Kdyz broker komentar prepise, rozhodne geometrie: druha noha
+// dvojiteho vstupu ma PT vyrazne delsi nez SL, coz jednoduchy obchod
+// s RRR 1:1 nikdy nema. Prah je s rezervou pod skutecnym nasobkem.
+#define PUNTIKY_DOUBLE_TP_RATIO 1.5
 
 // MT5 zobrazi z textu grafickeho objektu jen prvnich 63 znaku a zbytek
 // tise zahodi (i uprostred slova). Delsi radky panelu se proto zalomi.
@@ -210,6 +250,8 @@ SEntryPlan    g_planBuy;               // aktualni navrh nakupu
 SEntryPlan    g_planSell;              // aktualni navrh prodeje
 string        g_lastEvent = "";        // posledni udalost pro panel
 bool          g_tradingAllowed = true; // vysledek kontroly uctu
+bool          g_showPanel     = false;// kreslit textovy panel pod tlacitky
+                                      // (prepina se tlacitkem PANEL v grafu)
 bool          g_ordersDirty    = false;// navrhy se zmenily, prikazy je treba srovnat
 bool          g_needInitCalc   = true; // ceka se na data pro prvni vypocet
 
@@ -230,6 +272,23 @@ datetime      g_hueBuyTime   = 0;      // cas posledniho BUY upozorneni
 datetime      g_hueSellTime  = 0;      // cas posledniho SELL upozorneni
 
 //+------------------------------------------------------------------+
+//| Prepne zobrazeni textoveho panelu v grafu a zmenu ohlasi.        |
+//| Tyka se jen vypisu na obrazovce - Expert log bezi dal beze zmeny,|
+//| takze je se kam podivat i pri schovanem panelu.                  |
+//| Pri vypnuti se zapomene posledni znama vyska prvniho radku, aby  |
+//| se panel po opetovnem zapnuti vykreslil cely.                    |
+//+------------------------------------------------------------------+
+void TogglePanel()
+  {
+   g_showPanel = !g_showPanel;
+   if(!g_showPanel)
+      g_panelY = -1;
+
+   g_lastEvent = g_showPanel ? "panel v grafu zapnut" : "panel v grafu vypnut";
+   Print("PUNTIKY: ", g_lastEvent);
+  }
+
+//+------------------------------------------------------------------+
 //| Inicializace experta                                             |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -238,6 +297,10 @@ int OnInit()
    //--- tichym nefunkcnim chovanim za behu
    if(!ValidateInputs())
       return(INIT_PARAMETERS_INCORRECT);
+
+   // Vstup urcuje jen POCATECNI stav panelu - za behu ho prepina
+   // tlacitko PANEL v grafu
+   g_showPanel = InpShowPanel;
 
    g_trade.SetExpertMagicNumber(InpMagic);
    g_trade.SetDeviationInPoints(InpSlippage);
@@ -278,7 +341,7 @@ int OnInit()
 
    if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
       Print("PUNTIKY: ruční režim - expert sám neobchoduje, obchody se zadávají "
-            "tlačítky LONG / SHORT v grafu.");
+            "tlačítky LONG / SHORT (a LONG 2x / SHORT 2x) v grafu.");
 
    // Po prepnuti z pending rezimu by na urovnich zustaly lezet GTC
    // prikazy se starym SL/PT - jejich plneni by otevrelo pozici, kterou
@@ -450,17 +513,23 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    // Pending prikaz nese absolutni SL a PT spoctene pro nominalni
    // vstupni cenu. Pri plneni se skluzem by pak SL a PT nemely stejnou
    // delku (RRR by nebylo 1:1), proto se dorovnaji na skutecny vstup.
+   // Delky se berou z vyplneneho prikazu, SL i PT zvlast - u druhe
+   // pozice dvojiteho vstupu je PT na nasobku SL a musi mu zustat
    const ulong posId = (ulong)HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
-   double distance = 0.0;
+   double slDistance = 0.0;
+   double tpDistance = 0.0;
    if(trans.order != 0 && HistoryOrderSelect(trans.order))
      {
       const double orderPrice = HistoryOrderGetDouble(trans.order, ORDER_PRICE_OPEN);
       const double orderSL    = HistoryOrderGetDouble(trans.order, ORDER_SL);
+      const double orderTP    = HistoryOrderGetDouble(trans.order, ORDER_TP);
       if(orderPrice > 0.0 && orderSL > 0.0)
-         distance = MathAbs(orderPrice - orderSL);
+         slDistance = MathAbs(orderPrice - orderSL);
+      if(orderPrice > 0.0 && orderTP > 0.0)
+         tpDistance = MathAbs(orderTP - orderPrice);
      }
-   if(distance > 0.0)
-      AdjustPositionStops(posId, distance);
+   if(slDistance > 0.0)
+      AdjustPositionStops(posId, slDistance, tpDistance);
 
    // Navrh s otevrenou pozici prestane byt platny, takze rekonciliace
    // zrusi zbyly prikaz druheho smeru (OCO)
@@ -488,7 +557,8 @@ void OnTimer()
 
 //+------------------------------------------------------------------+
 //| Udalosti grafu - obsluha tlacitek nad panelem.                   |
-//| Tlacitka jsou tri: test upozorneni Hue a rucni LONG / SHORT.     |
+//| Tlacitek je sest: test upozorneni Hue, prepinac textoveho panelu,|
+//| rucni LONG / SHORT a dvojity vstup LONG 2x / SHORT 2x.           |
 //| MT5 necha tlacitko po kliknuti zamacknute, proto se stav vraci   |
 //| do puvodni polohy rucne.                                         |
 //|  id     - druh udalosti                                          |
@@ -502,10 +572,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
    if(id != CHARTEVENT_OBJECT_CLICK)
       return;
 
-   const bool isHue   = (sparam == PUNTIKY_PREFIX + "BTN_HUETEST");
-   const bool isLong  = (sparam == PUNTIKY_PREFIX + "BTN_LONG");
-   const bool isShort = (sparam == PUNTIKY_PREFIX + "BTN_SHORT");
-   if(!isHue && !isLong && !isShort)
+   const bool isHue    = (sparam == PUNTIKY_PREFIX + "BTN_HUETEST");
+   const bool isPanel  = (sparam == PUNTIKY_PREFIX + "BTN_PANEL");
+   const bool isLong   = (sparam == PUNTIKY_PREFIX + "BTN_LONG");
+   const bool isShort  = (sparam == PUNTIKY_PREFIX + "BTN_SHORT");
+   const bool isLong2  = (sparam == PUNTIKY_PREFIX + "BTN_LONG2");
+   const bool isShort2 = (sparam == PUNTIKY_PREFIX + "BTN_SHORT2");
+   if(!isHue && !isPanel && !isLong && !isShort && !isLong2 && !isShort2)
       return;
 
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
@@ -514,7 +587,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
    if(isHue)
       HueSendTest();
    else
-      ManualToggle(isLong);
+      if(isPanel)
+         TogglePanel();
+      else
+         if(isLong2 || isShort2)
+            ManualDouble(isLong2);
+         else
+            ManualToggle(isLong);
 
    UpdatePanel();
   }
@@ -794,43 +873,97 @@ int CountPositions()
   }
 
 //+------------------------------------------------------------------+
-//| Najde pending STOP prikaz strategie v zadanem smeru.             |
-//| Slouzi rucnim tlacitkum - ta potrebuji vedet, jestli uz v danem  |
-//| smeru neco na trhu lezi, a pripadne to umet zrusit.              |
-//|  isBuy - smer (true = BUY STOP, false = SELL STOP)               |
-//| Vraci ticket prikazu, nebo 0 kdyz zadny takovy neexistuje.       |
+//| Pochazi obchod s temito udaji z dvojiteho vstupu?                |
+//| Rozhoduje znacka v komentari, kterou dava PlaceStopOrder. Kdyz   |
+//| broker komentar prepise (bezne u castecneho plneni nebo pri      |
+//| zavreni), zaskoci geometrie: druha noha dvojiteho vstupu ma PT   |
+//| vyrazne delsi nez SL, coz obchod s RRR 1:1 nikdy nema.           |
+//|  comment - komentar prikazu nebo pozice                          |
+//|  open    - vstupni cena, sl / tp - stopy obchodu                 |
 //+------------------------------------------------------------------+
-ulong FindOurOrder(const bool isBuy)
+bool LooksDoubleEntry(const string comment, const double open,
+                      const double sl, const double tp)
   {
-   const long wanted = isBuy ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-     {
-      const ulong ticket = OrderGetTicket(i);
-      if(ticket == 0 || !IsOurOrder())
-         continue;
-      if(OrderGetInteger(ORDER_TYPE) == wanted)
-         return(ticket);
-     }
-   return(0);
+   if(StringFind(comment, PUNTIKY_DOUBLE_TAG) >= 0)
+      return(true);
+
+   if(open <= 0.0 || sl <= 0.0 || tp <= 0.0)
+      return(false);
+
+   const double slDist = MathAbs(open - sl);
+   const double tpDist = MathAbs(tp - open);
+   if(slDist <= 0.0)
+      return(false);
+
+   return(tpDist > slDist * PUNTIKY_DOUBLE_TP_RATIO);
   }
 
 //+------------------------------------------------------------------+
-//| Najde otevrenou pozici strategie v zadanem smeru.                |
-//|  isBuy - smer (true = BUY, false = SELL)                         |
-//| Vraci ticket pozice, nebo 0 kdyz zadna takova neexistuje.        |
+//| Zjisti, co strategie v zadanem smeru drzi na trhu.               |
+//| Jeden pruchod naplni pocty i druh vstupu, takze text tlacitka,   |
+//| jeho bublina i radek panelu ctou tentyz vysledek.                |
+//| Kdyz se ve smeru sejde jednoduchy i dvojity obchod (rucni zasah  |
+//| v terminalu), ma prednost dvojity - jinak by tlacitko 2x         |
+//| zesedlo a jeho druha noha by sla odebrat jen z terminalu.        |
+//|  isBuy - smer (true = LONG, false = SHORT)                       |
+//|  st    - out: prehled smeru                                      |
 //+------------------------------------------------------------------+
-ulong FindOurPosition(const bool isBuy)
+void ScanDirection(const bool isBuy, SDirectionState &st)
   {
-   const long wanted = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+   st.positions = 0;
+   st.orders    = 0;
+   st.kind      = PUNTIKY_MANUAL_NONE;
+
+   bool anyDouble = false;
+
+   const long wantedPos = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
-      const ulong ticket = PositionGetTicket(i);
-      if(ticket == 0 || !IsOurPosition())
+      if(PositionGetTicket(i) == 0 || !IsOurPosition())
          continue;
-      if(PositionGetInteger(POSITION_TYPE) == wanted)
-         return(ticket);
+      if(PositionGetInteger(POSITION_TYPE) != wantedPos)
+         continue;
+
+      st.positions++;
+      if(LooksDoubleEntry(PositionGetString(POSITION_COMMENT),
+                          PositionGetDouble(POSITION_PRICE_OPEN),
+                          PositionGetDouble(POSITION_SL),
+                          PositionGetDouble(POSITION_TP)))
+         anyDouble = true;
      }
-   return(0);
+
+   const long wantedOrd = isBuy ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(OrderGetTicket(i) == 0 || !IsOurOrder())
+         continue;
+      if(OrderGetInteger(ORDER_TYPE) != wantedOrd)
+         continue;
+
+      st.orders++;
+      if(LooksDoubleEntry(OrderGetString(ORDER_COMMENT),
+                          OrderGetDouble(ORDER_PRICE_OPEN),
+                          OrderGetDouble(ORDER_SL),
+                          OrderGetDouble(ORDER_TP)))
+         anyDouble = true;
+     }
+
+   // Dvojity vstup se pozna i podle jedine nohy: po vyplneni PT1 zbyva
+   // druha pozice a ta porad patri tlacitku 2x
+   if(st.Busy())
+      st.kind = anyDouble ? PUNTIKY_MANUAL_DOUBLE : PUNTIKY_MANUAL_SINGLE;
+  }
+
+//+------------------------------------------------------------------+
+//| Umi ucet drzet vic pozic na jednom symbolu soucasne?             |
+//| Na nettingovem uctu se dva prikazy stejneho smeru sloucily do    |
+//| jedine pozice a SL/PT toho druheho by prepsaly ten prvni - z     |
+//| dvojiteho vstupu by nezbylo nic nez jeden obchod se spatnym PT.  |
+//| Tlacitka 2x se proto na takovem uctu nabizet nesmi.              |
+//+------------------------------------------------------------------+
+bool AccountIsHedging()
+  {
+   return(AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING);
   }
 
 //+------------------------------------------------------------------+
@@ -1718,23 +1851,30 @@ int VolumeDigits(const double step)
 
 //+------------------------------------------------------------------+
 //| Vypocet objemu pozice.                                           |
-//|  slDistance - vzdalenost stop lossu v cene                       |
-//|  reason     - out: duvod, proc objem nelze pouzit                |
+//|  slDistance   - vzdalenost stop lossu v cene                     |
+//|  reason       - out: duvod, proc objem nelze pouzit              |
+//|  riskFraction - podil rizika pripadajici na tento obchod         |
+//|                 (1.0 = cele, 0.5 = polovina pri vstupu 2x)       |
 //| V rezimu rizika se objem dopocita tak, aby ztrata na SL          |
 //| odpovidala zadanemu procentu zustatku uctu. Kdyz na to nestaci   |
 //| ani nejmensi dovoleny lot, vraci 0 a obchod se neotevre - drive  |
 //| se lot zvedl na minimum a riziko tise preteklo pres zadany limit.|
+//| V rezimu pevneho lotu se podilem deli primo lot, aby dvojity     |
+//| vstup nesl stejny objem jako jeden bezny obchod.                 |
 //| Vraci objem, nebo 0 pri chybe.                                   |
 //+------------------------------------------------------------------+
-double CalcLot(const double slDistance, string &reason)
+double CalcLot(const double slDistance, string &reason, const double riskFraction = 1.0)
   {
    reason = "";
+
+   // Nesmyslny podil by tise znasobil riziko, proto se orizne
+   const double frac = (riskFraction > 0.0 && riskFraction <= 1.0) ? riskFraction : 1.0;
 
    const double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    const double maxLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    const double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
 
-   double lot = InpFixedLot;
+   double lot = InpFixedLot * frac;
 
    if(InpLotMode == PUNTIKY_LOT_RISK)
      {
@@ -1761,12 +1901,12 @@ double CalcLot(const double slDistance, string &reason)
          return(0.0);
         }
 
-      lot = (balance * InpRiskPercent / 100.0) / lossPerLot;
+      lot = (balance * InpRiskPercent * frac / 100.0) / lossPerLot;
 
       if(lot < minLot)
         {
          reason = StringFormat("riziko %.2f %% nestačí ani na %.2f lot (bylo by %.2f %%)",
-                               InpRiskPercent, minLot,
+                               InpRiskPercent * frac, minLot,
                                minLot * lossPerLot / balance * 100.0);
          return(0.0);
         }
@@ -1849,12 +1989,15 @@ bool CancelPendingOrders()
 
 //+------------------------------------------------------------------+
 //| Zada STOP prikaz podle navrhu vstupu.                            |
-//|  pl - navrh vstupu (musi byt platny)                             |
+//|  pl       - navrh vstupu (musi byt platny)                       |
+//|  isDouble - prikaz je cast dvojiteho vstupu (tlacitko 2x);       |
+//|             promitne se do komentare, podle ktereho se pozna,    |
+//|             ktere tlacitko smi obchod odebrat                    |
 //| Vraci true, kdyz prikaz vznikl. Neuspech se zapise do panelu i   |
 //| do logu a dalsi pokus prijde s pristim prepoctem navrhu, tedy    |
 //| nejpozdeji s dalsi svickou vstupniho TF.                         |
 //+------------------------------------------------------------------+
-bool PlaceStopOrder(SEntryPlan &pl)
+bool PlaceStopOrder(SEntryPlan &pl, const bool isDouble = false)
   {
    const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -1872,11 +2015,14 @@ bool PlaceStopOrder(SEntryPlan &pl)
       return(false);
      }
 
+   const string comment = "PUNTIKY " + (pl.isBuy ? "BUYSTOP" : "SELLSTOP") +
+                          (isDouble ? " " + PUNTIKY_DOUBLE_TAG : "");
+
    const bool ok = pl.isBuy
                    ? g_trade.BuyStop(pl.lots, pl.entry, _Symbol, pl.sl, pl.tp,
-                                     ORDER_TIME_GTC, 0, "PUNTIKY BUYSTOP")
+                                     ORDER_TIME_GTC, 0, comment)
                    : g_trade.SellStop(pl.lots, pl.entry, _Symbol, pl.sl, pl.tp,
-                                      ORDER_TIME_GTC, 0, "PUNTIKY SELLSTOP");
+                                      ORDER_TIME_GTC, 0, comment);
    if(!ok)
      {
       g_lastEvent = StringFormat("%s STOP příkaz selhal, retcode %d",
@@ -2012,28 +2158,36 @@ ulong ResultPositionId()
   }
 
 //+------------------------------------------------------------------+
-//| Dorovna SL a PT jedne pozice na jeji skutecnou vstupni cenu tak, |
-//| aby obe vzdalenosti odpovidaly zadane delce vstupu (RRR 1:1).    |
+//| Dorovna SL a PT jedne pozice na jeji skutecnou vstupni cenu.     |
+//| Kazda vetev si drzi vlastni delku, takze u bezneho obchodu vyjde |
+//| RRR 1:1 a u druhe pozice dvojiteho vstupu zustane PT na svem     |
+//| nasobku - drive se PT natvrdo dorovnaval na delku SL a dvojity   |
+//| vstup tak pri plneni prisel o svuj vzdalenejsi cil.              |
 //| Uprava se provede jen pri rozdilu vetsim nez 1 bod.              |
 //| Meni se vyhradne zadana pozice - drive se prepsaly stopy vsech   |
 //| pozic strategie, takze druhy soubezny obchod dostal ramec toho   |
 //| tretiho a o svuj puvodni prisel.                                 |
-//|  ticket   - ticket (ID) upravovane pozice                        |
-//|  distance - pozadovana delka SL i PT v cene                      |
+//|  ticket     - ticket (ID) upravovane pozice                      |
+//|  slDistance - pozadovana delka SL v cene                         |
+//|  tpDistance - pozadovana delka PT v cene (<= 0 = stejna jako SL) |
 //+------------------------------------------------------------------+
-void AdjustPositionStops(const ulong ticket, const double distance)
+void AdjustPositionStops(const ulong ticket, const double slDistance,
+                         const double tpDistance)
   {
-   if(ticket == 0 || distance <= 0.0)
+   if(ticket == 0 || slDistance <= 0.0)
       return;
    if(!PositionSelectByTicket(ticket))
       return;
    if(!IsOurPosition())
       return;
 
+   // Nezname delky PT (napr. prikaz bez PT) se chova jako drive - 1:1
+   const double tpDist = (tpDistance > 0.0) ? tpDistance : slDistance;
+
    const bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
    const double open  = PositionGetDouble(POSITION_PRICE_OPEN);
-   const double sl    = NormalizeDouble(isBuy ? open - distance : open + distance, _Digits);
-   const double tp    = NormalizeDouble(isBuy ? open + distance : open - distance, _Digits);
+   const double sl    = NormalizeDouble(isBuy ? open - slDistance : open + slDistance, _Digits);
+   const double tp    = NormalizeDouble(isBuy ? open + tpDist : open - tpDist, _Digits);
 
    if(MathAbs(PositionGetDouble(POSITION_SL) - sl) <= _Point &&
       MathAbs(PositionGetDouble(POSITION_TP) - tp) <= _Point)
@@ -2072,7 +2226,7 @@ bool OpenMarket(SEntryPlan &pl)
 
    // Skutecna plnici cena se od navrhu lisi o skluz - SL i PT se
    // dorovnaji na realny vstup, aby RRR zustalo presne 1:1
-   AdjustPositionStops(ResultPositionId(), pl.distance);
+   AdjustPositionStops(ResultPositionId(), pl.distance, pl.distance);
 
    g_lastEvent = StringFormat("%s %.2f lot @ %s  SL %s  PT %s  (%.0f b%s)",
                               pl.isBuy ? "BUY" : "SELL", pl.lots,
@@ -2123,11 +2277,181 @@ void ManualPlace(SEntryPlan &pl)
   }
 
 //+------------------------------------------------------------------+
+//| Zada dvojici obchodu na pokyn uzivatele (tlacitka LONG / SHORT   |
+//| 2x). Oba obchody maji stejny vstup i stejny SL podle navrhu,     |
+//| lisi se jen cilem: prvni bere zisk na delce vstupu (RRR 1:1),    |
+//| druhy az na jejim nasobku (PUNTIKY_DOUBLE_PT_MULT). Objem se     |
+//| pocita s polovicnim rizikem, takze soucet obou obchodu odpovida  |
+//| jednomu beznemu obchodu zadanemu tlacitkem LONG / SHORT.         |
+//|  pl - navrh vstupu prislusneho smeru                             |
+//+------------------------------------------------------------------+
+void ManualPlaceDouble(SEntryPlan &pl)
+  {
+   const string dir = pl.isBuy ? "LONG 2x" : "SHORT 2x";
+
+   if(!pl.valid)
+     {
+      g_lastEvent = StringFormat("%s nelze zadat - %s", dir,
+                                 pl.reason == "" ? "návrh není platný" : pl.reason);
+      Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   // Nettingovy ucet oba prikazy slouci do jedine pozice, takze by se
+   // dvojity vstup tise zmenil v jeden obchod se spatnym PT
+   if(!AccountIsHedging())
+     {
+      g_lastEvent = dir + " nelze zadat - účet není hedgovací";
+      Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   //--- Objem jedne z obou pozic - polovina rizika bezneho obchodu
+   string lotReason = "";
+   const double lots = CalcLot(pl.distance, lotReason, PUNTIKY_DOUBLE_RISK);
+   if(lots <= 0.0)
+     {
+      g_lastEvent = StringFormat("%s nelze zadat - %s", dir,
+                                 lotReason == "" ? "nelze určit objem" : lotReason);
+      Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   //--- Prvni obchod: cil presne podle navrhu (RRR 1:1)
+   SEntryPlan first = pl;
+   first.lots = lots;
+
+   //--- Druhy obchod: stejny vstup i SL, cil na nasobku delky vstupu
+   SEntryPlan second = pl;
+   second.lots = lots;
+   second.tp   = NormalizeDouble(pl.isBuy
+                                 ? pl.entry + pl.distance * PUNTIKY_DOUBLE_PT_MULT
+                                 : pl.entry - pl.distance * PUNTIKY_DOUBLE_PT_MULT,
+                                 _Digits);
+
+   if(!PlaceStopOrder(first, true))
+     {
+      // Duvod uz zapsal PlaceStopOrder do g_lastEvent
+      PrintFormat("PUNTIKY: %s tlačítkem nezadán (%s)", dir, g_lastEvent);
+      return;
+     }
+
+   // Kdyz druhy prikaz neprojde, prvni se zamerne nerusi - na trhu uz
+   // lezi platny obchod s RRR 1:1 a rusit ho automaticky by znamenalo
+   // sahat na uzivateluv obchod kvuli chybe, ktera se ho netyka.
+   // Zbyva tedy polovicni objem a hlaska o tom jde do logu i do panelu.
+   if(!PlaceStopOrder(second, true))
+     {
+      g_lastEvent = StringFormat("%s zadán jen zpola - druhý příkaz selhal (%s)",
+                                 dir, g_lastEvent);
+      Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   g_lastEvent = StringFormat("%s zadán tlačítkem @ %s  SL %s  PT1 %s  PT2 %s  2x %.2f lot",
+                              dir,
+                              DoubleToString(pl.entry, _Digits),
+                              DoubleToString(pl.sl, _Digits),
+                              DoubleToString(first.tp, _Digits),
+                              DoubleToString(second.tp, _Digits),
+                              lots);
+   Print("PUNTIKY: ", g_lastEvent);
+  }
+
+//+------------------------------------------------------------------+
+//| Odebere z trhu vsechno, co strategie v danem smeru drzi.         |
+//| Resi pozice i prikazy najednou - dvojity vstup jich zaklada po   |
+//| dvou a po vyplneni prvniho z nich muze vedle bezici pozice lezet |
+//| jeste druhy prikaz. Tickety se nejdriv posbiraji do pole a az    |
+//| pak rusi: mazani za chodu meni OrdersTotal a cast seznamu by se  |
+//| preskocila.                                                      |
+//|  isBuy - smer (true = LONG, false = SHORT)                       |
+//|  label - popis tlacitka pro hlaseni ("LONG", "SHORT 2x", ...)    |
+//+------------------------------------------------------------------+
+void ManualRemoveDirection(const bool isBuy, const string label)
+  {
+   const string dir = isBuy ? "LONG" : "SHORT";
+
+   //--- Otevrene pozice tohoto smeru
+   ulong posTickets[];
+   const long wantedPos = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      const ulong t = PositionGetTicket(i);
+      if(t == 0 || !IsOurPosition())
+         continue;
+      if(PositionGetInteger(POSITION_TYPE) != wantedPos)
+         continue;
+      const int n = ArraySize(posTickets);
+      ArrayResize(posTickets, n + 1);
+      posTickets[n] = t;
+     }
+
+   //--- Jeste nevyplnene prikazy tohoto smeru
+   ulong ordTickets[];
+   const long wantedOrd = isBuy ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      const ulong t = OrderGetTicket(i);
+      if(t == 0 || !IsOurOrder())
+         continue;
+      if(OrderGetInteger(ORDER_TYPE) != wantedOrd)
+         continue;
+      const int n = ArraySize(ordTickets);
+      ArrayResize(ordTickets, n + 1);
+      ordTickets[n] = t;
+     }
+
+   int closed = 0, closeFail = 0, deleted = 0, deleteFail = 0;
+
+   for(int i = 0; i < ArraySize(posTickets); i++)
+     {
+      if(g_trade.PositionClose(posTickets[i]))
+         closed++;
+      else
+        {
+         closeFail++;
+         PrintFormat("PUNTIKY: %s pozici #%I64u se nepodařilo zavřít, retcode %d (%s)",
+                     dir, posTickets[i], g_trade.ResultRetcode(),
+                     g_trade.ResultRetcodeDescription());
+        }
+     }
+
+   for(int i = 0; i < ArraySize(ordTickets); i++)
+     {
+      // Neuspech uz vypsal DeleteOrder do logu
+      if(DeleteOrder(ordTickets[i]))
+         deleted++;
+      else
+         deleteFail++;
+     }
+
+   //--- Shrnuti pro panel - vypisuji se jen skutecne dotcene polozky
+   string done = "";
+   if(closed > 0)
+      done = StringFormat("%d pozic(e) zavřeno", closed);
+   if(deleted > 0)
+      done = done + (done == "" ? "" : ", ") + StringFormat("%d příkaz(ů) zrušeno", deleted);
+   if(done == "")
+      done = "nic se odebrat nepodařilo";
+
+   string failed = "";
+   if(closeFail > 0 || deleteFail > 0)
+      failed = StringFormat("  (neúspěch: %d pozic, %d příkazů)", closeFail, deleteFail);
+
+   g_lastEvent = label + " tlačítkem - " + done + failed;
+   if(failed == "")
+      Print("PUNTIKY: ", g_lastEvent);
+   else
+      Print("PUNTIKY: ", g_lastEvent);
+  }
+
+//+------------------------------------------------------------------+
 //| Obsluha kliknuti na rucni tlacitko LONG / SHORT.                 |
 //| Tlacitko se chova stridave: kdyz v danem smeru nic na trhu neni, |
-//| zada obchod podle navrhu; kdyz uz prikaz nebo pozice existuje,   |
-//| obchod odebere. Pozice ma pri odebirani prednost pred prikazem - |
-//| vyplneny obchod na trhu skutecne bezi a je treba ho zavrit.      |
+//| zada obchod podle navrhu; kdyz tam lezi obchod z tohoto tlacitka,|
+//| odebere ho. Dvojity vstup mu nepatri - ten se rusi tlacitkem 2x, |
+//| aby obchod odebiralo totez tlacitko, ktere ho zadalo.            |
 //|  isBuy - smer tlacitka (true = LONG, false = SHORT)              |
 //+------------------------------------------------------------------+
 void ManualToggle(const bool isBuy)
@@ -2141,29 +2465,22 @@ void ManualToggle(const bool isBuy)
       return;
      }
 
-   //--- Odebrani otevrene pozice
-   const ulong pos = FindOurPosition(isBuy);
-   if(pos != 0)
+   SDirectionState st;
+   ScanDirection(isBuy, st);
+
+   //--- Dvojity vstup patri tlacitku 2x
+   if(st.kind == PUNTIKY_MANUAL_DOUBLE)
      {
-      if(g_trade.PositionClose(pos))
-         g_lastEvent = StringFormat("%s pozice #%I64u zavřena tlačítkem", dir, pos);
-      else
-         g_lastEvent = StringFormat("%s pozici #%I64u se nepodařilo zavřít, retcode %d (%s)",
-                                    dir, pos, g_trade.ResultRetcode(),
-                                    g_trade.ResultRetcodeDescription());
+      g_lastEvent = StringFormat("%s - ve směru leží dvojitý vstup, odebere se "
+                                 "tlačítkem %s 2x", dir, dir);
       Print("PUNTIKY: ", g_lastEvent);
       return;
      }
 
-   //--- Odebrani jeste nevyplneneho prikazu
-   const ulong ord = FindOurOrder(isBuy);
-   if(ord != 0)
+   //--- Vlastni obchod klik odebira
+   if(st.Busy())
      {
-      // Neuspech uz vypsal DeleteOrder do logu, panel dostane vlastni text
-      g_lastEvent = DeleteOrder(ord)
-                    ? StringFormat("%s příkaz #%I64u zrušen tlačítkem", dir, ord)
-                    : StringFormat("%s příkaz #%I64u se nepodařilo zrušit", dir, ord);
-      Print("PUNTIKY: ", g_lastEvent);
+      ManualRemoveDirection(isBuy, dir);
       return;
      }
 
@@ -2172,6 +2489,51 @@ void ManualToggle(const bool isBuy)
       ManualPlace(g_planBuy);
    else
       ManualPlace(g_planSell);
+  }
+
+//+------------------------------------------------------------------+
+//| Obsluha kliknuti na tlacitko LONG 2x / SHORT 2x.                 |
+//| Chova se stejne stridave jako tlacitko LONG / SHORT, jen pracuje |
+//| s dvojitym vstupem: prazdny smer obsadi dvojici obchodu, vlastni |
+//| dvojity vstup odebere celý najednou (vcetne nohy, ktera uz se    |
+//| stihla vyplnit). Jednoduchy obchod mu nepatri.                   |
+//|  isBuy - smer tlacitka (true = LONG 2x, false = SHORT 2x)        |
+//+------------------------------------------------------------------+
+void ManualDouble(const bool isBuy)
+  {
+   const string plain = isBuy ? "LONG" : "SHORT";
+   const string dir   = plain + " 2x";
+
+   if(!TradingEnabled())
+     {
+      g_lastEvent = dir + " - obchodování je vypnuto";
+      Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   SDirectionState st;
+   ScanDirection(isBuy, st);
+
+   //--- Vlastni dvojity vstup klik odebira cely
+   if(st.kind == PUNTIKY_MANUAL_DOUBLE)
+     {
+      ManualRemoveDirection(isBuy, dir);
+      return;
+     }
+
+   //--- Jednoduchy obchod patri tlacitku LONG / SHORT
+   if(st.Busy())
+     {
+      g_lastEvent = StringFormat("%s nelze zadat - ve směru leží obchod z tlačítka "
+                                 "%s (tím se také odebere)", dir, plain);
+      Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   if(isBuy)
+      ManualPlaceDouble(g_planBuy);
+   else
+      ManualPlaceDouble(g_planSell);
   }
 
 //+------------------------------------------------------------------+
@@ -2414,15 +2776,60 @@ int ButtonHeight()
   }
 
 //+------------------------------------------------------------------+
-//| Vyska cele rady tlacitek vcetne mezery pod ni (0 = zadne         |
-//| tlacitko se nekresli). O tuto hodnotu se posouva text panelu,    |
-//| ktery zacina az pod tlacitky.                                    |
+//| Sirka textu v pixelech pri pismu panelu.                         |
+//| Kladna velikost pisma znamena stejny prepocet podle rozliseni     |
+//| obrazovky, jaky pouzivaji graficke objekty - namerena sirka tedy  |
+//| odpovida tomu, co MT5 do tlacitka opravdu vykresli.               |
+//|  text - merany retezec                                           |
+//| Vraci sirku v pixelech, nebo 0 kdyz mereni selhalo.              |
+//+------------------------------------------------------------------+
+int PanelTextWidth(const string text)
+  {
+   if(!TextSetFont("Consolas", InpPanelFontSize))
+      return(0);
+
+   uint w = 0, h = 0;
+   if(!TextGetSize(text, w, h))
+      return(0);
+
+   return((int)w);
+  }
+
+//+------------------------------------------------------------------+
+//| Sirka tlacitka podle nejdelsiho textu, ktery se v nem objevi.    |
+//| Pocita se z nejdelsiho stavu, ne z toho aktualniho, aby tlacitko |
+//| pri prepnuti (LONG -> ZAVŘÍT LONG) neskakalo a rada se nerozjela.|
+//| Nouzova sirka slouzi zaroven jako spodni mez: kdyz mereni selze  |
+//| nebo vyjde mensi, nez pismo doopravdy zabere, radeji je tlacitko |
+//| o kus sirsi, nez aby MT5 text uriznul uprostred slova.           |
+//|  longest  - nejdelsi mozny text tlacitka                         |
+//|  fallback - nouzova sirka pro pismo velikosti 9 (~13 px na znak) |
+//+------------------------------------------------------------------+
+int ButtonWidth(const string longest, const int fallback)
+  {
+   const int w = PanelTextWidth(longest);
+   if(w <= 0)
+      return(fallback);
+   return(MathMax(w + PUNTIKY_BTN_TEXT_PAD, fallback));
+  }
+
+//+------------------------------------------------------------------+
+//| Kolik rad tlacitek se nad panelem kresli.                        |
+//| Prvni rada (test Hue a prepinac panelu) je vzdy, dalsi dve jen v |
+//| rucnim rezimu - jinde obchodni tlacitka nedavaji smysl.          |
+//+------------------------------------------------------------------+
+int ButtonRowCount()
+  {
+   return(InpEntryMode == PUNTIKY_ENTRY_MANUAL ? 3 : 1);
+  }
+
+//+------------------------------------------------------------------+
+//| Vyska vsech rad tlacitek vcetne mezery pod nimi. O tuto hodnotu  |
+//| se posouva text panelu, ktery zacina az pod tlacitky.            |
 //+------------------------------------------------------------------+
 int ButtonRowHeight()
   {
-   if(!InpHueTestButton && InpEntryMode != PUNTIKY_ENTRY_MANUAL)
-      return(0);
-   return(ButtonHeight() + PUNTIKY_PANEL_BTN_GAP);
+   return(ButtonRowCount() * (ButtonHeight() + PUNTIKY_PANEL_BTN_GAP));
   }
 
 //+------------------------------------------------------------------+
@@ -2454,11 +2861,14 @@ int DrawHueTestButton(const int x, const int y)
       return(0);
      }
 
-   PuntikyButton(name, x, y, PUNTIKY_BTN_HUE_W, ButtonHeight(), "TEST Hue",
+   const string text = "TEST Hue";
+   const int    w    = ButtonWidth(text, PUNTIKY_BTN_HUE_W);
+
+   PuntikyButton(name, x, y, w, ButtonHeight(), text,
               InpColorPanel, PUNTIKY_BTN_BG_HUE, InpPanelFontSize, "Consolas",
               "Odešle testovací upozornění na " + InpHueUrl);
 
-   return(PUNTIKY_BTN_HUE_W + PUNTIKY_PANEL_BTN_GAP);
+   return(w + PUNTIKY_PANEL_BTN_GAP);
   }
 
 //+------------------------------------------------------------------+
@@ -2468,31 +2878,48 @@ int DrawHueTestButton(const int x, const int y)
 //| barva se meni, aby bylo na prvni pohled videt, co klik udela.    |
 //| Neproveditelny navrh necha tlacitko zesedle a duvod da do        |
 //| bubliny - obchod se nabizi jen tam, kde je na nej misto.         |
+//| Odebira se cely smer, tedy i obe casti dvojiteho vstupu naraz -  |
+//| bublina proto uvadi, kolik pozic a prikazu klik odklidi.         |
 //|  name  - jmeno objektu, isBuy - smer tlacitka                    |
 //|  x, y  - poloha leveho horniho rohu v pixelech                   |
 //+------------------------------------------------------------------+
 void DrawManualButton(const string name, const bool isBuy, const int x, const int y)
   {
    const string dir = isBuy ? "LONG" : "SHORT";
-   const ulong  pos = FindOurPosition(isBuy);
-   const ulong  ord = (pos == 0) ? FindOurOrder(isBuy) : 0;
+
+   SDirectionState st;
+   ScanDirection(isBuy, st);
 
    string text    = dir;
    string tooltip = "";
    color  bg      = isBuy ? PUNTIKY_BTN_BG_LONG : PUNTIKY_BTN_BG_SHORT;
 
-   if(pos != 0)
+   if(st.kind == PUNTIKY_MANUAL_DOUBLE)
      {
-      text    = "ZAVŘÍT " + dir;
-      bg      = PUNTIKY_BTN_BG_REMOVE;
-      tooltip = StringFormat("Zavře otevřenou %s pozici #%I64u za trhu.", dir, pos);
+      // Dvojity vstup patri tlacitku 2x - odebira ho to tlacitko,
+      // ktere ho zadalo
+      bg      = PUNTIKY_BTN_BG_OFF;
+      tooltip = StringFormat("Ve směru leží dvojitý vstup (pozic %d, příkazů %d) - "
+                             "odebere se tlačítkem %s 2x.",
+                             st.positions, st.orders, dir);
      }
    else
-      if(ord != 0)
+      if(st.positions > 0)
+        {
+         // Zavreni ma prednost v popisu: bezici pozice je to podstatne
+         text    = "ZAVŘÍT " + dir;
+         bg      = PUNTIKY_BTN_BG_REMOVE;
+         tooltip = StringFormat("Zavře %s pozici (%d) za trhu", dir, st.positions) +
+                   (st.orders > 0
+                    ? StringFormat(" a zruší %d ležící %s příkaz(y).", st.orders, dir)
+                    : ".");
+        }
+      else
+      if(st.orders > 0)
         {
          text    = "ZRUŠIT " + dir;
          bg      = PUNTIKY_BTN_BG_REMOVE;
-         tooltip = StringFormat("Zruší ležící %s příkaz #%I64u.", dir, ord);
+         tooltip = StringFormat("Zruší ležící %s příkaz(y) (%d).", dir, st.orders);
         }
       else
         {
@@ -2516,7 +2943,8 @@ void DrawManualButton(const string name, const bool isBuy, const int x, const in
            }
         }
 
-   PuntikyButton(name, x, y, PUNTIKY_BTN_TRADE_W, ButtonHeight(), text,
+   PuntikyButton(name, x, y, ButtonWidth(PUNTIKY_BTN_TRADE_MAX, PUNTIKY_BTN_TRADE_W),
+              ButtonHeight(), text,
               InpColorPanel, bg, InpPanelFontSize, "Consolas", tooltip);
 
    // PuntikyButton nastavuje text a barvy jen pri vzniku objektu, takze
@@ -2534,37 +2962,206 @@ void DrawManualButton(const string name, const bool isBuy, const int x, const in
   }
 
 //+------------------------------------------------------------------+
-//| Vykresli dvojici rucnich tlacitek LONG / SHORT.                  |
-//| Mimo rucni rezim obchoduje expert sam a rucni zasah by mu lezl   |
-//| do rekonciliace prikazu, proto se tam tlacitka nekresli.         |
+//| Vykresli tlacitko prepinace textoveho panelu v grafu.            |
+//| Text nese aktualni stav, ne akci - podle nej se pozna, co klik   |
+//| udela, i kdyz je panel prave schovany.                           |
+//| Kresli se ve vsech rezimech vstupu, protoze panel je spolecny.   |
+//|  x, y - poloha leveho horniho rohu v pixelech                    |
+//| Vraci sirku vcetne mezery za tlacitkem.                          |
+//+------------------------------------------------------------------+
+int DrawPanelToggleButton(const int x, const int y)
+  {
+   const string name = PUNTIKY_PREFIX + "BTN_PANEL";
+   const string text = g_showPanel ? "PANEL ZAP" : "PANEL VYP";
+   const color  bg   = g_showPanel ? PUNTIKY_BTN_BG_PANEL_ON : PUNTIKY_BTN_BG_PANEL_OFF;
+
+   // Bublina zduraznuje, ze jde jen o vypis v grafu - do Expert logu se
+   // pise porad, takze se ma kam podivat i pri schovanem panelu
+   const string tip = (g_showPanel
+                       ? "Textový panel pod tlačítky je zapnutý - klik ho schová. "
+                       : "Textový panel pod tlačítky je vypnutý - klik ho zobrazí. ") +
+                      "Týká se jen výpisu v grafu, do Expert logu se píše dál.";
+
+   const int w = ButtonWidth("PANEL VYP", PUNTIKY_BTN_PANEL_W);
+
+   PuntikyButton(name, x, y, w, ButtonHeight(), text,
+              InpColorPanel, bg, InpPanelFontSize, "Consolas", tip);
+
+   // PuntikyButton plni text a barvu jen pri vzniku objektu, prepnuti
+   // stavu se proto promita zvlast (a jen pri skutecne zmene)
+   if(ObjectGetString(0, name, OBJPROP_TEXT) != text)
+     {
+      ObjectSetString(0, name, OBJPROP_TEXT, text);
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+      ChartRedraw();
+     }
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, tip);
+
+   return(w + PUNTIKY_PANEL_BTN_GAP);
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresli jedno tlacitko dvojiteho vstupu (LONG 2x / SHORT 2x).   |
+//| Chova se stridave stejne jako tlacitko LONG / SHORT, jen pracuje |
+//| s dvojici obchodu: prazdny smer obsadi, vlastni dvojity vstup    |
+//| odebere. Zesedne, kdyz ve smeru lezi jednoduchy obchod (ten      |
+//| patri tlacitku LONG / SHORT), kdyz navrh neni platny, kdyz na    |
+//| polovicni riziko nevyjde lot nebo kdyz ucet neni hedgovaci.      |
+//|  name  - jmeno objektu, isBuy - smer tlacitka                    |
+//|  x, y  - poloha leveho horniho rohu v pixelech                   |
+//+------------------------------------------------------------------+
+void DrawManualDoubleButton(const string name, const bool isBuy, const int x, const int y)
+  {
+   const string dir = isBuy ? "LONG" : "SHORT";
+
+   SDirectionState st;
+   ScanDirection(isBuy, st);
+
+   string text    = dir + " 2x";
+   string tooltip = "";
+   color  bg      = isBuy ? PUNTIKY_BTN_BG_LONG : PUNTIKY_BTN_BG_SHORT;
+
+   if(st.kind == PUNTIKY_MANUAL_DOUBLE)
+     {
+      // Vlastni dvojity vstup - klik ho odebere cely
+      const bool hasPos = (st.positions > 0);
+      text    = (hasPos ? "ZAVŘÍT " : "ZRUŠIT ") + dir + " 2x";
+      bg      = PUNTIKY_BTN_BG_REMOVE;
+      tooltip = StringFormat("Odebere celý dvojitý vstup %s - %s%d pozic(e) za trhu "
+                             "a %d ležící příkaz(y).",
+                             dir, hasPos ? "zavře " : "", st.positions, st.orders);
+     }
+   else
+      if(!AccountIsHedging())
+        {
+         bg      = PUNTIKY_BTN_BG_OFF;
+         tooltip = "Účet není hedgovací - dva příkazy stejného směru by se "
+                   "sloučily do jedné pozice, takže dvojitý vstup nelze zadat.";
+        }
+      else
+      if(st.Busy())
+        {
+         bg      = PUNTIKY_BTN_BG_OFF;
+         tooltip = StringFormat("Ve směru leží obchod z tlačítka %s "
+                                "(pozic %d, příkazů %d) - tím se také odebere.",
+                                dir, st.positions, st.orders);
+        }
+      else
+        {
+         // Cteni po polozkach - strukturu SEntryPlan nelze vybrat
+         // podminenym vyrazem, takze se bere clen po clenu
+         const bool   valid  = isBuy ? g_planBuy.valid    : g_planSell.valid;
+         const string reason = isBuy ? g_planBuy.reason   : g_planSell.reason;
+         const double entry  = isBuy ? g_planBuy.entry    : g_planSell.entry;
+         const double sl     = isBuy ? g_planBuy.sl       : g_planSell.sl;
+         const double tp     = isBuy ? g_planBuy.tp       : g_planSell.tp;
+         const double dist   = isBuy ? g_planBuy.distance : g_planSell.distance;
+
+         if(valid)
+           {
+            // Objem se pro bublinu pocita stejne jako pri skutecnem
+            // zadani, aby v ni stalo to, co se opravdu posle na trh
+            string lotReason = "";
+            const double lots = CalcLot(dist, lotReason, PUNTIKY_DOUBLE_RISK);
+            const double tp2  = NormalizeDouble(isBuy ? entry + dist * PUNTIKY_DOUBLE_PT_MULT
+                                                      : entry - dist * PUNTIKY_DOUBLE_PT_MULT,
+                                                _Digits);
+
+            if(lots > 0.0)
+               tooltip = StringFormat("Zadá dva %s STOP příkazy @ %s  SL %s, "
+                                      "PT1 %s a PT2 %s, každý %.2f lot "
+                                      "(poloviční riziko na obchod).",
+                                      dir,
+                                      DoubleToString(entry, _Digits),
+                                      DoubleToString(sl, _Digits),
+                                      DoubleToString(tp, _Digits),
+                                      DoubleToString(tp2, _Digits),
+                                      lots);
+            else
+              {
+               bg      = PUNTIKY_BTN_BG_OFF;   // na polovicni objem to nevyjde
+               tooltip = "Dvojitý vstup " + dir + " nelze zadat" +
+                         (lotReason == "" ? "." : " (" + lotReason + ").");
+              }
+           }
+         else
+           {
+            bg      = PUNTIKY_BTN_BG_OFF;   // na obchod zatim neni misto
+            tooltip = "Návrh " + dir + " teď není platný" +
+                      (reason == "" ? "." : " (" + reason + ").");
+           }
+        }
+
+   PuntikyButton(name, x, y, ButtonWidth(PUNTIKY_BTN_TRADE_MAX, PUNTIKY_BTN_TRADE_W),
+              ButtonHeight(), text,
+              InpColorPanel, bg, InpPanelFontSize, "Consolas", tooltip);
+
+   // PuntikyButton nastavuje text a barvy jen pri vzniku objektu, zmenu
+   // stavu je proto treba promitnout zvlast a jen pri skutecne zmene
+   const bool textChanged = (ObjectGetString(0, name, OBJPROP_TEXT) != text);
+   const bool bgChanged   = ((color)ObjectGetInteger(0, name, OBJPROP_BGCOLOR) != bg);
+   if(textChanged || bgChanged)
+     {
+      ObjectSetString(0, name, OBJPROP_TEXT, text);
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
+      ChartRedraw();
+     }
+   ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresli ctverici rucnich tlacitek LONG / SHORT / LONG 2x /      |
+//| SHORT 2x. Mimo rucni rezim obchoduje expert sam a rucni zasah by |
+//| mu lezl do rekonciliace prikazu, proto se tam tlacitka nekresli. |
 //|  x, y - poloha prvniho tlacitka v pixelech                       |
 //+------------------------------------------------------------------+
 void DrawManualButtons(const int x, const int y)
   {
-   const string nameLong  = PUNTIKY_PREFIX + "BTN_LONG";
-   const string nameShort = PUNTIKY_PREFIX + "BTN_SHORT";
+   const string nameLong   = PUNTIKY_PREFIX + "BTN_LONG";
+   const string nameShort  = PUNTIKY_PREFIX + "BTN_SHORT";
+   const string nameLong2  = PUNTIKY_PREFIX + "BTN_LONG2";
+   const string nameShort2 = PUNTIKY_PREFIX + "BTN_SHORT2";
 
    if(InpEntryMode != PUNTIKY_ENTRY_MANUAL)
      {
       ObjectDelete(0, nameLong);
       ObjectDelete(0, nameShort);
+      ObjectDelete(0, nameLong2);
+      ObjectDelete(0, nameShort2);
       return;
      }
 
-   DrawManualButton(nameLong,  true,  x, y);
-   DrawManualButton(nameShort, false, x + PUNTIKY_BTN_TRADE_W + PUNTIKY_PANEL_BTN_GAP, y);
+   // Vsechna ctyri tlacitka maji stejnou sirku, takze dvojite varianty
+   // sedi presne pod svymi protejsky (LONG 2x pod LONG, SHORT 2x pod SHORT)
+   const int w  = ButtonWidth(PUNTIKY_BTN_TRADE_MAX, PUNTIKY_BTN_TRADE_W);
+   const int x2 = x + w + PUNTIKY_PANEL_BTN_GAP;
+   const int y2 = y + ButtonHeight() + PUNTIKY_PANEL_BTN_GAP;
+
+   DrawManualButton(nameLong,  true,  x,  y);
+   DrawManualButton(nameShort, false, x2, y);
+   DrawManualDoubleButton(nameLong2,  true,  x,  y2);
+   DrawManualDoubleButton(nameShort2, false, x2, y2);
   }
 
 //+------------------------------------------------------------------+
-//| Vykresli celou radu tlacitek nad panelem.                        |
-//| Tlacitka jsou nahore a informacni text zacina az pod nimi.       |
-//|  y - svisle odsazeni rady tlacitek v pixelech                    |
+//| Vykresli vsechny rady tlacitek nad panelem.                      |
+//|   1. rada: obsluzna  - TEST Hue, PANEL                           |
+//|   2. rada: obchodni  - LONG, SHORT                               |
+//|   3. rada: obchodni  - LONG 2x, SHORT 2x (pod svymi protejsky)   |
+//| Sest tlacitek vedle sebe by preteklo pres graf a dvojite varianty|
+//| by nebylo videt pod jejich jednoduchymi protejsky.               |
+//| Text panelu zacina az pod posledni radou.                        |
+//|  y - svisle odsazeni prvni rady v pixelech                       |
 //+------------------------------------------------------------------+
 void DrawPanelButtons(const int y)
   {
+   //--- 1. rada: obsluzna tlacitka
    int x = InpPanelX;
    x += DrawHueTestButton(x, y);
-   DrawManualButtons(x, y);
+   DrawPanelToggleButton(x, y);
+
+   //--- 2. a 3. rada: obchodni tlacitka (mimo rucni rezim se jen smazou)
+   DrawManualButtons(InpPanelX, y + ButtonHeight() + PUNTIKY_PANEL_BTN_GAP);
   }
 
 //+------------------------------------------------------------------+
@@ -2590,15 +3187,31 @@ string StateText(const bool isBuy, SEntryPlan &pl)
 
 //+------------------------------------------------------------------+
 //| Co je v danem smeru na trhu - popisek pro radek rucniho rezimu.  |
+//| Pocty se vypisuji az od dvou kusu: u bezneho obchodu je vic nez  |
+//| jeden vyloucen, cislo by tam jen zabiralo misto na radku.        |
+//| U dvojiteho vstupu se prida znacka 2x, aby bylo videt, ktere     |
+//| tlacitko obchod odebira.                                         |
 //|  isBuy - smer                                                    |
 //+------------------------------------------------------------------+
 string ManualStateText(const bool isBuy)
   {
-   if(FindOurPosition(isBuy) != 0)
-      return("pozice");
-   if(FindOurOrder(isBuy) != 0)
-      return("příkaz");
-   return((isBuy ? g_planBuy.valid : g_planSell.valid) ? "lze zadat" : "není místo");
+   SDirectionState st;
+   ScanDirection(isBuy, st);
+
+   if(!st.Busy())
+      return((isBuy ? g_planBuy.valid : g_planSell.valid) ? "lze zadat" : "není místo");
+
+   string state = "";
+   if(st.positions > 0)
+      state = (st.positions > 1) ? StringFormat("%d pozice", st.positions) : "pozice";
+   if(st.orders > 0)
+      state = state + (state == "" ? "" : " + ") +
+              ((st.orders > 1) ? StringFormat("%d příkazy", st.orders) : "příkaz");
+
+   if(st.kind == PUNTIKY_MANUAL_DOUBLE)
+      state += " 2x";
+
+   return(state);
   }
 
 //+------------------------------------------------------------------+
@@ -2718,7 +3331,7 @@ void PanelAdd(string &lines[], int &n, const string text)
 //+------------------------------------------------------------------+
 void UpdatePanel()
   {
-   if(!InpShowPanel)
+   if(!g_showPanel)
      {
       // Uklid staci jednou, ne na kazdem volani
       if(g_panelShown != 0)

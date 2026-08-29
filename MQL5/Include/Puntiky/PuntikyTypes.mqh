@@ -32,6 +32,40 @@ enum ENUM_PUNTIKY_LOT
   };
 
 //+------------------------------------------------------------------+
+//| Jaky rucni vstup ve smeru prave lezi na trhu.                    |
+//| Rozliseni je potreba proto, aby obchod odebiralo totez tlacitko,|
+//| ktere ho zadalo: dvojity vstup se rusi tlacitkem 2x, jednoduchy  |
+//| tlacitkem LONG / SHORT. Druhe tlacitko je mezitim nedostupne.    |
+//+------------------------------------------------------------------+
+enum ENUM_PUNTIKY_MANUAL
+  {
+   PUNTIKY_MANUAL_NONE   = 0,  // ve smeru nic nelezi
+   PUNTIKY_MANUAL_SINGLE = 1,  // jeden obchod z tlacitka LONG / SHORT
+   PUNTIKY_MANUAL_DOUBLE = 2   // dvojity vstup z tlacitka LONG 2x / SHORT 2x
+  };
+
+//+------------------------------------------------------------------+
+//| Prehled toho, co strategie v jednom smeru drzi na trhu.          |
+//| Naplni se jedinym pruchodem seznamem pozic a prikazu, aby se     |
+//| kvuli textu tlacitka, bubliny a radku panelu neprochazel trikrat.|
+//|  positions - pocet otevrenych pozic tohoto smeru                 |
+//|  orders    - pocet lezicich STOP prikazu tohoto smeru            |
+//|  kind      - z ktereho tlacitka obchod pochazi                   |
+//+------------------------------------------------------------------+
+struct SDirectionState
+  {
+   int               positions;
+   int               orders;
+   ENUM_PUNTIKY_MANUAL kind;
+
+   //--- Lezi ve smeru vubec neco?
+   bool              Busy()
+     {
+      return(positions > 0 || orders > 0);
+     }
+  };
+
+//+------------------------------------------------------------------+
 //| Druh prekazky, ktera zkratila PT navrhu.                         |
 //| Bez tohoto rozliseni by se typ prekazky rekonstruoval porovnanim |
 //| doublu (edgePrice == reliefPrice) a panel by hlasil "zkraceno    |

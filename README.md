@@ -1,13 +1,14 @@
 # Puntiky Channel Breakout — strategie pro MetaTrader 5
 
-Expert Advisor pro MT5 (verze 1.14), který detekuje ABCD kanály na M15, kreslí je
+Expert Advisor pro MT5 (verze 1.17), který detekuje ABCD kanály na M15, kreslí je
 do grafu a obchoduje průrazy swingových H1 úrovní. Vstup se
 vyhodnocuje na M1. Do grafu vykresluje **pouze kanály, reliéfní přímky
 a informace o vstupu** — žádné jiné indikátory ani pomocnou grafiku.
 
 **Ve výchozím nastavení expert sám neobchoduje**: obchody jen zobrazuje a hlásí
-blikáním, na trh je posílá až člověk tlačítky `LONG` / `SHORT` — viz
-[Ruční režim](#ruční-režim--obchodování-tlačítky). Automatické režimy zůstávají
+blikáním, na trh je posílá až člověk tlačítky `LONG` / `SHORT` (jeden obchod)
+nebo `LONG 2x` / `SHORT 2x` (dva obchody se společným SL a odstupňovanými cíli) —
+viz [Ruční režim](#ruční-režim--obchodování-tlačítky). Automatické režimy zůstávají
 k dispozici přes `InpEntryMode`.
 
 Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
@@ -163,7 +164,8 @@ pošle na trh. Režim vstupu určuje `InpEntryMode`:
 - **`PUNTIKY_ENTRY_MANUAL` (výchozí)**: režim pro ostré obchodování pod dohledem. Expert
   **sám neobchoduje** — jen detekuje, kreslí návrhy do grafu a blikáním žárovek
   hlásí přiblížení k úrovni vstupu. STOP příkaz (a s ním SL i PT) se zapíná
-  a vypíná tlačítky `LONG` / `SHORT` nad panelem, viz
+  a vypíná tlačítky `LONG` / `SHORT` nad panelem, tlačítka `LONG 2x` / `SHORT 2x`
+  zadají místo jednoho obchodu rovnou dva, viz
   [Ruční režim](#ruční-režim--obchodování-tlačítky). Detekce, filtry ani výpočet
   návrhu se nemění: obchod jde zadat jen tam, kde na něj podle strategie je místo.
 
@@ -319,7 +321,7 @@ na správné straně úrovně) / `obchodován` / `nelze (důvod)`. Možné důvo
 | Tečkované čáry (`InpColorEntry` / `InpColorSL` / `InpColorTP`) | plánovaný vstup, SL a PT pro oba směry, s popisky `SL` / `PT` |
 | Tečkované čáry (`InpColorRelief`, MediumOrchid) | reliéfní přímky z hlavních M1 swingů |
 | Panel vlevo nahoře | hlavička, přehled kanálů, úrovně průrazu, reliéf, stav upozornění Hue, stav směrů, návrhy vstupu, pozice / pending, poslední událost |
-| Řada tlačítek nad panelem | `TEST Hue` a v ručním režimu `LONG` / `SHORT`; text panelu začíná až pod nimi |
+| Tři řady tlačítek nad panelem | 1. řada obslužná (`TEST Hue`, `PANEL`), 2. řada `LONG` / `SHORT`, 3. řada `LONG 2x` / `SHORT 2x` přesně pod nimi (2. a 3. jen v ručním režimu); text panelu začíná až pod nimi |
 
 Popisky sdílené opory se slučují (`E1 E3`), panel uhýbá one-click SELL/BUY panelu
 a obnovuje se každou sekundu i bez ticků. Hlavní kanál (nejvyšší skóre) se kreslí
@@ -333,7 +335,24 @@ rozhoduje člověk. Po startu experta se obchody **jen zobrazují** (kanály, ú
 průrazu, návrh vstupu se SL a PT) a upozorňuje se na ně blikáním žárovek Hue —
 na trh se sám nic nepošle.
 
-Nad panelem jsou vedle tlačítka `TEST Hue` dvě tlačítka:
+Tlačítka jsou nad panelem ve **třech řadách** — v první obslužná (`TEST Hue`,
+`PANEL`), ve druhé `LONG` a `SHORT`, ve třetí jejich dvojité varianty `LONG 2x`
+a `SHORT 2x` **přesně pod svými protějšky**. Všechna čtyři obchodní tlačítka mají
+stejnou šířku, takže řada nevypadá rozházeně.
+
+Šířka se počítá ze skutečné šířky nejdelšího možného textu (`TextGetSize` se
+stejným přepočtem podle rozlišení, jaký používají grafické objekty), takže se
+text vejde i při jiném DPI nebo jiném `InpPanelFontSize`. Počítá se z nejdelšího
+**stavu** (`ZAVŘÍT SHORT 2x`), ne z aktuálního textu, aby tlačítko při přepnutí
+neskákalo.
+
+**Obchod odebírá vždy totéž tlačítko, které ho zadalo.** Dokud ve směru leží
+jednoduchý obchod, je tlačítko `2x` zešedlé a naopak — takže je od pohledu jasné,
+kam kliknout. Expert pozná dvojitý vstup podle značky `2x` v komentáři příkazu;
+kdyby ji broker přepsal, zaskočí geometrie (druhá noha má PT výrazně delší
+než SL, což obchod s RRR 1:1 nikdy nemá).
+
+#### `LONG` / `SHORT` — jeden obchod
 
 | Stav směru | Text tlačítka | Co klik udělá |
 |---|---|---|
@@ -341,11 +360,60 @@ Nad panelem jsou vedle tlačítka `TEST Hue` dvě tlačítka:
 | nic na trhu, návrh neplatný | `LONG` / `SHORT` (zešedlé) | nic — v bublině je důvod (např. „úroveň už byla proražena“) |
 | leží nevyplněný příkaz | `ZRUŠIT LONG` / `ZRUŠIT SHORT` (oranžově) | zruší ležící STOP příkaz |
 | příkaz se vyplnil do pozice | `ZAVŘÍT LONG` / `ZAVŘÍT SHORT` (oranžově) | zavře otevřenou pozici za trhu |
+| ve směru leží **dvojitý** vstup | `LONG` / `SHORT` (zešedlé) | nic — dvojitý vstup patří tlačítku `2x` |
 
 Tlačítko se tedy chová **střídavě**: zadat → odebrat → zadat. Jediné, co je proti
 automatickým režimům nové, je právě toto zapnutí a vypnutí STOP příkazu (a s ním
 SL a PT) — detekce, filtry i výpočet návrhu zůstávají beze změny a **obchod se
 nabídne jen tehdy, když na něj je místo**.
+
+#### `LONG 2x` / `SHORT 2x` — dva obchody s odstupňovaným cílem
+
+Jeden klik zadá **dva STOP příkazy naráz** na stejné vstupní úrovni. Liší se
+pouze cílem, takže první bere zisk na plánované délce a druhý nechá pozici běžet
+dál:
+
+| | Vstup | SL | PT | Objem |
+|---|---|---|---|---|
+| 1. obchod | podle návrhu | podle návrhu (délka vstupu) | `PT1` = délka vstupu, tedy RRR 1:1 | poloviční riziko |
+| 2. obchod | **stejný** | **stejný** | `PT2` = **dvojnásobek** `PT1`, tedy RRR 1:2 | poloviční riziko |
+
+Riziko se mezi oba obchody dělí, takže **součet obou pozic odpovídá jednomu
+běžnému obchodu** zadanému tlačítkem `LONG` / `SHORT` — když trh sáhne na SL,
+ztráta je stejná jako u jednoho obchodu. Násobek `PT2` a rozdělení rizika jsou
+konstanty `PUNTIKY_DOUBLE_PT_MULT` (2.0) a `PUNTIKY_DOUBLE_RISK` (0.5) v hlavičce
+expertu.
+
+Tlačítko se chová **střídavě** stejně jako `LONG` / `SHORT`, jen pracuje s celou
+dvojicí:
+
+| Stav směru | Text tlačítka | Co klik udělá |
+|---|---|---|
+| nic na trhu, návrh platný | `LONG 2x` / `SHORT 2x` (zeleně / červeně) | zadá oba STOP příkazy naráz |
+| leží nevyplněný dvojitý vstup | `ZRUŠIT LONG 2x` / `ZRUŠIT SHORT 2x` (oranžově) | zruší **oba** ležící příkazy |
+| dvojitý vstup se (částečně) vyplnil | `ZAVŘÍT LONG 2x` / `ZAVŘÍT SHORT 2x` (oranžově) | zavře obě pozice za trhu i příkaz, který ještě zbývá |
+| ve směru leží **jednoduchý** obchod | `LONG 2x` / `SHORT 2x` (zešedlé) | nic — ten patří tlačítku `LONG` / `SHORT` |
+
+Zešedne (klik nic neudělá) a důvod dá do bubliny také, když:
+
+- návrh vstupu není platný (stejné důvody jako u jednoho obchodu),
+- na poloviční riziko nevyjde ani nejmenší dovolený lot,
+- **účet není hedgovací** — na nettingovém účtu by se dva příkazy stejného směru
+  slily do jediné pozice a SL/PT druhého by přepsaly první, takže by z dvojitého
+  vstupu zbyl jeden obchod se špatným cílem.
+
+Poznámky:
+
+- `PT2` se počítá **z délky vstupu**, tedy i tehdy, když `PT1` zkrátila hrana
+  kanálu nebo reliéfní přímka. Druhý cíl pak leží za touto překážkou — je to
+  záměr (druhá pozice má běžet dál), ale při zkráceném návrhu stojí za pohled,
+  kam přesně `PT2` míří (je v bublině tlačítka i na řádku `poslední:`).
+- Po vyplnění se u **každé** pozice dorovnají SL i PT na její skutečnou plnicí
+  cenu, přičemž **každá větev si drží vlastní délku** — druhá pozice o svůj
+  vzdálenější cíl skluzem nepřijde.
+- `InpMaxPositions` (výchozí 1) dvojitý vstup neblokuje: brání jen vzniku
+  *nového* návrhu, dokud je pozice otevřená. Dva příkazy se zadají, dokud žádná
+  pozice neběží.
 
 Další vlastnosti režimu:
 
@@ -359,10 +427,28 @@ Další vlastnosti režimu:
   skutečnou plnicí cenu a úroveň se označí za spotřebovanou, takže se na ní
   podruhé neobchoduje.
 - Stav obou směrů je vidět v panelu na řádku `ruční režim:`
-  (`lze zadat` / `není místo` / `příkaz` / `pozice`) a každý klik se zapíše na
-  řádek `poslední:` i do Expert logu.
+  (`lze zadat` / `není místo` / `příkaz` / `pozice`; u dvojitého vstupu i s počtem
+  a značkou, např. `2 příkazy 2x` nebo `pozice + příkaz 2x`) a každý klik se
+  zapíše na řádek `poslední:` i do Expert logu.
 - Při `InpEnableTrading = false`, na nepovoleném účtu nebo se zakázaným
   obchodováním v terminálu tlačítka jen nahlásí `obchodování je vypnuto`.
+
+### Tlačítko `PANEL` — zobrazení textového panelu v grafu
+
+Nad tlačítky je fialový přepínač textového panelu, tedy toho bloku řádků pod
+tlačítky (přehled kanálů, úrovně průrazu, návrhy vstupu, pozice, řádek
+`poslední:`). Text tlačítka nese aktuální stav — `PANEL ZAP` / `PANEL VYP`.
+
+- **Výchozí stav je vypnuto** (`InpShowPanel = false`), takže graf zůstane po
+  startu čistý a vidět jsou jen tlačítka, kanály a úrovně. Zapne se kliknutím,
+  případně natrvalo přepnutím `InpShowPanel` v nastavení experta.
+- Týká se **jen výpisu v grafu**. Do Expert logu se píše pořád stejně, takže
+  i se schovaným panelem je se kam podívat — každý klik, zadání i odebrání
+  obchodu tam zůstává.
+- Tlačítka samotná zůstávají viditelná vždy, schová se jen text pod nimi.
+- Přepínač se kreslí ve **všech** režimech vstupu, ne jen v ručním.
+- Objem výpisů do logu řídí dál `InpDiagnostics` (viz [Diagnostika](#diagnostika)),
+  s tímto tlačítkem to nesouvisí.
 
 ### Upozornění Hue na blížící se vstup
 
@@ -544,7 +630,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpShowBreakLevels` | true | kreslit úrovně průrazu |
 | `InpShowEntryLevels` | true | kreslit úrovně plánovaného vstupu |
 | `InpShowRelief` | true | kreslit reliéfní přímky |
-| `InpShowPanel` | true | zobrazit informační panel |
+| `InpShowPanel` | **false** | výchozí stav textového panelu; za běhu ho přepíná tlačítko `PANEL` |
 | `InpForwardBars` | 30 | prodloužení kanálů doprava (M15 svíčky) |
 | `InpColorHigh` / `InpColorLow` | Tomato / DodgerBlue | barvy HIGH a LOW úsečky |
 | `InpColorPoint` | Silver | barva popisků opor |
