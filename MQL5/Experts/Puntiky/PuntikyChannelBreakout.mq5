@@ -143,7 +143,7 @@ input group "=== Upozorneni Hue ==="
 input bool            InpHueEnabled       = true;          // Blikat zarovkou pri priblizeni k urovni vstupu
 input string          InpHueUrl           = "http://192.168.0.157:8082/hue"; // URL sluzby Hue (vcetne portu)
 input int             InpHueNearPoints    = 500;           // Vzdalenost od urovne vstupu pro upozorneni (body)
-input double          InpHueResetFactor   = 1.25;          // Hystereze - pamet se uvolni az za N-nasobkem prahu
+input double          InpHueResetFactor   = 1.50;          // Hystereze - pamet se uvolni az za N-nasobkem prahu
 input int             InpHueRepeatMinutes = 0;             // Opakovat upozorneni po N minutach (0 = jen jednou)
 input int             InpHueTimeout       = 1000;          // Timeout HTTP pozadavku (ms)
 input bool            InpHueTestButton    = true;          // Zobrazit tlacitko pro test upozorneni

@@ -597,7 +597,7 @@ Tělo požadavku se skládá automaticky ze symbolu, směru a ceny vstupu —
   a úroveň se nemění. Interval se měří od posledního **odeslaného** upozornění
   a kontrola běží jen na ticku, takže bez pohybu trhu se neopakuje.
 - Odchod z pásma uvolní příznak až za **hysterezí** `InpHueResetFactor` × práh
-  (výchozí 1,25, tedy 625 bodů při prahu 500), aby se při kolísání přesně na
+  (výchozí 1,5, tedy 750 bodů při prahu 500), aby se při kolísání přesně na
   hranici neblikalo pořád dokola. Hodnota 1,0 hysterezi vypne — příznak se uvolní
   hned za prahem. Níž než 1 to jít nesmí: paměť by se uvolňovala ještě uvnitř
   pásma, ve kterém se hlásí, a upozornění by chodilo při každém návratu do něj.
@@ -785,7 +785,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpHueEnabled` | true | blikat žárovkou při přiblížení k úrovni vstupu |
 | `InpHueUrl` | http://192.168.0.157:8082/hue | URL služby Hue včetně portu |
 | `InpHueNearPoints` | 500 | vzdálenost od úrovně vstupu pro upozornění (body) |
-| `InpHueResetFactor` | 1.25 | hystereze — paměť se uvolní až za N× prahem (1 = bez hystereze) |
+| `InpHueResetFactor` | 1.50 | hystereze — paměť se uvolní až za N× prahem (1 = bez hystereze) |
 | `InpHueRepeatMinutes` | 0 | opakovat upozornění po N minutách (0 = jen jednou) |
 | `InpHueTimeout` | 1000 | timeout HTTP požadavku (ms) |
 | `InpHueTestButton` | true | zobrazit tlačítko `TEST Hue` nad panelem |
