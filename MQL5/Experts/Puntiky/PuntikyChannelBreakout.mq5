@@ -2758,7 +2758,7 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
    //--- U trzniho vstupu je ale trh uz ZA spoustecem: prekazka mezi
    //--- spoustecem a vstupem je prave prorazena a misto k ni vyjde vzdy
    //--- nula ("malo mista k reliefni primce (0 b)"), takze by vstup
-   //--- zamitla prava ta prekazka, kterou prurazova svicka sama zrusila.
+   //--- zamitla prave ta prekazka, kterou prurazova svicka sama zrusila.
    //--- Proto se v tom rezimu hleda az od vstupu.
    const double refPrice = atMarket
                            ? (isBuy ? MathMax(trigger, pl.entry) : MathMin(trigger, pl.entry))
