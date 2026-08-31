@@ -106,6 +106,7 @@ input bool            InpEnableTrading    = true;         // Povolit obchodovani
 input ENUM_PUNTIKY_ENTRY InpEntryMode        = PUNTIKY_ENTRY_MANUAL;   // Rezim vstupu (vychozi: rucne tlacitky)
 input int             InpMaxEntryPoints   = 300;          // Maximalni delka vstupu (body)
 input int             InpMinEntryPoints   = 150;          // Minimalni delka vstupu (body)
+input double          InpRiskReward       = 1.0;          // Pomer PT:SL (1 = 1:1, 2 = PT dvakrat dal nez SL)
 input int             InpBreakoutBuffer   = 10;           // Buffer nad/pod urovni prurazu (body)
 input int             InpMaxLevelOffset   = 30;           // Max. odstup trzniho vstupu od urovne (body)
 input int             InpEdgeBuffer       = 20;           // Rezerva PT pred hranou kanalu (body)
@@ -1263,6 +1264,9 @@ bool ValidateInputs()
    if(InpMinEntryPoints < 1)     err += "InpMinEntryPoints >= 1; ";
    if(InpMinEntryPoints > InpMaxEntryPoints)
       err += "InpMinEntryPoints <= InpMaxEntryPoints; ";
+   // Nulovy nebo zaporny pomer by z SL udelal nulu nebo ho prehodil na
+   // druhou stranu vstupu
+   if(InpRiskReward <= 0.0)      err += "InpRiskReward > 0; ";
    if(InpSlippage < 0)           err += "InpSlippage >= 0; ";
 
    // Pocty baru pro projekci a prodlouzeni. Zaporny InpEdgeProjBars
@@ -2125,6 +2129,7 @@ void ResetPlan(SEntryPlan &pl, const bool isBuy)
    pl.sl           = 0.0;
    pl.tp           = 0.0;
    pl.distance     = 0.0;
+   pl.tpDistance   = 0.0;
    pl.lots         = 0.0;
    pl.lotsDouble   = 0.0;
    pl.doubleReason = "";
@@ -3693,18 +3698,30 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
                                dist / _Point);
       return(pl);
      }
-   if(dist <= StopsLevelPrice())
+
+   //--- Prekazky omezuji CIL: dist je nejdelsi PT, ktery se pred hranu
+   //--- nebo primku jeste vejde. Rizikova noha se z nej odvodi zadanym
+   //--- pomerem - pri RRR 1:1 vyjde stejna jako dosud, pri 2:1 polovicni.
+   //--- Zkracovat naopak cil by znamenalo, ze PT projde prekazkou,
+   //--- kvuli ktere se cela delka pocitala.
+   const double slDist = dist / InpRiskReward;
+
+   // Stop level brokera omezuje obe nohy, a pri pomeru ruznem od 1:1 je
+   // kriticka ta kratsi z nich
+   if(MathMin(dist, slDist) <= StopsLevelPrice())
      {
       pl.reason = "délka pod stop-level brokera";
       return(pl);
      }
 
-   pl.distance = dist;
-   pl.sl = AlignToTick(isBuy ? pl.entry - dist : pl.entry + dist);
-   pl.tp = AlignToTick(isBuy ? pl.entry + dist : pl.entry - dist);
+   pl.distance   = slDist;
+   pl.tpDistance = dist;
+   pl.sl = AlignToTick(isBuy ? pl.entry - slDist : pl.entry + slDist);
+   pl.tp = AlignToTick(isBuy ? pl.entry + dist   : pl.entry - dist);
 
+   // Objem se pocita z RIZIKOVE nohy - riziko obchodu urcuje SL, ne cil
    string lotReason = "";
-   pl.lots = CalcLot(dist, lotReason);
+   pl.lots = CalcLot(slDist, lotReason);
    if(pl.lots <= 0.0)
      {
       pl.reason = (lotReason == "") ? "nelze určit objem" : lotReason;
@@ -3716,7 +3733,7 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
    // aby je dopocitavala pri kazdem obnoveni panelu, tedy kazdou
    // sekundu) a klik zada presne to, co bublina slibuje - drive si
    // obe strany pocitaly vlastni cislo z jine equity.
-   pl.lotsDouble = CalcLot(dist, pl.doubleReason, PUNTIKY_DOUBLE_RISK);
+   pl.lotsDouble = CalcLot(slDist, pl.doubleReason, PUNTIKY_DOUBLE_RISK);
    pl.tpDouble   = AlignToTick(isBuy ? pl.entry + dist * PUNTIKY_DOUBLE_PT_MULT
                                      : pl.entry - dist * PUNTIKY_DOUBLE_PT_MULT);
 
@@ -4303,15 +4320,16 @@ bool OpenMarket(SEntryPlan &pl)
      }
 
    // Skutecna plnici cena se od navrhu lisi o skluz - SL i PT se
-   // dorovnaji na realny vstup, aby RRR zustalo presne 1:1
-   AdjustPositionStops(ResultPositionId(), pl.distance, pl.distance);
+   // dorovnaji na realny vstup, aby zadany pomer PT:SL zustal presny
+   AdjustPositionStops(ResultPositionId(), pl.distance, pl.tpDistance);
 
-   ReportEvent(StringFormat("%s %.2f lot @ %s  SL %s  PT %s  (%.0f b%s)",
+   ReportEvent(StringFormat("%s %.2f lot @ %s  SL %s  PT %s  (SL %.0f b, PT %.0f b%s)",
                             pl.isBuy ? "BUY" : "SELL", pl.lots,
                             DoubleToString(pl.entry, _Digits),
                             DoubleToString(pl.sl, _Digits),
                             DoubleToString(pl.tp, _Digits),
                             pl.distance / _Point,
+                            pl.tpDistance / _Point,
                             pl.barrier == PUNTIKY_BARRIER_NONE
                             ? "" : ", zkráceno k " + BarrierText(pl.barrier)));
    return(true);
@@ -5575,9 +5593,9 @@ void UpdatePanel()
 
    PanelAdd(lines, n, "PUNTIKY CHANNEL BREAKOUT  |  " + _Symbol + "  |  účet " +
                       IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)));
-   PanelAdd(lines, n, StringFormat("kanály %s   průraz %s   vstup %s   |  max %d b, SL:PT 1:1",
+   PanelAdd(lines, n, StringFormat("kanály %s   průraz %s   vstup %s   |  max %d b, PT:SL %.2g:1",
                                    TFListText(g_chTF, g_chTFCount), TFText(InpBreakoutTF),
-                                   TFText(InpEntryTF), InpMaxEntryPoints));
+                                   TFText(InpEntryTF), InpMaxEntryPoints, InpRiskReward));
 
    //--- Prehled detekovanych kanalu. Kazdy kanal ma dva radky - na
    //--- jeden se pri limitu 63 znaku nevejde ani polovina udaju.

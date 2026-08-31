@@ -442,7 +442,14 @@ struct SEntryPlan
    double            entry;        // cena vstupu vcetne bufferu
    double            sl;           // stop loss
    double            tp;           // take profit
-   double            distance;     // delka vstupu v cene (SL i PT maji tuto delku)
+   // Delka RIZIKOVE nohy, tedy odstup SL od vstupu. Z ni se pocita
+   // objem a proti ni se meri stop level brokera.
+   double            distance;
+   // Delka CILOVE nohy (odstup PT od vstupu). Pri RRR 1:1 je stejna
+   // jako distance; se zadanym pomerem se obe rozchazi, takze je nutne
+   // je drzet zvlast - jinak by se PT dorovnaval na rizikovou delku
+   // (a tim se pomer po vyplneni tise ztratil).
+   double            tpDistance;
    double            lots;         // navrzeny objem
    // Objem jedne nohy dvojiteho vstupu (polovicni riziko). Pocita se
    // uz pri stavbe navrhu, aby ho bublina tlacitka 2x nemusela

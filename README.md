@@ -804,6 +804,7 @@ překreslila i celý reliéf.
 | `InpEntryMode` | MANUAL | ruční tlačítka, pending STOP příkazy, nebo potvrzení uzavřením M1 |
 | `InpMaxEntryPoints` | 300 | maximální délka vstupu |
 | `InpMinEntryPoints` | 150 | pod touto délkou se nevstupuje |
+| `InpRiskReward` | 1.0 | poměr PT:SL (1 = 1:1, 2 = PT dvakrát dál než SL); PT drží délku omezenou překážkou, SL se z ní odvodí |
 | `InpBreakoutBuffer` | 10 | buffer za úrovní průrazu |
 | `InpMaxLevelOffset` | 30 | max. odstup tržního vstupu od úrovně (režim M1_CLOSE) |
 | `InpEdgeBuffer` | 20 | rezerva PT před hranou kanálu |
