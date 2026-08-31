@@ -17,6 +17,11 @@
 //--- Spolecny prefix vsech objektu strategie (kvuli uklidu grafu)
 #define PUNTIKY_PREFIX "PUNTIKY_"
 
+//--- Priorita tlacitek pri prekryvu objektu (viz PuntikyButton).
+//--- Ostatni objekty strategie zustavaji na vychozi nule, takze
+//--- tlacitko dostane klik i tam, kde pres nej lezi usecka ci popisek.
+#define PUNTIKY_BTN_ZORDER 100
+
 //+------------------------------------------------------------------+
 //| Smaze objekty strategie z grafu.                                 |
 //| Maze pouze objekty s vlastnim prefixem, cizi grafiku nechava.    |
@@ -188,6 +193,13 @@ bool PuntikyButton(const string name, const int x, const int y, const int w, con
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
       ObjectSetInteger(0, name, OBJPROP_BACK, false);
+      // Tlacitko musi vyhrat souboj o klik s objekty, ktere pres nej
+      // muzou lezet - usecky kanalu, reliefni primky, tecky vstupu a
+      // popisky PT / SL. Pri STEJNE priorite dostane
+      // CHARTEVENT_OBJECT_CLICK jen jeden z prekryvajicich se objektu a
+      // ktery to bude, MT5 negarantuje: cast plochy tlacitka pak klik
+      // "spolkla" cara pod ni a obsluha se vubec nespustila.
+      ObjectSetInteger(0, name, OBJPROP_ZORDER, PUNTIKY_BTN_ZORDER);
       ObjectSetString(0, name, OBJPROP_TEXT, text);
       ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
       changed = true;
