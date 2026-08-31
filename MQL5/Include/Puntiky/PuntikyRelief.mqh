@@ -1,12 +1,17 @@
 ﻿//+------------------------------------------------------------------+
 //|                                               PuntikyRelief.mqh  |
-//|      Reliefni primky na vstupnim timeframu (M1)                  |
+//|      Reliefni primky na zvolenych timeframech (vychozi M1)       |
 //|                                                                  |
 //|  Reliefni primka je trendlinie vedena dvema hlavnimi swingy      |
 //|  stejneho typu - dvema vrcholy (odpor) nebo dvema dny (podpora). |
 //|  Musi cenu obalovat, tedy zadna svicka ji nesmi prorazit, jinak  |
 //|  uz prestala platit. Takova primka stoji prurazu v ceste a       |
 //|  strategie ji hlida pri planovani vstupu (viz docs/relief_1.png).|
+//|                                                                  |
+//|  Modul pracuje vzdy nad JEDNIM polem svicek, tedy nad jednim     |
+//|  timeframem. Slucovani vysledku z vice timeframu resi expert -   |
+//|  kazda primka si nese tfIdx, protoze jeji indexy i1/i2 plati jen |
+//|  v poli, ze ktereho vznikla.                                     |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
 
@@ -29,6 +34,10 @@ struct SReliefLine
    int               touches;   // pocet potvrzenych dotyku (bez opor primky)
    int               spanBars;  // delka primky v barech
    int               ageBars;   // stari druhe opory v barech
+   // Poradi timeframu, ve kterem primka vznikla. Indexy i1/i2 plati
+   // jen v poli TOHOTO timeframu - bez nej by se hodnota primky
+   // pocitala proti cizi casove ose (viz PuntikyReplaceSlot).
+   int               tfIdx;
    double            meanGap;   // prumerny odstup od ceny mezi oporami
    double            maxOver;   // nejvetsi presah knotu pres primku
    double            score;     // pro vyber nejvyznamnejsich primek
@@ -351,6 +360,9 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
             ln.touches = 0; ln.score = 0.0; ln.ageBars = 0;
             ln.maxOver = 0.0; ln.meanGap = 0.0;
             ln.spanBars = ln.i2 - ln.i1;
+            // Timeframe doplni volajici az na vybranych primkach - modul
+            // sam pracuje jen s jednim polem svicek a o slotech nevi
+            ln.tfIdx = 0;
 
             if(ln.spanBars < p.minSpanBars)
               {
@@ -544,25 +556,35 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
 //| vyssi). Drive se primka merila jen "ted", takze strma cara       |
 //| (InpReliefMaxDrift pripousti i velmi strme) zkracovala PT podle  |
 //| polohy, kterou uz v okamziku vyplneni prikazu davno nemela.      |
-//|  lines     - aktivni reliefni primky                             |
-//|  barNow    - index baru, ke kteremu se primky pocitaji           |
-//|  barProj   - index baru projekce primek dopredu                  |
+//| Primky z ruznych timeframu lezi kazda ve vlastnim indexovem      |
+//| prostoru, proto se indexy baru predavaji POLEM indexovanym pres  |
+//| tfIdx primky - jedno spolecne cislo by u vsech ostatnich         |
+//| timeframu ukazalo na uplne jiny okamzik.                         |
+//|  lines     - aktivni reliefni primky (ze vsech timeframu)        |
+//|  barNow    - index prave otevreneho baru pro kazdy timeframe     |
+//|  barProj   - index baru projekce dopredu pro kazdy timeframe     |
 //|  price     - vychozi cena (planovany vstup)                      |
 //|  isBuy     - smer obchodu                                        |
 //|  linePrice - out: konzervativni cena nalezene primky             |
 //| Vraci vzdalenost v cene, nebo -1 pokud zadna primka nevadi.      |
 //+------------------------------------------------------------------+
-double PuntikyNearestRelief(SReliefLine &lines[], const double barNow, const double barProj,
+double PuntikyNearestRelief(SReliefLine &lines[], const double &barNow[], const double &barProj[],
                          const double price, const bool isBuy, double &linePrice)
   {
-   const int cnt = ArraySize(lines);
+   const int cnt   = ArraySize(lines);
+   const int slots = ArraySize(barNow);
    double best = -1.0;
    linePrice = 0.0;
 
    for(int i = 0; i < cnt; i++)
      {
-      const double vNow  = lines[i].ValueAtBar(barNow);
-      const double vProj = lines[i].ValueAtBar(barProj);
+      // Pojistka proti primce z uz neexistujiciho slotu (zmena vstupu)
+      const int tf = lines[i].tfIdx;
+      if(tf < 0 || tf >= slots)
+         continue;
+
+      const double vNow  = lines[i].ValueAtBar(barNow[tf]);
+      const double vProj = lines[i].ValueAtBar(barProj[tf]);
 
       // Primka za zady obchodu nevadi - prekazkou je jen ta ve smeru
       if(isBuy ? (vNow <= price) : (vNow >= price))

@@ -433,6 +433,9 @@ int PuntikyCollectCandidates(const MqlRates &rates[], const SSwing &sw[], const 
          ch.tC = sw[j].time; ch.pC = sw[j].price; ch.iC = sw[j].index;
          ch.touches = 0; ch.containment = 0.0; ch.spanBars = 0; ch.ageBars = 0;
          ch.score = 0.0; ch.extraCount = 0;
+         // Timeframe doplni volajici az na vybranych kanalech - modul
+         // sam pracuje jen s jednim polem svicek a o slotech nevi
+         ch.tfIdx = 0;
 
          // Sklon se pocita na BAR, ne na sekundu - stejne, jako kanal
          // kresli MT5 v grafu (viz hlavicka SChannel)
@@ -627,28 +630,42 @@ int PuntikyBuildChannels(const MqlRates &rates[], const SChannelParams &p,
 //| volajici ji vypisuje jako "hranu kanalu" a driv v ni mel ulozeny |
 //| vlastni spoustec, tedy cenu, ktera zadnou hranici kanalu neni.   |
 //|  ch        - aktivni kanaly                                      |
-//|  barNow    - index baru, ke kteremu se hrany pocitaji            |
-//|  barProj   - index baru projekce hran dopredu                    |
+//| Kanaly z ruznych timeframu lezi kazdy ve vlastnim indexovem      |
+//| prostoru, proto se indexy baru predavaji POLEM indexovanym pres  |
+//| tfIdx kanalu - jedno spolecne cislo by u vsech ostatnich         |
+//| timeframu ukazalo na uplne jiny okamzik.                         |
+//|  ch        - aktivni kanaly (ze vsech timeframu)                 |
+//|  barNow    - index prave otevreneho baru pro kazdy timeframe     |
+//|  barProj   - index baru projekce dopredu pro kazdy timeframe     |
 //|  price     - vychozi cena (referencni uroven obchodu)            |
 //|  isBuy     - smer obchodu                                        |
 //|  edgePrice - out: cena nalezene hrany                            |
 //| Vraci vzdalenost v cene, nebo -1 pokud zadna hrana ve smeru      |
 //| obchodu neexistuje.                                              |
 //+------------------------------------------------------------------+
-double PuntikyDistanceToNextEdge(SChannel &ch[], const double barNow, const double barProj,
+double PuntikyDistanceToNextEdge(SChannel &ch[], const double &barNow[], const double &barProj[],
                               const double price, const bool isBuy, double &edgePrice)
   {
-   const int cnt = ArraySize(ch);
+   const int cnt   = ArraySize(ch);
+   const int slots = ArraySize(barNow);
    double best = -1.0;
    edgePrice = 0.0;
 
    for(int i = 0; i < cnt; i++)
      {
+      // Pojistka proti kanalu z uz neexistujiciho slotu (zmena vstupu)
+      const int tf = ch[i].tfIdx;
+      if(tf < 0 || tf >= slots)
+         continue;
+
+      const double bNow  = barNow[tf];
+      const double bProj = barProj[tf];
+
       // Obe hrany kazdeho kanalu jsou platnym cilem
       for(int e = 0; e < 2; e++)
         {
-         const double vNow  = (e == 0) ? ch[i].UpperAtBar(barNow)  : ch[i].LowerAtBar(barNow);
-         const double vProj = (e == 0) ? ch[i].UpperAtBar(barProj) : ch[i].LowerAtBar(barProj);
+         const double vNow  = (e == 0) ? ch[i].UpperAtBar(bNow)  : ch[i].LowerAtBar(bNow);
+         const double vProj = (e == 0) ? ch[i].UpperAtBar(bProj) : ch[i].LowerAtBar(bProj);
 
          // Hrana musi lezet ve smeru obchodu, jinak neni cilem
          if(isBuy ? (vNow <= price) : (vNow >= price))
@@ -675,17 +692,25 @@ double PuntikyDistanceToNextEdge(SChannel &ch[], const double barNow, const doub
 //| Vrati index kanalu, uvnitr ktereho lezi zadana cena na baru bar, |
 //| nebo -1. Pri vice vyhovujicich kanalech vraci ten s nejlepsim    |
 //| skore (pole je jiz serazene sestupne).                           |
-//|  ch      - aktivni kanaly                                        |
-//|  bar     - index baru, ke kteremu se testuje                     |
+//|  ch      - aktivni kanaly (ze vsech timeframu)                   |
+//|  bar     - index prave otevreneho baru pro kazdy timeframe       |
+//|            (indexuje se pres tfIdx kanalu, viz                   |
+//|             PuntikyDistanceToNextEdge)                           |
 //|  price   - testovana cena                                        |
 //|  tolFrac - tolerance testu jako zlomek sirky kanalu              |
 //+------------------------------------------------------------------+
-int PuntikyFindContainingChannel(SChannel &ch[], const double bar, const double price, const double tolFrac)
+int PuntikyFindContainingChannel(SChannel &ch[], const double &bar[], const double price, const double tolFrac)
   {
-   const int cnt = ArraySize(ch);
+   const int cnt   = ArraySize(ch);
+   const int slots = ArraySize(bar);
    for(int i = 0; i < cnt; i++)
-      if(ch[i].ContainsAtBar(bar, price, tolFrac * ch[i].width))
+     {
+      const int tf = ch[i].tfIdx;
+      if(tf < 0 || tf >= slots)
+         continue;
+      if(ch[i].ContainsAtBar(bar[tf], price, tolFrac * ch[i].width))
          return(i);
+     }
    return(-1);
   }
 

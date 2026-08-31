@@ -31,9 +31,46 @@
 
 //--- Timeframy
 input group "=== Timeframy ==="
-input ENUM_TIMEFRAMES InpChannelTF        = PERIOD_M15;   // TF pro detekci a kresleni kanalu
 input ENUM_TIMEFRAMES InpBreakoutTF       = PERIOD_H1;    // TF urovni prurazu (high/low svicky)
-input ENUM_TIMEFRAMES InpEntryTF          = PERIOD_M1;    // TF vyhodnoceni vstupu
+input ENUM_TIMEFRAMES InpEntryTF          = PERIOD_M1;    // TF vyhodnoceni vstupu (potvrzeni svickou, spread)
+
+//--- Timeframy detekce kanalu. Kanaly se hledaji v kazdem zapnutem
+//--- timeframu zvlast a vysledky se michaji do jednoho grafu; kazdy
+//--- kanal si nese, ze ktereho timeframu pochazi. Vypnuty slot se
+//--- proste preskoci, poradi slotu nema na vysledek vliv.
+//--- Bary vstupu (InpLookbackBars, InpMinSpanBars, InpMaxAgeBars,
+//--- InpForwardBars) plati pro KAZDY zapnuty timeframe zvlast, stejne
+//--- jako InpMaxChannels - ctyri zapnute timeframy tedy daji az
+//--- ctyrnasobek kanalu.
+//--- Prvni zapnuty timeframe je zaroven referencni: pocita se z nej
+//--- ATR (filtr sirky kanalu, prah driftu reliefu, slucovani popisku)
+//--- a v jeho barech se zadava InpEdgeProjBars.
+input group "=== Timeframy kanalu ==="
+input bool            InpChannelTF1Use    = true;         // Kanaly 1 - zapnout
+input ENUM_TIMEFRAMES InpChannelTF1       = PERIOD_M15;   // Kanaly 1 - timeframe
+input bool            InpChannelTF2Use    = true;         // Kanaly 2 - zapnout
+input ENUM_TIMEFRAMES InpChannelTF2       = PERIOD_M1;    // Kanaly 2 - timeframe
+input bool            InpChannelTF3Use    = true;         // Kanaly 3 - zapnout
+input ENUM_TIMEFRAMES InpChannelTF3       = PERIOD_H1;    // Kanaly 3 - timeframe
+input bool            InpChannelTF4Use    = true;         // Kanaly 4 - zapnout
+input ENUM_TIMEFRAMES InpChannelTF4       = PERIOD_D1;    // Kanaly 4 - timeframe
+
+//--- Timeframy detekce reliefnich primek. Plati totez co u kanalu:
+//--- kazdy zapnuty timeframe se hleda samostatne, bary vstupu
+//--- (InpReliefLookback, InpReliefMinSpan, InpReliefForwardBars) i
+//--- InpMaxReliefLines plati pro kazdy z nich zvlast.
+//--- Timeframe reliefu uz nesouvisi s TF vstupu - drive se primky
+//--- hledaly vzdy na InpEntryTF, takze zmena potvrzovaci svicky
+//--- prekreslila i cely relief.
+input group "=== Timeframy reliefu ==="
+input bool            InpReliefTF1Use     = true;         // Reliefni primky 1 - zapnout
+input ENUM_TIMEFRAMES InpReliefTF1        = PERIOD_M15;   // Reliefni primky 1 - timeframe
+input bool            InpReliefTF2Use     = true;         // Reliefni primky 2 - zapnout
+input ENUM_TIMEFRAMES InpReliefTF2        = PERIOD_M1;    // Reliefni primky 2 - timeframe
+input bool            InpReliefTF3Use     = true;         // Reliefni primky 3 - zapnout
+input ENUM_TIMEFRAMES InpReliefTF3        = PERIOD_H1;    // Reliefni primky 3 - timeframe
+input bool            InpReliefTF4Use     = true;         // Reliefni primky 4 - zapnout
+input ENUM_TIMEFRAMES InpReliefTF4        = PERIOD_D1;    // Reliefni primky 4 - timeframe
 
 //--- Urovne prurazu
 input group "=== Urovne prurazu ==="
@@ -43,7 +80,7 @@ input int             InpBreakLookback    = 300;          // Kolik H1 svicek pro
 
 //--- Detekce kanalu
 input group "=== Detekce kanalu ==="
-input int             InpLookbackBars     = 1500;         // Kolik svicek TF kanalu analyzovat
+input int             InpLookbackBars     = 1500;         // Kolik svicek analyzovat (v kazdem TF kanalu)
 input int             InpSwingDepth       = 3;            // Sirka okna pro swingove body
 input int             InpSwingScales      = 3;            // Pocet meritek (kanal v kanalu)
 input int             InpMaxSwingGap      = 16;           // Max. odstup swingu A a C (pocet swingu)
@@ -55,7 +92,7 @@ input int             InpATRPeriod        = 14;           // Perioda ATR pro fil
 input int             InpMinTouches       = 1;            // Min. dotyku hran mimo opory A B C
 input double          InpTouchTolFrac     = 0.15;         // Tolerance dotyku (zlomek sirky)
 input double          InpMinContainment   = 0.85;         // Min. podil svicek uvnitr kanalu
-input int             InpMaxChannels      = 4;            // Kolik hlavnich kanalu ponechat
+input int             InpMaxChannels      = 4;            // Kolik hlavnich kanalu ponechat (v kazdem TF)
 input double          InpPierceTolFrac    = 0.05;         // Povolene proriznuti hran (zlomek sirky)
 input double          InpInvalidTolFrac   = 0.15;         // Prah invalidace kanalu (zlomek sirky)
 input int             InpBackCheckBars    = 20;           // Kolik baru pred bodem A jeste kontrolovat
@@ -72,7 +109,7 @@ input int             InpMinEntryPoints   = 150;          // Minimalni delka vst
 input int             InpBreakoutBuffer   = 10;           // Buffer nad/pod urovni prurazu (body)
 input int             InpMaxLevelOffset   = 30;           // Max. odstup trzniho vstupu od urovne (body)
 input int             InpEdgeBuffer       = 20;           // Rezerva PT pred hranou kanalu (body)
-input int             InpEdgeProjBars     = 12;           // Strop projekce hran dopredu (bary TF kanalu)
+input int             InpEdgeProjBars     = 12;           // Strop projekce hran dopredu (bary referencniho TF)
 input double          InpInsideTolFrac    = 0.02;         // Tolerance testu "uvnitr kanalu"
 input bool            InpAllowBuy         = true;         // Povolit nakupy
 input bool            InpAllowSell        = true;         // Povolit prodeje
@@ -81,11 +118,13 @@ input int             InpSlippage         = 20;           // Maximalni skluz (bo
 input long            InpMagic            = 67205475;     // Magic number
 input long            InpAllowedAccount   = 0;            // Povoleny ucet (0 = bez omezeni)
 
-//--- Reliefni primky na vstupnim timeframu
+//--- Reliefni primky. Timeframy se zadavaji ve skupine
+//--- "Timeframy reliefu", zde jsou uz jen prahy detekce - ty plati
+//--- pro vsechny zapnute timeframy stejne.
 input group "=== Reliefni primky ==="
-input bool            InpUseRelief        = true;         // Hlidat reliefni primky na TF vstupu
+input bool            InpUseRelief        = true;         // Hlidat reliefni primky (TF viz skupina vyse)
 input ENUM_PUNTIKY_RELIEF InpReliefMode      = PUNTIKY_RELIEF_SHORTEN; // Co delat, kdyz primka vadi
-input int             InpReliefLookback   = 7200;         // Kolik svicek TF vstupu analyzovat
+input int             InpReliefLookback   = 7200;         // Kolik svicek analyzovat (v kazdem TF reliefu)
 input int             InpReliefSwingDepth = 25;           // Sirka okna pro hlavni swingy
 input int             InpReliefScales     = 4;            // Pocet meritek swingu (25/50/100/200)
 input int             InpReliefSwingGap   = 20;           // Max. odstup opor (pocet swingu)
@@ -102,7 +141,7 @@ input bool            InpReliefMidTouch   = false;        // Vyzadovat dotyk i u
 input int             InpReliefMidTol     = 60;           // Tolerance stredniho dotyku (body)
 input double          InpReliefMidFrom    = 0.20;         // Stredni usek primky - od (0..1)
 input double          InpReliefMidTo      = 0.80;         // Stredni usek primky - do (0..1)
-input int             InpMaxReliefLines   = 15;           // Kolik primek ponechat
+input int             InpMaxReliefLines   = 15;           // Kolik primek ponechat (v kazdem TF)
 input int             InpReliefBuffer     = 20;           // Rezerva pred primkou (body)
 input int             InpReliefForwardBars = 120;         // Prodlouzeni primek doprava (bary)
 
@@ -235,12 +274,33 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 
 //--- Globalni stav
 CTrade        g_trade;                 // obchodni rozhrani
-SChannelStats g_stats;                 // statistika posledni detekce kanalu
-SReliefStats  g_reliefStats;           // statistika posledniho hledani reliefu
-SReliefLine   g_relief[];              // reliefni primky vstupniho TF
-SChannel      g_channels[];            // vybrane hlavni kanaly
+SReliefLine   g_relief[];              // reliefni primky vsech zapnutych TF
+SChannel      g_channels[];            // vybrane hlavni kanaly vsech zapnutych TF
 int           g_atrHandle = INVALID_HANDLE;
-double        g_atr       = 0.0;       // ATR TF kanalu, cte se jednou za prepocet
+double        g_atr       = 0.0;       // ATR referencniho TF, cte se jednou za prepocet
+
+//--- Zapnute timeframy detekce. Vstupy se za behu nemeni, takze se
+//--- seznamy sestavi jednou v ResolveTFSlots: vypnute sloty vypadnou a
+//--- dvakrat zadany tentyz timeframe se zapocita jen jednou (jinak by
+//--- vznikly dve sady totoznych kanalu pres sebe). Index do techto
+//--- poli je tfIdx, ktery si nese kazdy kanal i kazda primka.
+ENUM_TIMEFRAMES g_chTF[PUNTIKY_TF_SLOTS];
+int             g_chTFCount  = 0;
+ENUM_TIMEFRAMES g_relTF[PUNTIKY_TF_SLOTS];
+int             g_relTFCount = 0;
+
+//--- Referencni timeframe: prvni zapnuty TF kanalu. Cte se z nej ATR
+//--- (filtr sirky kanalu, prah driftu reliefu, slucovani popisku) a v
+//--- jeho barech je zadany InpEdgeProjBars.
+ENUM_TIMEFRAMES g_refTF = PERIOD_M15;
+
+//--- Statistika detekce zvlast za kazdy zapnuty timeframe. Jedno
+//--- souhrnne cislo by zakrylo prave to podstatne, tedy ze kandidaty
+//--- zahazuje jiny prah na M1 a jiny na H1; navic se timeframy
+//--- prepocitavaji nezavisle, takze by soucet michal cerstve cislo
+//--- jednoho se starym cislem druheho.
+SChannelStats g_stats[PUNTIKY_TF_SLOTS];
+SReliefStats  g_reliefStats[PUNTIKY_TF_SLOTS];
 
 //--- Parametry modulu se plni jednou v OnInit - jsou to same nemenne
 //--- vstupy a prepocet bodu na cenu nema smysl delat na kazdem baru
@@ -249,7 +309,7 @@ SReliefParams  g_reliefParams;
 double         g_breakBuffer    = 0.0; // InpBreakoutBuffer v cene
 double         g_maxLevelOffset = 0.0; // InpMaxLevelOffset v cene
 
-datetime      g_lastChannelBar  = 0;   // cas posledniho zpracovaneho baru TF kanalu
+datetime      g_lastChannelBar[PUNTIKY_TF_SLOTS];  // posledni zpracovany bar kazdeho TF kanalu
 datetime      g_lastBreakoutBar = 0;   // cas posledniho zpracovaneho baru TF prurazu
 datetime      g_lastEntryBar    = 0;   // cas posledniho zpracovaneho baru TF vstupu
 int           g_barsSinceShot   = 0;   // pocitadlo baru pro periodicky snimek
@@ -310,22 +370,24 @@ bool          g_tradeBtnCleared = false;
 //--- pozdeji (panel bezi kazdou sekundu, navrhy kazdou minutu), drzi se
 //--- cas a index posledniho analyzovaneho baru a aktualni index se z
 //--- nej dopocita.
-datetime      g_channelRefTime = 0;    // cas posledniho baru detekce kanalu
-int           g_channelRefIdx  = 0;    // jeho index v analyzovanem poli
-datetime      g_reliefRefTime  = 0;    // totez pro reliefni primky
-int           g_reliefRefIdx   = 0;
-int           g_reliefBarsSinceBuild = 0;  // baru od posledniho plneho prepoctu
-datetime      g_reliefCheckedBar     = 0;  // posledni prekontrolovana uzavrena svicka
+//--- Vse je vedeno po slotech (index = tfIdx), protoze kazdy timeframe
+//--- ma vlastni casovou osu i vlastni cyklus prepoctu.
+datetime      g_channelRefTime[PUNTIKY_TF_SLOTS];  // cas posledniho baru detekce kanalu
+int           g_channelRefIdx[PUNTIKY_TF_SLOTS];   // jeho index v analyzovanem poli
+datetime      g_reliefRefTime[PUNTIKY_TF_SLOTS];   // totez pro reliefni primky
+int           g_reliefRefIdx[PUNTIKY_TF_SLOTS];
+int           g_reliefBarsSinceBuild[PUNTIKY_TF_SLOTS];  // baru od posledniho plneho prepoctu
+datetime      g_reliefCheckedBar[PUNTIKY_TF_SLOTS];      // posledni prekontrolovana uzavrena svicka
 
 //--- Posledni spolehlive spocteny index prave otevreneho baru pro obe
 //--- geometrie. Kdyz rada jeste neni synchronizovana (po startu nebo
 //--- reconnectu), vrati se posledni znama hodnota - dopocet z
 //--- nastenneho casu by pres vikend pricetl tisice neexistujicich baru
 //--- (viz BarIndexNow).
-datetime      g_channelBarCacheRef = 0;
-double        g_channelBarCache    = 0.0;
-datetime      g_reliefBarCacheRef  = 0;
-double        g_reliefBarCache     = 0.0;
+datetime      g_channelBarCacheRef[PUNTIKY_TF_SLOTS];
+double        g_channelBarCache[PUNTIKY_TF_SLOTS];
+datetime      g_reliefBarCacheRef[PUNTIKY_TF_SLOTS];
+double        g_reliefBarCache[PUNTIKY_TF_SLOTS];
 
 //--- Vzorky spreadu pro ReferenceSpread (kruhovy buffer + jejich median)
 double        g_spreadSamples[PUNTIKY_SPREAD_SAMPLES];
@@ -369,6 +431,10 @@ void TogglePanel()
 //+------------------------------------------------------------------+
 int OnInit()
   {
+   //--- Seznamy zapnutych timeframu musi byt hotove jako prvni: cte je
+   //--- uz kontrola vstupu i vyber timeframu pro ATR
+   ResolveTFSlots();
+
    //--- Nesmyslne zadany vstup se ma projevit hlaskou pri startu, ne
    //--- tichym nefunkcnim chovanim za behu
    if(!ValidateInputs())
@@ -392,13 +458,21 @@ int OnInit()
             " neodpovídá povolenému účtu ", InpAllowedAccount, " - obchodování vypnuto.");
      }
 
-   //--- ATR na TF kanalu slouzi jako filtr minimalni sirky kanalu
-   g_atrHandle = iATR(_Symbol, InpChannelTF, InpATRPeriod);
+   //--- ATR na referencnim TF (prvni zapnuty TF kanalu) slouzi jako
+   //--- filtr minimalni sirky kanalu, prah driftu reliefu i tolerance
+   //--- slucovani popisku. Je jedno spolecne pro vsechny timeframy -
+   //--- kdyby si kazdy nesl vlastni, filtry by se mezi nimi rozesly a
+   //--- stejne zadani by v kazdem timeframu znamenalo neco jineho.
+   g_atrHandle = iATR(_Symbol, g_refTF, InpATRPeriod);
    if(g_atrHandle == INVALID_HANDLE)
      {
       Print("PUNTIKY: nepodařilo se vytvořit ATR handle.");
       return(INIT_FAILED);
      }
+   PrintFormat("PUNTIKY: kanály %s | reliéf %s | ATR a projekce z %s",
+               TFListText(g_chTF, g_chTFCount),
+               InpUseRelief ? TFListText(g_relTF, g_relTFCount) : "vypnuto",
+               TFText(g_refTF));
 
    InitParams();
    InitPanelMetrics();      // rozmery tlacitek a rezim uctu se za behu nemeni
@@ -528,9 +602,30 @@ void OnTick()
    //--- Nove bary se zjistuji najednou na zacatku: vyhodnoceni vstupu
    //--- musi probehnout jeste nad urovnemi platnymi v okamziku
    //--- uzavreni svicky vstupniho TF (viz krok 2)
-   const bool newChannelBar  = IsNewBar(InpChannelTF,  g_lastChannelBar);
+   //--- Kanaly se prepocitavaji po timeframech: novy bar M15 nesmi
+   //--- spustit prepocet H4, ktery se stejne meni o rad pomaleji
+   bool newChannelSlot[];
+   ArrayResize(newChannelSlot, g_chTFCount);
+   bool newChannelBar = false;
+   for(int s = 0; s < g_chTFCount; s++)
+     {
+      newChannelSlot[s] = IsNewBar(g_chTF[s], g_lastChannelBar[s]);
+      if(newChannelSlot[s])
+         newChannelBar = true;
+     }
+
    const bool newBreakoutBar = IsNewBar(InpBreakoutTF, g_lastBreakoutBar);
    const bool newEntryBar    = IsNewBar(InpEntryTF,    g_lastEntryBar);
+
+   //--- Reliefni primky maji vlastni timeframy, takze se nove bary
+   //--- hledaji zvlast a s TF vstupu uz nesouvisi. Pri vypnutem
+   //--- reliefu se netestuje vubec: pocitadla by zustala nulova, priznak
+   //--- by platil na kazdem ticku a s nim by se na kazdem ticku
+   //--- prepocitaly i navrhy vstupu.
+   bool newReliefBar = false;
+   if(InpUseRelief)
+      for(int s = 0; s < g_relTFCount && !newReliefBar; s++)
+         newReliefBar = (iTime(_Symbol, g_relTF[s], 1) != g_reliefCheckedBar[s]);
 
    //--- Navrhy se prepocitaji nejvyse JEDNOU za tick, az kdyz je vse
    //--- ostatni srovnane. Drive to na hodinove hranici bylo az trikrat
@@ -545,9 +640,9 @@ void OnTick()
    //---    dokud primka drzi, zamitne si vstup sama sebou; o par kroku
    //---    niz uz ji revalidace smaze, jenze dalsi svicka uz prechodem
    //---    pres uroven neni a signal je nenavratne pryc.
-   bool reliefDropped = false;
-   if(InpUseRelief && newEntryBar)
-      reliefDropped = RevalidateRelief();
+   bool reliefDropped[];
+   if(InpUseRelief && newReliefBar)
+      RevalidateRelief(reliefDropped);
 
    //--- 2) Vstup potvrzeny uzavrenou svickou vstupniho TF.
    //---    Kdyby se urovne prepocitaly driv, na hodinove hranici by se
@@ -560,12 +655,12 @@ void OnTick()
    //---    Hrany se posunuly, takze SL i PT navrhu uz neodpovidaji.
    if(newChannelBar)
      {
-      RecalcChannels();
+      RecalcChannels(newChannelSlot);
       plansDirty = true;
      }
 
-   //--- 4) Novy bar TF vstupu -> prepocet reliefnich primek
-   if(newEntryBar)
+   //--- 4) Novy bar nektereho TF reliefu -> prepocet jeho primek
+   if(newReliefBar)
      {
       RecalcRelief(false, reliefDropped);
       plansDirty = true;
@@ -835,6 +930,16 @@ bool ValidateInputs()
   {
    string err = "";
 
+   // Bez jedineho zapnuteho TF kanalu by strategie nemela kanaly ani
+   // referencni timeframe pro ATR a projekci hran - to uz neni
+   // nastaveni, ale tise nefunkcni expert
+   if(g_chTFCount < 1)
+      err += "zapni aspoň jeden timeframe kanálů; ";
+   // Totez pro relief: zapnute hlidani primek bez jedineho timeframu
+   // by znamenalo, ze se primky nikdy nenajdou a nikdo se to nedozvi
+   if(InpUseRelief && g_relTFCount < 1)
+      err += "zapni aspoň jeden timeframe reliéfu (nebo vypni InpUseRelief); ";
+
    if(InpSwingDepth < 1)         err += "InpSwingDepth >= 1; ";
    if(InpBreakSwingDepth < 1)    err += "InpBreakSwingDepth >= 1; ";
    if(InpReliefSwingDepth < 1)   err += "InpReliefSwingDepth >= 1; ";
@@ -923,6 +1028,90 @@ bool ValidateInputs()
 
    Print("PUNTIKY: chybné vstupní parametry - ", err);
    return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Sestavi seznam zapnutych timeframu z ctyr slotu vstupu.          |
+//| Vypnuty slot se preskoci a tentyz timeframe zadany dvakrat se    |
+//| zapocita jen jednou: deduplikace uvnitr modulu bezi vzdy jen nad |
+//| jednim polem svicek, takze dve sady totoznych utvaru pres sebe   |
+//| by neodhalila a jen by zdvojila kresleni i vypocty.              |
+//| PERIOD_CURRENT se prevede na skutecnou periodu grafu, jinak by   |
+//| se s toutez periodou zadanou napevno nesparoval.                 |
+//|  use   - ctyri prepinace slotu                                   |
+//|  tf    - ctyri zadane timeframy                                  |
+//|  out   - vystupni seznam zapnutych timeframu                     |
+//|  count - out: kolik jich zbylo                                   |
+//+------------------------------------------------------------------+
+void CollectTFSlots(const bool &use[], const ENUM_TIMEFRAMES &tf[],
+                    ENUM_TIMEFRAMES &out[], int &count)
+  {
+   count = 0;
+   for(int i = 0; i < PUNTIKY_TF_SLOTS; i++)
+     {
+      if(!use[i])
+         continue;
+
+      const ENUM_TIMEFRAMES period = (tf[i] == PERIOD_CURRENT)
+                                     ? (ENUM_TIMEFRAMES)_Period : tf[i];
+
+      bool dup = false;
+      for(int k = 0; k < count && !dup; k++)
+         dup = (out[k] == period);
+      if(dup)
+        {
+         PrintFormat("PUNTIKY: timeframe %s je zadaný dvakrát, druhý výskyt se ignoruje.",
+                     EnumToString(period));
+         continue;
+        }
+
+      out[count++] = period;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Sestavi seznamy zapnutych timeframu kanalu i reliefu a urci      |
+//| referencni timeframe. Vola se jako prvni v OnInit, jeste pred    |
+//| kontrolou vstupu a pred vytvorenim ATR handle - oboji uz z toho  |
+//| seznamu vychazi.                                                 |
+//+------------------------------------------------------------------+
+void ResolveTFSlots()
+  {
+   bool            use[PUNTIKY_TF_SLOTS];
+   ENUM_TIMEFRAMES tf[PUNTIKY_TF_SLOTS];
+
+   use[0] = InpChannelTF1Use; tf[0] = InpChannelTF1;
+   use[1] = InpChannelTF2Use; tf[1] = InpChannelTF2;
+   use[2] = InpChannelTF3Use; tf[2] = InpChannelTF3;
+   use[3] = InpChannelTF4Use; tf[3] = InpChannelTF4;
+   CollectTFSlots(use, tf, g_chTF, g_chTFCount);
+
+   use[0] = InpReliefTF1Use; tf[0] = InpReliefTF1;
+   use[1] = InpReliefTF2Use; tf[1] = InpReliefTF2;
+   use[2] = InpReliefTF3Use; tf[2] = InpReliefTF3;
+   use[3] = InpReliefTF4Use; tf[3] = InpReliefTF4;
+   CollectTFSlots(use, tf, g_relTF, g_relTFCount);
+
+   // Referencni timeframe je prvni zapnuty TF kanalu - z nej se cte ATR
+   // a v jeho barech je zadany InpEdgeProjBars. Kdyz zadny zapnuty
+   // neni, chybu ohlasi ValidateInputs; nahradni hodnota je tu jen
+   // proto, aby se do te doby nepracovalo s PERIOD_CURRENT.
+   g_refTF = (g_chTFCount > 0) ? g_chTF[0] : InpEntryTF;
+  }
+
+//+------------------------------------------------------------------+
+//| Vypis seznamu timeframu pro panel a log ("M15+H1").              |
+//|  list  - seznam timeframu, count - kolik jich je                 |
+//+------------------------------------------------------------------+
+string TFListText(const ENUM_TIMEFRAMES &list[], const int count)
+  {
+   if(count <= 0)
+      return("-");
+
+   string s = TFText(list[0]);
+   for(int i = 1; i < count; i++)
+      s += "+" + TFText(list[i]);
+   return(s);
   }
 
 //+------------------------------------------------------------------+
@@ -1052,14 +1241,15 @@ bool TryInitialCalc()
    // Nejdriv reliefni primky, pak kanaly: MT5 kresli objekty v poradi
    // vzniku a kanal ma na spolecne usecce lezet NAD reliefem (viz
    // RedrawChannels). V opacnem poradi se kanaly kreslily dvakrat.
-   RecalcRelief(true);      // pri startu vzdy plny prepocet
+   RecalcRelief();          // pri startu vzdy plny prepocet vsech TF
    RecalcChannels();
    RefreshBreakoutLevels();
    RebuildPlans();
 
    // Casy prave otevrenych svicek se zapisou hned, aby prvni tick po
    // startu neopakoval tentyz vypocet jeste jednou jako "novy bar"
-   IsNewBar(InpChannelTF,  g_lastChannelBar);
+   for(int s = 0; s < g_chTFCount; s++)
+      IsNewBar(g_chTF[s], g_lastChannelBar[s]);
    IsNewBar(InpBreakoutTF, g_lastBreakoutBar);
    IsNewBar(InpEntryTF,    g_lastEntryBar);
 
@@ -1186,15 +1376,47 @@ double BarIndexNow(const ENUM_TIMEFRAMES tf, const datetime refTime, const int r
   }
 
 //--- Index aktualniho baru v souradnicich kanalu / reliefnich primek
-double ChannelBarNow()
+//--- jednoho timeframu (slot = tfIdx utvaru)
+double ChannelBarNow(const int slot)
   {
-   return(BarIndexNow(InpChannelTF, g_channelRefTime, g_channelRefIdx,
-                      g_channelBarCacheRef, g_channelBarCache));
+   return(BarIndexNow(g_chTF[slot], g_channelRefTime[slot], g_channelRefIdx[slot],
+                      g_channelBarCacheRef[slot], g_channelBarCache[slot]));
   }
-double ReliefBarNow()
+double ReliefBarNow(const int slot)
   {
-   return(BarIndexNow(InpEntryTF, g_reliefRefTime, g_reliefRefIdx,
-                      g_reliefBarCacheRef, g_reliefBarCache));
+   return(BarIndexNow(g_relTF[slot], g_reliefRefTime[slot], g_reliefRefIdx[slot],
+                      g_reliefBarCacheRef[slot], g_reliefBarCache[slot]));
+  }
+
+//+------------------------------------------------------------------+
+//| Naplni pro kazdy zapnuty timeframe index prave otevreneho baru a |
+//| index baru projekce dopredu.                                     |
+//| Kanaly i primky vsech timeframu lezi v jednom poli, ale kazdy    |
+//| utvar ve VLASTNIM indexovem prostoru - hledani nejblizsi hrany   |
+//| nebo primky proto dostava cele pole indexu a vybira si podle     |
+//| tfIdx (viz PuntikyDistanceToNextEdge).                           |
+//|  barNow  - out: index prave otevreneho baru kazdeho timeframu    |
+//|  barProj - out: index baru projekce dopredu kazdeho timeframu    |
+//+------------------------------------------------------------------+
+void ChannelBarIndexes(double &barNow[], double &barProj[])
+  {
+   ArrayResize(barNow,  g_chTFCount);
+   ArrayResize(barProj, g_chTFCount);
+   for(int s = 0; s < g_chTFCount; s++)
+     {
+      barNow[s]  = ChannelBarNow(s);
+      barProj[s] = barNow[s] + ProjBars(g_chTF[s]);
+     }
+  }
+void ReliefBarIndexes(double &barNow[], double &barProj[])
+  {
+   ArrayResize(barNow,  g_relTFCount);
+   ArrayResize(barProj, g_relTFCount);
+   for(int s = 0; s < g_relTFCount; s++)
+     {
+      barNow[s]  = ReliefBarNow(s);
+      barProj[s] = barNow[s] + ProjBars(g_relTF[s]);
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -1219,7 +1441,7 @@ double ReliefBarNow()
 //+------------------------------------------------------------------+
 double ProjBars(const ENUM_TIMEFRAMES tf)
   {
-   const int src = PeriodSeconds(InpChannelTF);
+   const int src = PeriodSeconds(g_refTF);
    const int dst = PeriodSeconds(tf);
    if(src <= 0 || dst <= 0)
       return((double)InpEdgeProjBars);
@@ -1910,38 +2132,76 @@ bool EntryBelongsToLevel(const bool isBuy, const double entry, const double leve
   }
 
 //+------------------------------------------------------------------+
-//| Prepocet kanalu z historie TF kanalu a jejich vykresleni         |
+//| Prepocet kanalu jednoho timeframu.                               |
+//| Kanaly ostatnich timeframu zustanou ve spolecnem poli nedotcene  |
+//| (viz PuntikyReplaceSlot) - novy bar M15 nesmi zahodit kanaly H4, |
+//| ktere se prepocitavaji o rad pomaleji.                           |
+//|  slot - poradi timeframu v g_chTF (zaroven tfIdx kanalu)         |
+//| Vraci pocet analyzovanych svicek (0 = data nestacila).           |
 //+------------------------------------------------------------------+
-void RecalcChannels()
+int RecalcChannelSlot(const int slot)
   {
+   SChannel part[];
+
    MqlRates rates[];
-   const int copied = LoadClosedBars(InpChannelTF, InpLookbackBars, rates);
+   const int copied = LoadClosedBars(g_chTF[slot], InpLookbackBars, rates);
    if(copied < PUNTIKY_MIN_BARS)
      {
-      // Bez dat se stary vysledek zahodi. Kdyby v poli zustal, kreslily
-      // by se v grafu kanaly, ktere uz nikdo nepocita, a panel by k nim
-      // hlasil "zadny kanal".
-      ArrayResize(g_channels, 0);
-      g_stats.Reset();
-      RedrawChannels();
-      PrintFormat("PUNTIKY: málo dat %s (%d svíček), kanály zrušeny.",
-                  EnumToString(InpChannelTF), copied);
-      return;
+      // Bez dat se stary vysledek TOHOTO timeframu zahodi. Kdyby v poli
+      // zustal, kreslily by se v grafu kanaly, ktere uz nikdo nepocita,
+      // a panel by k nim hlasil "zadny kanal".
+      PuntikyReplaceSlot(g_channels, slot, part);
+      g_stats[slot].Reset();
+      PrintFormat("PUNTIKY: málo dat %s (%d svíček), kanály tohoto timeframu zrušeny.",
+                  EnumToString(g_chTF[slot]), copied);
+      return(0);
      }
 
+   // Kanaly jsou vedene v indexech tohoto pole - referencni bar se musi
+   // zapamatovat, aby sly hrany vyhodnotit i mezi prepocty
+   g_channelRefTime[slot] = rates[copied - 1].time;
+   g_channelRefIdx[slot]  = copied - 1;
+
+   // Kanaly se hledaji ve vice meritkach, aby vznikl i kanal v kanalu
+   PuntikyBuildChannels(rates, g_chParams, InpSwingDepth, part, g_stats[slot]);
+
+   // Az ted se kanaly oznaci timeframem - modul o slotech nevi a
+   // indexy iA/iB/iC bez nej neni proti cemu vyhodnotit
+   for(int i = 0; i < ArraySize(part); i++)
+      part[i].tfIdx = slot;
+
+   PuntikyReplaceSlot(g_channels, slot, part);
+   return(copied);
+  }
+
+//+------------------------------------------------------------------+
+//| Prepocet kanalu vsech zapnutych timeframu a jejich vykresleni.   |
+//|  slots - pro ktere timeframy se ma prepocet spustit; prazdne     |
+//|          pole (nebo delka 0) znamena vsechny                     |
+//+------------------------------------------------------------------+
+void RecalcChannels(const bool &slots[])
+  {
    // ATR se cte jednou za prepocet a odtud ho berou vsichni
    // (vypocet, diagnostika i kresleni)
    RefreshATR();
 
-   // Kanaly jsou vedene v indexech tohoto pole - referencni bar se musi
-   // zapamatovat, aby sly hrany vyhodnotit i mezi prepocty
-   g_channelRefTime = rates[copied - 1].time;
-   g_channelRefIdx  = copied - 1;
+   const int mask = ArraySize(slots);
+   int bars = 0;
+   for(int s = 0; s < g_chTFCount; s++)
+     {
+      if(mask > 0 && s < mask && !slots[s])
+         continue;
+      const int copied = RecalcChannelSlot(s);
+      if(copied > bars)
+         bars = copied;
+     }
 
-   // Kanaly se hledaji ve vice meritkach, aby vznikl i kanal v kanalu
-   PuntikyBuildChannels(rates, g_chParams, InpSwingDepth, g_channels, g_stats);
+   // Vyber "kanalu, uvnitr ktereho lezi pruraz" bere prvni vyhovujici,
+   // a hlavni kanal se kresli silnejsi carou - oboji predpoklada pole
+   // serazene podle skore. Po slouceni timeframu se proto radi znovu.
+   PuntikySortByScoreDesc(g_channels);
 
-   PrintDiagnostics(copied);
+   PrintDiagnostics(bars);
    RedrawChannels();
 
    //--- Periodicky snimek grafu pro ladeni
@@ -1957,60 +2217,87 @@ void RecalcChannels()
   }
 
 //+------------------------------------------------------------------+
+//| Prepocet kanalu vsech timeframu naraz (start, prvni vypocet).    |
+//+------------------------------------------------------------------+
+void RecalcChannels()
+  {
+   bool all[];
+   RecalcChannels(all);
+  }
+
+//+------------------------------------------------------------------+
 //| Vypise do logu, kolik kandidatu padlo na kterem filtru a jak     |
 //| vypadaji vybrane kanaly. Z rozlozeni zamitnuti je hned videt,    |
 //| ktery prah je uzkym hrdlem detekce.                              |
-//|  bars - kolik svicek TF kanalu bylo analyzovano                  |
+//| Filtry se vypisuji ZVLAST za kazdy zapnuty timeframe - souhrn by |
+//| zakryl prave to podstatne, tedy ze kandidaty zahazuje jiny prah  |
+//| na M1 a jiny na H1.                                              |
+//|  bars - kolik svicek nejdelsi rada TF kanalu mela                |
 //+------------------------------------------------------------------+
 void PrintDiagnostics(const int bars)
   {
    if(!InpDiagnostics)
       return;
 
-   PrintFormat("PUNTIKY diag: %d svíček %s, ATR %.2f, kombinací A-C %d",
-               bars, EnumToString(InpChannelTF), g_atr, g_stats.generated);
+   PrintFormat("PUNTIKY diag: kanály %s (%d svíček), reliéf %s, ATR %s %.2f",
+               TFListText(g_chTF, g_chTFCount), bars,
+               InpUseRelief ? TFListText(g_relTF, g_relTFCount) : "vypnuto",
+               TFText(g_refTF), g_atr);
 
-   PrintFormat("PUNTIKY diag: zamítnuto - bod B %d, délka %d, stáří %d, šířka %d, "
-               "cena mimo %d, opory %d, proříznuto/proraženo %d, dotyky %d, uvnitř %d",
-               g_stats.noB, g_stats.span, g_stats.age, g_stats.width,
-               g_stats.outside, g_stats.anchors, g_stats.pierced, g_stats.touches,
-               g_stats.containment);
+   for(int s = 0; s < g_chTFCount; s++)
+     {
+      PrintFormat("PUNTIKY diag: kanály %s - kombinací A-C %d, zamítnuto: bod B %d, "
+                  "délka %d, stáří %d, šířka %d, cena mimo %d, opory %d, "
+                  "proříznuto %d, dotyky %d, uvnitř %d -> prošlo %d, vybráno %d",
+                  TFText(g_chTF[s]), g_stats[s].generated, g_stats[s].noB,
+                  g_stats[s].span, g_stats[s].age, g_stats[s].width,
+                  g_stats[s].outside, g_stats[s].anchors, g_stats[s].pierced,
+                  g_stats[s].touches, g_stats[s].containment,
+                  g_stats[s].passed, g_stats[s].selected);
 
-   PrintFormat("PUNTIKY diag: prošlo %d, vybráno %d", g_stats.passed, g_stats.selected);
-
-   // Horizont projekce prekazek - odvozuje se z delky vstupu a ATR,
-   // takze na kazdem nastroji vyjde jinak (viz ProjBars)
-   PrintFormat("PUNTIKY diag: projekce překážek %.2f svíčky %s (strop %d, vstup %d b, ATR %.2f)",
-               ProjBars(InpChannelTF), EnumToString(InpChannelTF),
-               InpEdgeProjBars, InpMaxEntryPoints, g_atr);
+      // Horizont projekce prekazek - odvozuje se z delky vstupu a ATR,
+      // takze na kazdem nastroji i timeframu vyjde jinak (viz ProjBars)
+      PrintFormat("PUNTIKY diag: projekce překážek %.2f svíčky %s (strop %d svíček %s, "
+                  "vstup %d b, ATR %.2f)",
+                  ProjBars(g_chTF[s]), TFText(g_chTF[s]),
+                  InpEdgeProjBars, TFText(g_refTF), InpMaxEntryPoints, g_atr);
+     }
 
    if(InpUseRelief)
      {
-      PrintFormat("PUNTIKY diag: reliéfních přímek %s: %d",
-                  EnumToString(InpEntryTF), ReliefCount());
-      // "prošlo" je pocet skutecnych kandidatu, ne pocet dvojic, ktere
-      // prosly filtry - vejir primek z jedne kotvy da jednoho kandidata
-      // a ostatni se do nej slouci (proto je uvedeno i "sloučeno")
-      PrintFormat("PUNTIKY diag: reliéf filtr - dvojic %d, délka %d, stáří %d, drift %d, "
-                  "proraženo %d, střed %d, dotyky %d -> prošlo %d (sloučeno %d), vybráno %d",
-                  g_reliefStats.pairs, g_reliefStats.span, g_reliefStats.age,
-                  g_reliefStats.drift, g_reliefStats.pierced, g_reliefStats.midTouch,
-                  g_reliefStats.touches, g_reliefStats.passed, g_reliefStats.merged,
-                  g_reliefStats.selected);
-
       // Ktery prah driftu zrovna plati - bez toho se ladi naslepo,
-      // stejne jako horizont projekce nize
       // protoze bodova mez a nasobek ATR daji na kazdem nastroji jine
       // cislo (viz PuntikyReliefDriftLimit)
-      PrintFormat("PUNTIKY diag: reliéf - práh driftu %.0f b  (bodově %d b, ATR %.2f × %.1f)",
-                  PuntikyReliefDriftLimit(g_reliefParams) / _Point,
+      PrintFormat("PUNTIKY diag: reliéf - přímek celkem %d, práh driftu %.0f b  "
+                  "(bodově %d b, ATR %.2f × %.1f)",
+                  ReliefCount(), PuntikyReliefDriftLimit(g_reliefParams) / _Point,
                   InpReliefMaxDrift, g_atr, InpReliefMaxDriftATR);
 
-      const double reliefBar = ReliefBarNow();
+      for(int s = 0; s < g_relTFCount; s++)
+         // "prošlo" je pocet skutecnych kandidatu, ne pocet dvojic, ktere
+         // prosly filtry - vejir primek z jedne kotvy da jednoho kandidata
+         // a ostatni se do nej slouci (proto je uvedeno i "sloučeno")
+         PrintFormat("PUNTIKY diag: reliéf %s - dvojic %d, délka %d, stáří %d, drift %d, "
+                     "proraženo %d, střed %d, dotyky %d -> prošlo %d (sloučeno %d), vybráno %d",
+                     TFText(g_relTF[s]),
+                     g_reliefStats[s].pairs, g_reliefStats[s].span, g_reliefStats[s].age,
+                     g_reliefStats[s].drift, g_reliefStats[s].pierced,
+                     g_reliefStats[s].midTouch, g_reliefStats[s].touches,
+                     g_reliefStats[s].passed, g_reliefStats[s].merged,
+                     g_reliefStats[s].selected);
+
+      double relBarNow[], relBarProj[];
+      ReliefBarIndexes(relBarNow, relBarProj);
       for(int i = 0; i < ReliefCount(); i++)
-         PrintFormat("PUNTIKY diag: reliéf %d (%s) %s @ %s -> %s @ %s, dotyků %d, "
+        {
+         const int tf = g_relief[i].tfIdx;
+         if(tf < 0 || tf >= g_relTFCount)
+            continue;
+
+         PrintFormat("PUNTIKY diag: reliéf %d %s (%s) %s @ %s -> %s @ %s, dotyků %d, "
                      "záběr %d barů, stáří %d barů, přilnutí %.0f b, přesah %.0f b, nyní %s",
-                     i + 1, g_relief[i].isHigh ? "odpor" : "podpora",
+                     i + 1, TFText(g_relTF[tf]),
+                     g_relief[i].isHigh ? "odpor" : "podpora",
                      DoubleToString(g_relief[i].p1, _Digits),
                      TimeToString(g_relief[i].t1, TIME_DATE | TIME_MINUTES),
                      DoubleToString(g_relief[i].p2, _Digits),
@@ -2018,13 +2305,18 @@ void PrintDiagnostics(const int bars)
                      g_relief[i].touches, g_relief[i].spanBars, g_relief[i].ageBars,
                      g_relief[i].meanGap / _Point,
                      g_relief[i].maxOver / _Point,
-                     DoubleToString(g_relief[i].ValueAtBar(reliefBar), _Digits));
+                     DoubleToString(g_relief[i].ValueAtBar(relBarNow[tf]), _Digits));
+        }
      }
 
    for(int i = 0; i < ChannelCount(); i++)
      {
-      PrintFormat("PUNTIKY diag: kanál %d (měřítko %d, %s) A %s @ %s | B %s @ %s | C %s @ %s",
-                  i + 1, g_channels[i].scaleIdx,
+      const int chTf = g_channels[i].tfIdx;
+      if(chTf < 0 || chTf >= g_chTFCount)
+         continue;
+
+      PrintFormat("PUNTIKY diag: kanál %d %s (měřítko %d, %s) A %s @ %s | B %s @ %s | C %s @ %s",
+                  i + 1, TFText(g_chTF[chTf]), g_channels[i].scaleIdx,
                   g_channels[i].baseIsLow ? "LOW základna" : "HIGH základna",
                   DoubleToString(g_channels[i].pA, _Digits),
                   TimeToString(g_channels[i].tA, TIME_DATE | TIME_MINUTES),
@@ -2097,8 +2389,18 @@ void RedrawChannels()
    // Prava hranice usecek - kousek do budoucnosti, aby bylo videt,
    // kam kanal smeruje. Cas i index musi ukazovat na tentyz bar,
    // jinak by usecka koncila jinde, nez kam ji expert pocita.
-   const datetime tEnd   = FutureBarTime(InpChannelTF, InpForwardBars);
-   const double   barEnd = ChannelBarNow() + (double)InpForwardBars;
+   // Kazdy timeframe ma vlastni delku baru i vlastni indexovou osu,
+   // takze se konec pocita pro kazdy zvlast a kanal si ho vybere
+   // podle sveho tfIdx.
+   datetime tEnd[];
+   double   barEnd[];
+   ArrayResize(tEnd,   g_chTFCount);
+   ArrayResize(barEnd, g_chTFCount);
+   for(int s = 0; s < g_chTFCount; s++)
+     {
+      tEnd[s]   = FutureBarTime(g_chTF[s], InpForwardBars);
+      barEnd[s] = ChannelBarNow(s) + (double)InpForwardBars;
+     }
 
    //--- Stare usecky i popisky pryc, aby ty nove vznikly az ted
    PuntikyDeleteObjects("CH");
@@ -2106,7 +2408,12 @@ void RedrawChannels()
 
    //--- Nejprve usecky vsech kanalu
    for(int i = 0; i < count; i++)
-      PuntikyDrawChannel(g_channels[i], i, tEnd, barEnd, InpColorHigh, InpColorLow);
+     {
+      const int tf = g_channels[i].tfIdx;
+      if(tf < 0 || tf >= g_chTFCount)
+         continue;
+      PuntikyDrawChannel(g_channels[i], i, tEnd[tf], barEnd[tf], InpColorHigh, InpColorLow);
+     }
 
    //--- Popisky opor se sesbiraji ze vsech kanalu najednou a teprve pak
    //--- vykresli - popisky padnouci na stejne misto se slouci do jednoho
@@ -2130,16 +2437,69 @@ void RedrawChannels()
   }
 
 //+------------------------------------------------------------------+
-//| Prepocet reliefnich primek z historie vstupniho timeframu.       |
-//| Primky vznikaji z hlavnich swingu M1 a musi cenu obalovat -      |
-//| prorazena primka uz neni prekazkou a mezi kandidaty se nedostane.|
-//|  force   - true = plny prepocet hned, bez ohledu na pocitadlo    |
-//|            baru (pouziva se pri startu)                          |
-//|  dropped - revalidace uz probehla drive v temze ticku (viz       |
-//|            OnTick) a nejaka primka pri ni odpadla; plny prepocet |
-//|            tedy musi bezet, at je pocitadlo kdekoli              |
+//| Plny prepocet reliefnich primek jednoho timeframu.               |
+//| Primky vznikaji z hlavnich swingu tohoto TF a musi cenu obalovat |
+//| - prorazena primka uz neni prekazkou a mezi kandidaty se         |
+//| nedostane. Primky ostatnich timeframu zustanou nedotcene.        |
+//|  slot - poradi timeframu v g_relTF (zaroven tfIdx primek)        |
 //+------------------------------------------------------------------+
-void RecalcRelief(const bool force = false, const bool dropped = false)
+void RecalcReliefSlot(const int slot)
+  {
+   SReliefLine part[];
+
+   g_reliefBarsSinceBuild[slot] = 0;
+   g_reliefCheckedBar[slot]     = iTime(_Symbol, g_relTF[slot], 1);
+
+   MqlRates rates[];
+   const int copied = LoadClosedBars(g_relTF[slot], InpReliefLookback, rates);
+   if(copied < PUNTIKY_MIN_BARS)
+     {
+      // Stejne jako u kanalu: bez dat se stary vysledek TOHOTO
+      // timeframu zahodi, jinak by v grafu zustaly primky, ktere uz
+      // nikdo neprepocitava
+      PuntikyReplaceSlot(g_relief, slot, part);
+      g_reliefStats[slot].Reset();
+      return;
+     }
+
+   // Primky jsou vedene v indexech tohoto pole (viz BarIndexNow)
+   g_reliefRefTime[slot] = rates[copied - 1].time;
+   g_reliefRefIdx[slot]  = copied - 1;
+
+   PuntikyBuildReliefLines(rates, g_reliefParams, part, g_reliefStats[slot]);
+
+   // Az ted se primky oznaci timeframem - modul o slotech nevi a
+   // indexy i1/i2 bez nej neni proti cemu vyhodnotit
+   for(int i = 0; i < ArraySize(part); i++)
+      part[i].tfIdx = slot;
+
+   PuntikyReplaceSlot(g_relief, slot, part);
+  }
+
+//+------------------------------------------------------------------+
+//| Prepocet reliefnich primek vsech zapnutych timeframu.            |
+//|                                                                  |
+//| Plny prepocet overuje kazdeho kandidata pres celou historii      |
+//| daneho TF - pri vychozich 7200 barech a ctyrech meritkach jsou   |
+//| to radove miliony pruchodu bary a expert po tu dobu nezpracovava |
+//| ticky. Na kazdem baru je to zbytecne (hlavni swingy se tak       |
+//| rychle nemeni), takze se cely prepocet dela jen jednou za N baru |
+//| daneho timeframu a mezi tim se hlida to podstatne: prorazena     |
+//| primka musi zmizet hned.                                         |
+//| Jakmile nektera drzena primka padne, prepocet jejiho timeframu   |
+//| se udela HNED - jinak by na jejim miste az 15 baru nebylo nic a  |
+//| graf i zkraceni PT by zustaly bez reliefu, prestoze cerstva      |
+//| primka existuje. Revalidace zaroven posouva pocitadlo baru.      |
+//| Pocitadlo i revalidace bezi po timeframech: prepocet H1 se nesmi |
+//| spoustet kazdou minutu jen proto, ze pribyl bar M1.              |
+//|  force   - true = plny prepocet vsech timeframu hned, bez ohledu |
+//|            na pocitadla baru (pouziva se pri startu)             |
+//|  dropped - revalidace uz probehla drive v temze ticku (viz       |
+//|            OnTick); pro kazdy timeframe rika, jestli pri ni      |
+//|            nejaka primka odpadla. Prazdne pole = revalidace      |
+//|            jeste nebezela a spusti se zde.                       |
+//+------------------------------------------------------------------+
+void RecalcRelief(const bool force, const bool &dropped[])
   {
    // Bez hlidani reliefu neni co pocitat ani kreslit. Prazdne pole se
    // uklidi jednou - drive se kazdou minutu smazaly a znovu vykreslily
@@ -2150,51 +2510,47 @@ void RecalcRelief(const bool force = false, const bool dropped = false)
       if(ReliefCount() > 0)
         {
          ArrayResize(g_relief, 0);
-         g_reliefStats.Reset();
+         for(int s = 0; s < PUNTIKY_TF_SLOTS; s++)
+            g_reliefStats[s].Reset();
          DrawRelief();
         }
       return;
      }
 
-   // Plny prepocet overuje kazdeho kandidata pres celou historii TF
-   // vstupu - pri vychozich 7200 barech a ctyrech meritkach jsou to
-   // radove miliony pruchodu bary a expert po tu dobu nezpracovava
-   // ticky. Kazdou minutu je to zbytecne (hlavni swingy se tak rychle
-   // nemeni), takze se cely prepocet dela jen jednou za N baru a mezi
-   // tim se hlida to podstatne: prorazena primka musi zmizet hned.
-   // Jakmile nektera drzena primka padne, prepocet se udela HNED -
-   // jinak by na jejim miste az 15 baru nebylo nic a graf i zkraceni
-   // PT by zustaly bez reliefu, prestoze cerstva primka existuje.
-   // Revalidace zaroven posune pocitadlo baru do plneho prepoctu.
-   // Kdyz uz probehla drive v temze ticku (viz OnTick), je jeji
-   // vysledek v parametru dropped a druhe volani se jen tise vrati.
-   if(!force)
+   // Kdyz revalidace jeste nebezela, spusti se ted - jinak by se
+   // pocitadla baru nikdy neposunula a plny prepocet by nikdy nenastal
+   bool fell[];
+   if(!force && ArraySize(dropped) < g_relTFCount)
+      RevalidateRelief(fell);
+   else
      {
-      const bool fell = dropped || RevalidateRelief();
-      if(g_reliefBarsSinceBuild < PUNTIKY_RELIEF_REBUILD_BARS && !fell)
-         return;
+      ArrayResize(fell, g_relTFCount);
+      for(int s = 0; s < g_relTFCount; s++)
+         fell[s] = (!force && s < ArraySize(dropped)) ? dropped[s] : false;
      }
-   g_reliefBarsSinceBuild = 0;
-   g_reliefCheckedBar     = iTime(_Symbol, InpEntryTF, 1);
 
-   MqlRates rates[];
-   const int copied = LoadClosedBars(InpEntryTF, InpReliefLookback, rates);
-   if(copied < PUNTIKY_MIN_BARS)
+   bool changed = false;
+   for(int s = 0; s < g_relTFCount; s++)
      {
-      // Stejne jako u kanalu: bez dat se stary vysledek zahodi, jinak
-      // by v grafu zustaly primky, ktere uz nikdo neprepocitava
-      ArrayResize(g_relief, 0);
-      g_reliefStats.Reset();
+      if(!force && !fell[s] && g_reliefBarsSinceBuild[s] < PUNTIKY_RELIEF_REBUILD_BARS)
+         continue;
+      RecalcReliefSlot(s);
+      changed = true;
+     }
+
+   // Kresli se az po vsech timeframech - kazde volani DrawRelief
+   // znamena smazani a vytvoreni vsech objektu reliefu i kanalu
+   if(changed)
       DrawRelief();
-      return;
-     }
+  }
 
-   // Primky jsou vedene v indexech tohoto pole (viz BarIndexNow)
-   g_reliefRefTime = rates[copied - 1].time;
-   g_reliefRefIdx  = copied - 1;
-
-   PuntikyBuildReliefLines(rates, g_reliefParams, g_relief, g_reliefStats);
-   DrawRelief();
+//+------------------------------------------------------------------+
+//| Plny prepocet reliefu vsech timeframu (start, prvni vypocet).    |
+//+------------------------------------------------------------------+
+void RecalcRelief()
+  {
+   bool none[];
+   RecalcRelief(true, none);
   }
 
 //+------------------------------------------------------------------+
@@ -2214,79 +2570,106 @@ void RecalcRelief(const bool force = false, const bool dropped = false)
 //| zustala v pameti az do plneho prepoctu.                          |
 //| Volani navic (dvakrat v jednom ticku) nic nestoji - kdyz od      |
 //| posledni kontroly nepribyla svicka, funkce se hned vrati.        |
-//| Vraci true, kdyz nektera primka odpadla - volajici pak spusti    |
-//| plny prepocet hned.                                              |
+//| Kazdy timeframe ma vlastni pocitadlo i vlastni posledni           |
+//| zkontrolovanou svicku: novy bar M1 nesmi posunout cyklus         |
+//| prepoctu primek H1 ani je kontrolovat proti minutovym svickam.   |
+//|  dropped - out: pro kazdy zapnuty timeframe true, kdyz v nem     |
+//|            nejaka primka odpadla (volajici pak spusti jeho plny  |
+//|            prepocet hned)                                        |
+//| Vraci true, kdyz odpadla primka v kterémkoli timeframu.          |
 //+------------------------------------------------------------------+
-bool RevalidateRelief()
+bool RevalidateRelief(bool &dropped[])
   {
-   const datetime lastClosed = iTime(_Symbol, InpEntryTF, 1);
-   if(lastClosed <= 0 || lastClosed == g_reliefCheckedBar)
-      return(false);
+   ArrayResize(dropped, g_relTFCount);
+   for(int s = 0; s < g_relTFCount; s++)
+      dropped[s] = false;
 
-   // Kolik svicek se od posledni kontroly uzavrelo. Pocitadlo do
-   // plneho prepoctu se zvysuje o skutecny pocet baru, ne o pocet
-   // volani - jinak by se cyklus prepoctu pri vypadku spojeni protahl.
-   int bars = 1;
-   if(g_reliefCheckedBar > 0)
-     {
-      const int b = Bars(_Symbol, InpEntryTF, g_reliefCheckedBar, lastClosed);
-      if(b > 1)
-         bars = b - 1;
-     }
-   g_reliefCheckedBar      = lastClosed;
-   g_reliefBarsSinceBuild += bars;
-
-   const int cnt = ReliefCount();
-   if(cnt <= 0)
-      return(false);
-
-   // Prochazet vic nez PUNTIKY_RELIEF_REBUILD_BARS svicek nema smysl -
-   // pocitadlo uz stejne vynutilo plny prepocet, ktery projde vsechny
-   const int    scan       = MathMin(bars, PUNTIKY_RELIEF_REBUILD_BARS);
-   const double barNow     = ReliefBarNow();
    const double tol        = g_reliefParams.pierceTol;
    const double driftLimit = PuntikyReliefDriftLimit(g_reliefParams);
+   bool         anyDropped = false;
 
-   int kept = 0;
-   for(int i = 0; i < cnt; i++)
+   for(int s = 0; s < g_relTFCount; s++)
      {
-      // Primka se s kazdym barem vzdaluje od sve druhe opory a ta
-      // zaroven starne; za prahem uz to neni relief, ale artefakt.
-      // Posledni UZAVRENA svicka lezi o bar zpet za prave otevrenou.
-      const double lastBar = barNow - 1.0;
-      bool dead = g_relief[i].Drifted(lastBar, driftLimit) ||
-                  g_relief[i].Expired(lastBar, g_reliefParams.maxAgeFactor);
-
-      // Vsechny svicky uzavrene od posledni kontroly. Jsou to bary za
-      // druhou oporou, kde je primka tvrdou hranici i pro knot - proto
-      // je tolerance knotu tataz jako u tela.
-      for(int sh = scan; sh >= 1 && !dead; sh--)
-        {
-         const double high  = iHigh(_Symbol,  InpEntryTF, sh);
-         const double low   = iLow(_Symbol,   InpEntryTF, sh);
-         const double open  = iOpen(_Symbol,  InpEntryTF, sh);
-         const double close = iClose(_Symbol, InpEntryTF, sh);
-         if(high <= 0.0 || low <= 0.0 || open <= 0.0 || close <= 0.0)
-            continue;
-
-         if(g_relief[i].BarPierces(barNow - (double)sh, open, high, low, close, tol, tol))
-            dead = true;
-        }
-
-      if(dead)
+      const datetime lastClosed = iTime(_Symbol, g_relTF[s], 1);
+      if(lastClosed <= 0 || lastClosed == g_reliefCheckedBar[s])
          continue;
 
-      if(kept != i)
-         g_relief[kept] = g_relief[i];
-      kept++;
+      // Kolik svicek se od posledni kontroly uzavrelo. Pocitadlo do
+      // plneho prepoctu se zvysuje o skutecny pocet baru, ne o pocet
+      // volani - jinak by se cyklus prepoctu pri vypadku spojeni protahl.
+      int bars = 1;
+      if(g_reliefCheckedBar[s] > 0)
+        {
+         const int b = Bars(_Symbol, g_relTF[s], g_reliefCheckedBar[s], lastClosed);
+         if(b > 1)
+            bars = b - 1;
+        }
+      g_reliefCheckedBar[s]      = lastClosed;
+      g_reliefBarsSinceBuild[s] += bars;
+
+      const int cnt = ReliefCount();
+      if(cnt <= 0)
+         continue;
+
+      // Prochazet vic nez PUNTIKY_RELIEF_REBUILD_BARS svicek nema smysl -
+      // pocitadlo uz stejne vynutilo plny prepocet, ktery projde vsechny
+      const int    scan   = MathMin(bars, PUNTIKY_RELIEF_REBUILD_BARS);
+      const double barNow = ReliefBarNow(s);
+
+      int kept = 0;
+      for(int i = 0; i < cnt; i++)
+        {
+         // Primky ostatnich timeframu se v tomto kole nekontroluji -
+         // jejich indexy patri jine casove ose
+         if(g_relief[i].tfIdx != s)
+           {
+            if(kept != i)
+               g_relief[kept] = g_relief[i];
+            kept++;
+            continue;
+           }
+
+         // Primka se s kazdym barem vzdaluje od sve druhe opory a ta
+         // zaroven starne; za prahem uz to neni relief, ale artefakt.
+         // Posledni UZAVRENA svicka lezi o bar zpet za prave otevrenou.
+         const double lastBar = barNow - 1.0;
+         bool dead = g_relief[i].Drifted(lastBar, driftLimit) ||
+                     g_relief[i].Expired(lastBar, g_reliefParams.maxAgeFactor);
+
+         // Vsechny svicky uzavrene od posledni kontroly. Jsou to bary za
+         // druhou oporou, kde je primka tvrdou hranici i pro knot - proto
+         // je tolerance knotu tataz jako u tela.
+         for(int sh = scan; sh >= 1 && !dead; sh--)
+           {
+            const double high  = iHigh(_Symbol,  g_relTF[s], sh);
+            const double low   = iLow(_Symbol,   g_relTF[s], sh);
+            const double open  = iOpen(_Symbol,  g_relTF[s], sh);
+            const double close = iClose(_Symbol, g_relTF[s], sh);
+            if(high <= 0.0 || low <= 0.0 || open <= 0.0 || close <= 0.0)
+               continue;
+
+            if(g_relief[i].BarPierces(barNow - (double)sh, open, high, low, close, tol, tol))
+               dead = true;
+           }
+
+         if(dead)
+            continue;
+
+         if(kept != i)
+            g_relief[kept] = g_relief[i];
+         kept++;
+        }
+
+      if(kept == cnt)
+         continue;
+
+      // Stavy statistiky srovna nasledny plny prepocet tohoto timeframu
+      ArrayResize(g_relief, kept);
+      dropped[s] = true;
+      anyDropped = true;
      }
 
-   if(kept == cnt)
-      return(false);
-
-   // Stavy statistiky srovna nasledny plny prepocet
-   ArrayResize(g_relief, kept);
-   return(true);
+   return(anyDropped);
   }
 
 //+------------------------------------------------------------------+
@@ -2297,19 +2680,35 @@ void DrawRelief()
    const int count = InpShowRelief ? ReliefCount() : 0;
    // Cas i index praveho konce musi ukazovat na tentyz bar (viz
    // RedrawChannels) - jinak by nakreslena primka koncila jinde, nez
-   // kam ji expert pocita
-   const datetime tEnd   = FutureBarTime(InpEntryTF, InpReliefForwardBars);
-   const double   barEnd = ReliefBarNow() + (double)InpReliefForwardBars;
+   // kam ji expert pocita. Kazdy timeframe ma vlastni delku baru i
+   // vlastni indexovou osu, takze se konec pocita pro kazdy zvlast.
+   datetime tEnd[];
+   double   barEnd[];
+   ArrayResize(tEnd,   g_relTFCount);
+   ArrayResize(barEnd, g_relTFCount);
+   for(int s = 0; s < g_relTFCount; s++)
+     {
+      tEnd[s]   = FutureBarTime(g_relTF[s], InpReliefForwardBars);
+      barEnd[s] = ReliefBarNow(s) + (double)InpReliefForwardBars;
+     }
 
    PuntikyDeleteObjects("REL_");
 
    for(int i = 0; i < count; i++)
+     {
+      const int tf = g_relief[i].tfIdx;
+      if(tf < 0 || tf >= g_relTFCount)
+         continue;
+
       PuntikyTrendLine(PUNTIKY_PREFIX + "REL_" + IntegerToString(i),
-                    g_relief[i].t1, g_relief[i].p1, tEnd, g_relief[i].ValueAtBar(barEnd),
+                    g_relief[i].t1, g_relief[i].p1, tEnd[tf],
+                    g_relief[i].ValueAtBar(barEnd[tf]),
                     InpColorRelief, 1, STYLE_DOT, true,
-                    StringFormat("Reliéfní přímka (%s), dotyků %d",
+                    StringFormat("Reliéfní přímka %s (%s), dotyků %d",
+                                 TFText(g_relTF[tf]),
                                  g_relief[i].isHigh ? "odpor" : "podpora",
                                  g_relief[i].touches));
+     }
 
    // Kanal ma na spolecne usecce lezet NAD reliefem, a protoze MT5
    // kresli objekty v poradi vzniku, musi vzniknout az po nem
@@ -2741,15 +3140,18 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
       return(pl);
 
    // Geometrie kanalu i primek je vedena v indexech baru (viz hlavicka
-   // SChannel), takze se pracuje s indexem prave otevreneho baru
-   const double barNow = ChannelBarNow();
+   // SChannel), takze se pracuje s indexem prave otevreneho baru -
+   // a protoze kazdy timeframe ma vlastni indexovou osu, jde o cele
+   // pole indexu, ze ktereho si utvar vybere podle sveho tfIdx
+   double chBarNow[], chBarProj[];
+   ChannelBarIndexes(chBarNow, chBarProj);
 
    // Kanal, uvnitr ktereho pruraz lezi (-1 = zadny takovy). Drive to
    // byla tvrda podminka a pruraz mimo kanal se zahazoval; kanal je ale
    // jen S/R uroven, takze vstup nezakazuje a uplatni se az nize pri
    // zkracovani PT k hrane. Vyhodnoceni je proto stejne ve vsech
    // rezimech vstupu - lisi se jen to, kdo prikaz posle na trh.
-   const int ci = PuntikyFindContainingChannel(g_channels, barNow, trigger, InpInsideTolFrac);
+   const int ci = PuntikyFindContainingChannel(g_channels, chBarNow, trigger, InpInsideTolFrac);
    pl.channelIdx = ci;
 
    const double maxDist = InpMaxEntryPoints * _Point;
@@ -2771,10 +3173,11 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
                            ? (isBuy ? MathMax(trigger, pl.entry) : MathMin(trigger, pl.entry))
                            : trigger;
 
-   //--- Nejblizsi hrana ve smeru obchodu (vcetne hran vnorenych kanalu)
-   const double barProj = barNow + ProjBars(InpChannelTF);
+   //--- Nejblizsi hrana ve smeru obchodu (vcetne hran vnorenych kanalu
+   //--- a kanalu z ostatnich timeframu)
    double edge = 0.0;
-   const double edgeGap = PuntikyDistanceToNextEdge(g_channels, barNow, barProj, refPrice, isBuy, edge);
+   const double edgeGap = PuntikyDistanceToNextEdge(g_channels, chBarNow, chBarProj,
+                                                    refPrice, isBuy, edge);
    if(edgeGap >= 0.0)
      {
       // Misto pro PT se ale meri od skutecneho vstupu
@@ -2791,12 +3194,12 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
    //--- Primka blize nez planovany PT stoji prurazu v ceste: bud se
    //--- vstup preskoci, nebo se PT zkrati pred ni (podle InpReliefMode).
    //--- Projekce dopredu je stejne dlouha jako u hran kanalu, jen
-   //--- vyjadrena v barech TF vstupu (viz ProjBars) - obe prekazky se
-   //--- tak posuzuji ke stejnemu okamziku.
+   //--- vyjadrena v barech prislusneho TF reliefu (viz ProjBars) - obe
+   //--- prekazky se tak posuzuji ke stejnemu okamziku.
    if(InpUseRelief && ReliefCount() > 0)
      {
-      const double relBarNow  = ReliefBarNow();
-      const double relBarProj = relBarNow + ProjBars(InpEntryTF);
+      double relBarNow[], relBarProj[];
+      ReliefBarIndexes(relBarNow, relBarProj);
 
       double relPrice = 0.0;
       const double relGap = PuntikyNearestRelief(g_relief, relBarNow, relBarProj,
@@ -4432,7 +4835,7 @@ void UpdatePanel()
    PanelAdd(lines, n, "PUNTIKY CHANNEL BREAKOUT  |  " + _Symbol + "  |  účet " +
                       IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)));
    PanelAdd(lines, n, StringFormat("kanály %s   průraz %s   vstup %s   |  max %d b, SL:PT 1:1",
-                                   TFText(InpChannelTF), TFText(InpBreakoutTF),
+                                   TFListText(g_chTF, g_chTFCount), TFText(InpBreakoutTF),
                                    TFText(InpEntryTF), InpMaxEntryPoints));
 
    //--- Prehled detekovanych kanalu. Kazdy kanal ma dva radky - na
@@ -4443,15 +4846,21 @@ void UpdatePanel()
    else
      {
       PanelAdd(lines, n, StringFormat("kanály: %d", channels));
-      const double barNow = ChannelBarNow();
+      double chBarNow[], chBarProj[];
+      ChannelBarIndexes(chBarNow, chBarProj);
       for(int i = 0; i < channels && n < PUNTIKY_PANEL_MAX_LINES - PUNTIKY_PANEL_RESERVE; i++)
         {
+         const int tf = g_channels[i].tfIdx;
+         if(tf < 0 || tf >= g_chTFCount)
+            continue;
+         const double barNow = chBarNow[tf];
+
          // "dotyků od A" a "body po C" jsou zamerne dve ruzna cisla:
          // prvni je slozka skore (obe hrany od bodu A), druhe je pocet
          // pismen D, E, F ... v grafu (stridave dotyky za bodem C).
          // Spolecny popisek "dotyků" driv vypadal jako rozpor.
-         PanelAdd(lines, n, StringFormat("  kanál %d (%s, měřítko %d)  šířka %.0f b  dotyků od A %d",
-                                         i + 1,
+         PanelAdd(lines, n, StringFormat("  kanál %d %s (%s, měřítko %d)  šířka %.0f b  dotyků %d",
+                                         i + 1, TFText(g_chTF[tf]),
                                          g_channels[i].baseIsLow ? "LOW základna" : "HIGH základna",
                                          g_channels[i].scaleIdx,
                                          g_channels[i].width / _Point,
@@ -4475,7 +4884,7 @@ void UpdatePanel()
                                    ShortTime(g_dir[PUNTIKY_DIR_SELL].levelTime)));
    if(InpUseRelief)
       PanelAdd(lines, n, StringFormat("reliéfní přímky %s: %d  (režim: %s)",
-                                      TFText(InpEntryTF), ReliefCount(),
+                                      TFListText(g_relTF, g_relTFCount), ReliefCount(),
                                       InpReliefMode == PUNTIKY_RELIEF_SKIP ? "přeskočit vstup"
                                                                            : "zkrátit PT"));
 

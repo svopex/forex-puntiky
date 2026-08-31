@@ -19,7 +19,7 @@ otestovaný ale není.
 
 ## Jak strategie funguje
 
-### Kanály (timeframe M15)
+### Kanály (výchozí timeframe M15)
 
 1. Z historie **uzavřených** M15 svíček (`InpLookbackBars`) se sestaví zig‑zag
    kostra trhu — střídavé swingové vrcholy a dna. Pivot je svíčka, jejíž high
@@ -78,7 +78,7 @@ otestovaný ale není.
 6. Kanál se ohodnotí a musí projít filtry, aby byl považován za *hlavní a důležitý*:
    - minimální délka A→C (`InpMinSpanBars`) a maximální stáří bodu C (`InpMaxAgeBars`),
    - minimální šířka v bodech i v násobcích ATR (`InpMinWidthPoints`,
-     `InpMinWidthATR`; ATR s periodou `InpATRPeriod` na TF kanálu),
+     `InpMinWidthATR`; ATR s periodou `InpATRPeriod` na referenčním TF),
    - minimální počet dotyků obou hran (`InpMinTouches`) — dotyk je high/low
      v pásmu `InpTouchTolFrac` × šířka kolem hrany, dotyky blíž než 3 svíčky
      se počítají jako jeden. **Opory A, B a C se nepočítají** — leží na hranách
@@ -261,10 +261,10 @@ Společné pro oba režimy:
   a příkaz by na trhu zůstal bez dozoru (tržní vstup příkazy nepočítá, takže by se
   vedle pozice vyplnil ještě on).
 
-### Reliéfní přímky (timeframe M1)
+### Reliéfní přímky (výchozí timeframe M1)
 
 Reliéfní přímka je trendlinie vedená dvěma **hlavními swingy stejného typu** na
-vstupním timeframu — dvěma vrcholy (odpor) nebo dvěma dny (podpora). Stojí průrazu
+timeframu reliéfu — dvěma vrcholy (odpor) nebo dvěma dny (podpora). Stojí průrazu
 v cestě, takže ji strategie hlídá při plánování vstupu.
 
 1. Swingy se hledají z `InpReliefLookback` uzavřených M1 svíček (výchozí 7200,
@@ -319,9 +319,11 @@ zahazoval **99 % kandidátů** (v diagnostice `drift 2450` z 2470) a zbyly jen v
 nebo čerstvé přímky. Šířka kanálu se měří stejně (`InpMinWidthPoints` vedle
 `InpMinWidthATR`). `InpReliefMaxDrift = 0` filtr vypne úplně i s násobkem ATR.
 Do logu se vypisuje, která mez zrovna platí:
-`PUNTIKY diag: reliéf - práh driftu N b (bodově M b, ATR A × K)`.
+`PUNTIKY diag: reliéf - přímek celkem N, práh driftu N b (bodově M b, ATR A × K)`.
 
-Plný přepočet přímek běží **jednou za 15 svíček vstupního TF**, ne na každé.
+Plný přepočet přímek běží **jednou za 15 svíček daného TF reliéfu**, ne na každé.
+Počítadlo i revalidace jsou vedené po timeframech — nový bar M1 nesmí spouštět
+přepočet přímek H1 ani je kontrolovat proti minutovým svíčkám.
 Ověřit každého kandidáta přes celou historii znamená při výchozích 7200 svíčkách
 a čtyřech měřítkách řádově miliony průchodů svíčkami a expert po tu dobu
 nezpracovává ticky (nekontroluje průraz, nesrovnává příkazy, neblikají žárovky).
@@ -436,7 +438,7 @@ s důvodem `čeká na návrat pod/nad úroveň`. Možné důvody:
 | D, E, F, G … | potvrzené dotyky hran za bodem C, kreslené až po jejich vzniku |
 | Čárkované čáry (`InpColorBreak`, Goldenrod) | úrovně průrazu; čára začíná u swingové svíčky, ze které pochází |
 | Tečkované čáry (`InpColorEntry` / `InpColorSL` / `InpColorTP`) | plánovaný vstup, SL a PT pro oba směry, s popisky `SL` / `PT` |
-| Tečkované čáry (`InpColorRelief`, MediumOrchid) | reliéfní přímky z hlavních M1 swingů |
+| Tečkované čáry (`InpColorRelief`, MediumOrchid) | reliéfní přímky ze všech zapnutých TF reliéfu |
 | Panel vlevo nahoře | hlavička, přehled kanálů, úrovně průrazu, reliéf, stav upozornění Hue, stav směrů, návrhy vstupu, pozice / pending, poslední událost |
 | Tři řady tlačítek nad panelem | 1. řada obslužná (`TEST Hue`, `PANEL`), 2. řada `LONG` / `SHORT`, 3. řada `LONG 2x` / `SHORT 2x` přesně pod nimi (2. a 3. jen v ručním režimu); text panelu začíná až pod nimi |
 
@@ -647,7 +649,7 @@ vyžaduje `powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1`.
 Po nasazení v terminálu:
 
 1. **Nástroje → Možnosti → Strategie** → povolit algoritmické obchodování.
-2. Otevřít graf `XAUUSD` (libovolný timeframe, kanály se kreslí podle `InpChannelTF`).
+2. Otevřít graf `XAUUSD` (libovolný timeframe, kanály se kreslí podle `InpChannelTF1..4`).
 3. Přetáhnout `Experts\Puntiky\PuntikyChannelBreakout` na graf.
 4. Zkontrolovat řádek v Expert logu s přepočtem bodů na cenu — u zlata se počet
    desetinných míst mezi brokery liší. Při `digits = 3` je potřeba nastavit
@@ -661,7 +663,7 @@ MQL5/
   Include/Puntiky/PuntikyTypes.mqh             datové struktury a výčtové typy
   Include/Puntiky/PuntikySwings.mqh            detekce swingových bodů (zig-zag)
   Include/Puntiky/PuntikyChannels.mqh          stavba, hodnocení a výběr kanálů, hledání hran
-  Include/Puntiky/PuntikyRelief.mqh            reliéfní přímky na vstupním TF
+  Include/Puntiky/PuntikyRelief.mqh            reliéfní přímky na TF reliéfu
   Include/Puntiky/PuntikyDraw.mqh              vykreslování kanálů, popisků, úrovní a panelu
 scripts/deploy.cmd                       spouštěč (obchází ExecutionPolicy)
 scripts/deploy.ps1                       kopie do terminálu + kompilace
@@ -672,9 +674,43 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 ### Timeframy
 | Parametr | Výchozí | Význam |
 |---|---|---|
-| `InpChannelTF` | M15 | detekce a kreslení kanálů |
 | `InpBreakoutTF` | H1 | svíčka, jejíž high/low se prorážejí |
-| `InpEntryTF` | M1 | vyhodnocení průrazu a reliéfní přímky |
+| `InpEntryTF` | M1 | potvrzení vstupu uzavřenou svíčkou a vzorky spreadu |
+
+### Timeframy kanálů
+Kanály se hledají v každém zapnutém timeframu **zvlášť** a výsledky se míchají do
+jednoho grafu; každý kanál si nese, ze kterého timeframu pochází (vidíš to
+v bublině úsečky, v panelu i v diagnostice). Vypnutý slot se přeskočí, pořadí
+slotů na výsledek nemá vliv a tentýž timeframe zadaný dvakrát se započítá jednou.
+
+**První zapnutý** timeframe je zároveň *referenční*: počítá se z něj ATR (filtr
+šířky kanálu, práh driftu reliéfu, slučování popisků) a v jeho svíčkách se zadává
+`InpEdgeProjBars`.
+
+| Parametr | Výchozí | Význam |
+|---|---|---|
+| `InpChannelTF1Use` / `InpChannelTF1` | true / M15 | 1. timeframe kanálů (referenční) |
+| `InpChannelTF2Use` / `InpChannelTF2` | false / H1 | 2. timeframe kanálů |
+| `InpChannelTF3Use` / `InpChannelTF3` | false / H4 | 3. timeframe kanálů |
+| `InpChannelTF4Use` / `InpChannelTF4` | false / D1 | 4. timeframe kanálů |
+
+### Timeframy reliéfu
+Platí totéž co u kanálů. Timeframe reliéfu **už nesouvisí s `InpEntryTF`** — dřív
+se přímky hledaly vždy na vstupním timeframu, takže změna potvrzovací svíčky
+překreslila i celý reliéf.
+
+| Parametr | Výchozí | Význam |
+|---|---|---|
+| `InpReliefTF1Use` / `InpReliefTF1` | true / M1 | 1. timeframe reliéfu |
+| `InpReliefTF2Use` / `InpReliefTF2` | false / M5 | 2. timeframe reliéfu |
+| `InpReliefTF3Use` / `InpReliefTF3` | false / M15 | 3. timeframe reliéfu |
+| `InpReliefTF4Use` / `InpReliefTF4` | false / H1 | 4. timeframe reliéfu |
+
+> Počty svíček (`InpLookbackBars`, `InpReliefLookback`, `InpMinSpanBars`,
+> `InpReliefMinSpan`, `InpMaxAgeBars`, `InpForwardBars`, `InpReliefForwardBars`)
+> i limity `InpMaxChannels` a `InpMaxReliefLines` platí pro **každý zapnutý
+> timeframe zvlášť** — čtyři zapnuté timeframy tedy dají až čtyřnásobek útvarů.
+> Prahy detekce (tolerance, skóre, filtry) jsou naopak společné.
 
 ### Úrovně průrazu
 | Parametr | Výchozí | Význam |
@@ -686,7 +722,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 ### Detekce kanálů
 | Parametr | Výchozí | Význam |
 |---|---|---|
-| `InpLookbackBars` | 1500 | kolik M15 svíček se analyzuje |
+| `InpLookbackBars` | 1500 | kolik svíček se analyzuje v každém TF kanálu |
 | `InpSwingDepth` | 3 | základní šířka okna pro swingy |
 | `InpSwingScales` | 3 | počet měřítek detekce (kanál v kanálu) |
 | `InpMaxSwingGap` | 16 | kolik swingů smí ležet mezi A a C |
@@ -729,7 +765,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 |---|---|---|
 | `InpUseRelief` | true | hlídat reliéfní přímky |
 | `InpReliefMode` | SHORTEN | zkrátit PT / přeskočit vstup |
-| `InpReliefLookback` | 7200 | kolik M1 svíček se analyzuje (5 dní) |
+| `InpReliefLookback` | 7200 | kolik svíček se analyzuje v každém TF reliéfu (na M1 5 dní) |
 | `InpReliefSwingDepth` | 25 | šířka okna pro hlavní swingy (zároveň dosah do minulosti) |
 | `InpReliefScales` | 4 | počet měřítek swingů (25/50/100/200) |
 | `InpReliefSwingGap` | 20 | max. odstup opor (počet swingů) |
@@ -765,7 +801,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 | `InpShowEntryLevels` | true | kreslit úrovně plánovaného vstupu |
 | `InpShowRelief` | true | kreslit reliéfní přímky |
 | `InpShowPanel` | **false** | výchozí stav textového panelu; za běhu ho přepíná tlačítko `PANEL` |
-| `InpForwardBars` | 30 | prodloužení kanálů doprava (M15 svíčky) |
+| `InpForwardBars` | 30 | prodloužení kanálů doprava (svíčky vlastního TF kanálu) |
 | `InpColorHigh` / `InpColorLow` | Tomato / DodgerBlue | barvy HIGH a LOW úsečky |
 | `InpColorPoint` | Silver | barva popisků opor |
 | `InpColorBreak` | Goldenrod | barva úrovní průrazu |
@@ -795,7 +831,7 @@ scripts/deploy.ps1                       kopie do terminálu + kompilace
 |---|---|---|
 | `InpDiagnostics` | true | výpis detekce kanálů a reliéfu do Expert logu |
 | `InpShotOnRequest` | true | snímek grafu na vyžádání (viz níže) |
-| `InpShotEveryBars` | 0 | snímek každých N svíček TF kanálu (0 = vypnuto) |
+| `InpShotEveryBars` | 0 | snímek každých N přepočtů kanálů (0 = vypnuto) |
 | `InpShotFileName` | PuntikyShot.png | soubor snímku v `MQL5\Files` |
 | `InpShotRequestFile` | PuntikyShot.request | soubor požadavku o snímek |
 

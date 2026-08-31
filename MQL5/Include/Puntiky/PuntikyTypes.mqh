@@ -188,6 +188,11 @@ struct SSwing
 //--- Maximalni pocet potvrzenych dotyku za bodem C (D, E, F, ...)
 #define PUNTIKY_MAX_TOUCH_POINTS 8
 
+//--- Kolik timeframu smi detekce kanalu a reliefnich primek najednou
+//--- pouzivat. Kazdy timeframe se pocita samostatne a vysledky se
+//--- michaji do jednoho pole, kde si kazdy utvar nese svuj tfIdx.
+#define PUNTIKY_TF_SLOTS 4
+
 //--- Minimalni odstup dvou zapocitanych dotyku teze hrany / primky
 //--- (v barech). Jedna delsi dotykova epizoda se tak pocita jako
 //--- jeden dotyk a nenafoukne skore.
@@ -246,6 +251,42 @@ void PuntikySortByScoreDesc(T &arr[])
   }
 
 //+------------------------------------------------------------------+
+//| Nahradi ve spolecnem poli vsechny utvary jednoho timeframu.      |
+//| Kanaly i reliefni primky se hledaji pro kazdy zapnuty timeframe  |
+//| zvlast a vysledky se michaji do jednoho pole - kazdy utvar si    |
+//| nese svuj tfIdx. Prepocet jednoho timeframu proto nesmi sahnout  |
+//| na utvary ostatnich: novy bar M1 by jinak zahodil i primky H1,   |
+//| ktere se prepocitavaji radove rideji a jejichz hledani je z cele |
+//| detekce nejdrazsi operace.                                       |
+//| Typ musi mit celociselny clen tfIdx.                             |
+//|  arr  - spolecne pole vsech timeframu (in/out)                   |
+//|  slot - poradi timeframu, jehoz utvary se nahrazuji              |
+//|  part - nove utvary tohoto timeframu (uz s nastavenym tfIdx)     |
+//+------------------------------------------------------------------+
+template<typename T>
+void PuntikyReplaceSlot(T &arr[], const int slot, T &part[])
+  {
+   const int n = ArraySize(arr);
+
+   // Nejdriv se vyhodi stare utvary tohoto timeframu; vzajemne poradi
+   // ostatnich zustava, aby se nemusel prehazovat cely vyber
+   int kept = 0;
+   for(int i = 0; i < n; i++)
+     {
+      if(arr[i].tfIdx == slot)
+         continue;
+      if(kept != i)
+         arr[kept] = arr[i];
+      kept++;
+     }
+
+   const int add = ArraySize(part);
+   ArrayResize(arr, kept + add);
+   for(int i = 0; i < add; i++)
+      arr[kept + i] = part[i];
+  }
+
+//+------------------------------------------------------------------+
 //| ABCD kanal.                                                      |
 //| Kanal vznika ze tri po sobe jdoucich swingu A-B-C:               |
 //|   - baseIsLow = true : A a C jsou dna  -> zakladni je LOW usecka,|
@@ -295,6 +336,10 @@ struct SChannel
    int               spanBars;     // delka kanalu v barech (A -> C)
    int               ageBars;      // stari bodu C v barech
    int               scaleIdx;     // meritko detekce (0 = nejjemnejsi swingy)
+   // Poradi timeframu, ve kterem kanal vznikl. Indexy iA/iB/iC plati
+   // jen v poli TOHOTO timeframu, takze bez nej by se hodnota hran
+   // pocitala proti cizi casove ose (viz PuntikyReplaceSlot).
+   int               tfIdx;
    double            score;        // vysledne skore pro vyber hlavnich kanalu
 
    //--- Hodnota zakladni (base) usecky na baru s indexem idx
