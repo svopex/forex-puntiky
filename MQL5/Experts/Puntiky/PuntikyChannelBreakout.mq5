@@ -31,7 +31,7 @@
 
 //--- Timeframy
 input group "=== Timeframy ==="
-input ENUM_TIMEFRAMES InpBreakoutTF       = PERIOD_15;    // TF urovni prurazu (high/low svicky)
+input ENUM_TIMEFRAMES InpBreakoutTF       = PERIOD_M15;   // TF urovni prurazu (high/low svicky)
 input ENUM_TIMEFRAMES InpEntryTF          = PERIOD_M1;    // TF vyhodnoceni vstupu (potvrzeni svickou, spread)
 
 //--- Timeframy detekce kanalu. Kanaly se hledaji v kazdem zapnutem
@@ -219,6 +219,7 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 // velikosti 9 na bezne obrazovce (~13 px na znak).
 #define PUNTIKY_BTN_HUE_W       130   // sirka tlacitka testu Hue (px)
 #define PUNTIKY_BTN_PANEL_W     145   // sirka tlacitka prepinace panelu (px)
+#define PUNTIKY_BTN_AUTO_W      140   // sirka tlacitka automatickeho rezimu (px)
 #define PUNTIKY_BTN_TRADE_W     226   // sirka obchodnich tlacitek (px)
 
 // Nejdelsi text, ktery se v obchodnim tlacitku muze objevit. Sirku z nej
@@ -236,6 +237,10 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 #define PUNTIKY_BTN_BG_OFF      C'48,48,48'    // navrh neni platny, klik nic neudela
 #define PUNTIKY_BTN_BG_PANEL_ON  C'85,60,115'  // panel v grafu zapnuty
 #define PUNTIKY_BTN_BG_PANEL_OFF C'55,40,75'   // panel v grafu vypnuty
+// Automaticky rezim ma vlastni, vyrazne odlisnou barvu - zapnuty
+// znamena, ze expert obchoduje sam, a to musi byt videt na prvni pohled
+#define PUNTIKY_BTN_BG_AUTO_ON   C'0,120,60'   // expert obchoduje sam
+#define PUNTIKY_BTN_BG_AUTO_OFF  C'35,60,45'   // automaticky rezim vypnuty
 
 // Parametry dvojiteho vstupu (tlacitka LONG 2x / SHORT 2x).
 // Prvni obchod ma PT presne podle navrhu (RRR 1:1), druhy ho ma na
@@ -347,6 +352,19 @@ SDirection    g_dir[2];
 #define PUNTIKY_DIR_SELL  1
 int DirIdx(const bool isBuy) { return(isBuy ? PUNTIKY_DIR_BUY : PUNTIKY_DIR_SELL); }
 
+//+------------------------------------------------------------------+
+//| Rezim vstupu platny PRAVE TED.                                   |
+//| Vstup InpEntryMode urcuje jen vychozi stav - tlacitko AUTO ho za |
+//| behu prepina do rezimu pending prikazu, ve kterem expert          |
+//| obchoduje sam. Vsechna rozhodnuti o rezimu proto musi chodit sem, |
+//| ne primo na vstup; jinak by cast kodu jela podle tlacitka a cast  |
+//| podle nastaveni.                                                  |
+//+------------------------------------------------------------------+
+ENUM_PUNTIKY_ENTRY EntryMode()
+  {
+   return(g_autoMode ? PUNTIKY_ENTRY_PENDING : InpEntryMode);
+  }
+
 //--- Odlozena vymena spotrebovane urovne za dalsi swing. V rezimu
 //--- M1_CLOSE se nesmi provest uvnitr svicky vstupniho TF: vstup se
 //--- potvrzuje az jejim uzavrenim a meri se proti urovni, kterou
@@ -359,11 +377,22 @@ string        g_lastEvent = "";        // posledni udalost pro panel
 // Kdy udalost vznikla a kolik radku hlasky je prave vykresleno pod
 // tlacitky. Cas se bere z GetTickCount64, ne ze serveroveho casu: ten
 // se na klidnem trhu nehne a hlaska by viselo dokud neprijde tick.
-ulong         g_lastEventTick  = 0;
+// Hlaska pod tlacitky nese JEN to, co uzivateli zabranilo zadat pokyn -
+// potvrzeni ("AUTO režim ZAPNUT", "panel vypnut", vyplneny prikaz) by
+// pri vypnutem panelu jen prekryvala graf. Text se proto drzi zvlast od
+// g_lastEvent, ktery panel vypisuje na radku "poslední:" vzdy.
+string        g_flashText      = "";
+ulong         g_flashTick      = 0;
 int           g_eventShown     = 0;
 bool          g_tradingAllowed = true; // vysledek kontroly uctu
 bool          g_showPanel     = false;// kreslit textovy panel pod tlacitky
                                       // (prepina se tlacitkem PANEL v grafu)
+// Automaticky rezim: expert obchoduje sam pres pending STOP prikazy na
+// obou urovnich prurazu. Prepina se tlacitkem AUTO v grafu, takze to
+// nemuze byt vstup - ten se za behu nemeni (viz EntryMode).
+// Zamerne se nikam neuklada: po restartu terminalu se expert vraci do
+// rezimu podle InpEntryMode a sam od sebe obchodovat nezacne.
+bool          g_autoMode      = false;
 bool          g_ordersDirty    = false;// navrhy se zmenily, prikazy je treba srovnat
 bool          g_needInitCalc   = true; // ceka se na data pro prvni vypocet
 
@@ -387,6 +416,9 @@ int           g_panelY     = -1;
 int           g_btnHeight  = 0;
 int           g_btnHueW    = 0;
 int           g_btnPanelW  = 0;
+int           g_btnAutoW   = 0;
+// Spodni hrana rady tlacitek z posledniho vykresleni - viz DrawPanelButtons
+int           g_btnBottomY = 0;
 int           g_btnTradeW  = 0;
 bool          g_accountHedging = false;
 
@@ -431,16 +463,24 @@ bool          g_spreadPrimed = false;  // vzorky uz naplneny z historickych svic
 //| pak jedine misto, kde se uzivatel dozvi, proc obchod nevznikl.   |
 //| Drive to byla dvojice prikazu opsana na osmnacti mistech a na    |
 //| trech z nich se na vypis do logu zapomnelo.                     |
-//|  text - text udalosti (bez prefixu strategie)                    |
+//|  text     - text udalosti (bez prefixu strategie)                |
+//|  blocking - udalost zabranila zadat pokyn; jen takova se pri     |
+//|             vypnutem panelu vypise i pod tlacitka                |
 //+------------------------------------------------------------------+
-void ReportEvent(const string text)
+void ReportEvent(const string text, const bool blocking = false)
   {
-   g_lastEvent     = text;
-   g_lastEventTick = GetTickCount64();
+   g_lastEvent = text;
    Print("PUNTIKY: ", text);
 
-   // Pri vypnutem panelu je hlaska pod tlacitky jedine misto, kde ji
-   // uzivatel uvidi - vykresli se hned, ne az za sekundu z timeru
+   if(!blocking)
+      return;
+
+   g_flashText = text;
+   g_flashTick = GetTickCount64();
+
+   // Pri vypnutem panelu je hlaska pod tlacitky jedine misto, kde se
+   // uzivatel dozvi, proc klik nic neudelal - vykresli se hned, ne az
+   // za sekundu z timeru
    if(!g_showPanel)
      {
       DrawEventFlash();
@@ -461,6 +501,53 @@ void TogglePanel()
   {
    g_showPanel = !g_showPanel;
    ReportEvent(g_showPanel ? "panel v grafu zapnut" : "panel v grafu vypnut");
+  }
+
+//+------------------------------------------------------------------+
+//| Prepnuti automatickeho rezimu tlacitkem AUTO.                    |
+//|                                                                  |
+//| Zapnuty rezim znamena pending STOP prikazy na obou urovnich       |
+//| prurazu - expert je sam zada, sam upravuje pri posunu urovni a po |
+//| uzavreni obchodu sam zada dalsi. Zapnuti se proto odmita, dokud   |
+//| expert na ucet nesmi: prazdny rezim, ktery nic nezada, by budil   |
+//| dojem, ze strategie bezi.                                         |
+//| Pri vypnuti se lezici prikazy RUSI. Rezim, do ktereho se expert   |
+//| vraci (typicky rucni), je totiz uz nespravuje a zapomenuty GTC    |
+//| prikaz by se vyplnil do pozice, kterou nikdo nehlida.             |
+//+------------------------------------------------------------------+
+void ToggleAutoMode()
+  {
+   if(!g_autoMode)
+     {
+      const string blocked = TradingDisabledReason();
+      if(blocked != "")
+        {
+         ReportEvent("AUTO režim - " + blocked, true);
+         return;
+        }
+
+      g_autoMode = true;
+      ReportEvent("AUTO režim ZAPNUT - expert obchoduje sám "
+                  "(upozornění Hue jsou potlačená)");
+
+      // Prikazy se zadaji hned, ne az s dalsim barem
+      RebuildPlans();
+      SyncPendingOrders();
+      UpdatePanel();
+      ChartRedraw();
+      return;
+     }
+
+   g_autoMode = false;
+   const int left = CountOrders();
+   if(left > 0 && CancelPendingOrders())
+      ReportEvent(StringFormat("AUTO režim VYPNUT - %d ležící příkaz(ů) zrušen(o)", left));
+   else
+      ReportEvent("AUTO režim VYPNUT");
+
+   RebuildPlans();
+   UpdatePanel();
+   ChartRedraw();
   }
 
 //+------------------------------------------------------------------+
@@ -551,7 +638,7 @@ int OnInit()
                   "Strategie > Povolit WebRequest)",
                   InpHueNearPoints, InpHueNearPoints * InpHueResetFactor, InpHueUrl);
 
-   if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
+   if(EntryMode() == PUNTIKY_ENTRY_MANUAL)
       Print("PUNTIKY: ruční režim - expert sám neobchoduje, obchody se zadávají "
             "tlačítky LONG / SHORT (a LONG 2x / SHORT 2x) v grafu.");
 
@@ -562,7 +649,7 @@ int OnInit()
    // rekompilace ani zmena parametru nesmi obchod zrusit.
    // Kdyz je obchodovani prave vypnute, uklid se odlozi a opakuje z
    // timeru - zapnuti AutoTradingu uz zadny OnInit nevyvola.
-   if(InpEntryMode == PUNTIKY_ENTRY_M1_CLOSE)
+   if(EntryMode() == PUNTIKY_ENTRY_M1_CLOSE)
      {
       g_cleanupOrders = true;
       TryCleanupOrders();
@@ -629,7 +716,7 @@ void OnDeinit(const int reason)
          // zustava. Totez pri vypnutem obchodovani, kde by OrderDelete
          // stejne skoncil chybou - at je aspon videt, ze prikazy na
          // trhu zustavaji bez dozoru.
-         if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
+         if(EntryMode() == PUNTIKY_ENTRY_MANUAL)
             PrintFormat("PUNTIKY: ruční režim - na trhu zůstává %d příkaz(ů) "
                         "zadaných tlačítkem.", left);
          else
@@ -721,7 +808,7 @@ void OnTick()
    //---    Kdyby se urovne prepocitaly driv, na hodinove hranici by se
    //---    prechod pres uroven meril proti uz jine (starsi) urovni a
    //---    platny signal by zmizel.
-   if(InpEntryMode == PUNTIKY_ENTRY_M1_CLOSE && newEntryBar)
+   if(EntryMode() == PUNTIKY_ENTRY_M1_CLOSE && newEntryBar)
       CheckEntryOnEntryTF();
 
    //--- 3) Novy bar TF kanalu -> prepocet a prekresleni kanalu.
@@ -769,7 +856,7 @@ void OnTick()
    //---    porovnal uz s dalsim (vyssim) swingem, takze rezim se
    //---    swingovymi urovnemi prakticky nikdy nevstoupil.
    if(g_breakSwapPending &&
-      (InpEntryMode != PUNTIKY_ENTRY_M1_CLOSE ||
+      (EntryMode() != PUNTIKY_ENTRY_M1_CLOSE ||
        (newEntryBar && g_lastEntryBar != g_breakSwapBar)))
      {
       g_breakSwapPending = false;
@@ -782,7 +869,7 @@ void OnTick()
       RebuildPlans();
 
    //--- 9) Skutecne prikazy se srovnaji s navrhy nejvyse jednou za tick
-   if(InpEntryMode == PUNTIKY_ENTRY_PENDING && g_ordersDirty)
+   if(EntryMode() == PUNTIKY_ENTRY_PENDING && g_ordersDirty)
       SyncPendingOrders();
 
    //--- 10) Priblizeni k urovni vstupu rozblika zarovky Hue
@@ -913,7 +1000,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    // navrh druheho smeru by zustal platny a jeho prikaz by lezel dal
    // (whipsaw by ho vyplnil pres InpMaxPositions = 1).
    RebuildPlans();
-   if(InpEntryMode == PUNTIKY_ENTRY_PENDING)
+   if(EntryMode() == PUNTIKY_ENTRY_PENDING)
       CancelOppositeOrder(isBuy);
 
    // Rekonciliace se tu ZAMERNE nespousti. Bezela by nad uctem, ktery
@@ -968,14 +1055,22 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
 
    const bool isHue    = (sparam == PUNTIKY_PREFIX + "BTN_HUETEST");
    const bool isPanel  = (sparam == PUNTIKY_PREFIX + "BTN_PANEL");
+   const bool isAuto   = (sparam == PUNTIKY_PREFIX + "BTN_AUTO");
    const bool isLong   = (sparam == PUNTIKY_PREFIX + "BTN_LONG");
    const bool isShort  = (sparam == PUNTIKY_PREFIX + "BTN_SHORT");
    const bool isLong2  = (sparam == PUNTIKY_PREFIX + "BTN_LONG2");
    const bool isShort2 = (sparam == PUNTIKY_PREFIX + "BTN_SHORT2");
-   if(!isHue && !isPanel && !isLong && !isShort && !isLong2 && !isShort2)
+   if(!isHue && !isPanel && !isAuto && !isLong && !isShort && !isLong2 && !isShort2)
       return;
 
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
+
+   // Hlaska patri k PREDCHOZIMU kliknuti - novy klik ji zahodi hned, at
+   // uzivatel neceka PUNTIKY_EVENT_FLASH_SEC na stary text. Kdyz akce
+   // znovu selze, obsluha nize vypise cerstvou; kdyz projde (napr. po
+   // zapnuti algoritmickeho obchodovani v MT5), pod tlacitky uz nic
+   // nezustane.
+   ClearEventFlash();
    ChartRedraw();
 
    if(isHue)
@@ -983,6 +1078,9 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
    else
       if(isPanel)
          TogglePanel();
+      else
+      if(isAuto)
+         ToggleAutoMode();
       else
          if(isLong2 || isShort2)
             ManualDouble(isLong2);
@@ -1400,7 +1498,7 @@ bool TryInitialCalc()
 
    // V pending rezimu se prikazy zadaji hned - jinak by se cekalo
    // az na otevreni dalsi svicky TF prurazu
-   if(InpEntryMode == PUNTIKY_ENTRY_PENDING)
+   if(EntryMode() == PUNTIKY_ENTRY_PENDING)
       SyncPendingOrders();
 
    return(true);
@@ -3977,7 +4075,7 @@ bool OpenMarket(SEntryPlan &pl)
   {
    if(!TradingEnabled())
      {
-      ReportEvent("tržní vstup nezadán - obchodování je vypnuté");
+      ReportEvent("tržní vstup nezadán - obchodování je vypnuté", true);
       return(false);
      }
 
@@ -3989,7 +4087,7 @@ bool OpenMarket(SEntryPlan &pl)
    if(!ok)
      {
       ReportEvent(StringFormat("Chyba vstupu %d / %d",
-                               g_trade.ResultRetcode(), GetLastError()));
+                               g_trade.ResultRetcode(), GetLastError()), true);
       return(false);
      }
 
@@ -4023,7 +4121,7 @@ void ManualPlace(SEntryPlan &pl)
    if(!pl.valid)
      {
       ReportEvent(StringFormat("%s nelze zadat - %s", dir,
-                               pl.reason == "" ? "návrh není platný" : pl.reason));
+                               pl.reason == "" ? "návrh není platný" : pl.reason), true);
       return;
      }
 
@@ -4058,7 +4156,7 @@ void ManualPlaceDouble(SEntryPlan &pl)
    if(!pl.valid)
      {
       ReportEvent(StringFormat("%s nelze zadat - %s", dir,
-                               pl.reason == "" ? "návrh není platný" : pl.reason));
+                               pl.reason == "" ? "návrh není platný" : pl.reason), true);
       return;
      }
 
@@ -4066,7 +4164,7 @@ void ManualPlaceDouble(SEntryPlan &pl)
    // dvojity vstup tise zmenil v jeden obchod se spatnym PT
    if(!AccountIsHedging())
      {
-      ReportEvent(dir + " nelze zadat - účet není hedgovací");
+      ReportEvent(dir + " nelze zadat - účet není hedgovací", true);
       return;
      }
 
@@ -4078,7 +4176,7 @@ void ManualPlaceDouble(SEntryPlan &pl)
    if(lots <= 0.0)
      {
       ReportEvent(StringFormat("%s nelze zadat - %s", dir,
-                               pl.doubleReason == "" ? "nelze určit objem" : pl.doubleReason));
+                               pl.doubleReason == "" ? "nelze určit objem" : pl.doubleReason), true);
       return;
      }
 
@@ -4107,7 +4205,7 @@ void ManualPlaceDouble(SEntryPlan &pl)
    if(!PlaceStopOrder(second, true))
      {
       ReportEvent(StringFormat("%s zadán jen zpola - druhý příkaz selhal (%s)",
-                               dir, g_lastEvent));
+                               dir, g_lastEvent), true);
       return;
      }
 
@@ -4195,7 +4293,7 @@ void ManualToggle(const bool isBuy)
    const string blocked = TradingDisabledReason();
    if(blocked != "")
      {
-      ReportEvent(dir + " - " + blocked);
+      ReportEvent(dir + " - " + blocked, true);
       return;
      }
 
@@ -4237,7 +4335,7 @@ void ManualDouble(const bool isBuy)
    const string blocked = TradingDisabledReason();
    if(blocked != "")
      {
-      ReportEvent(dir + " - " + blocked);
+      ReportEvent(dir + " - " + blocked, true);
       return;
      }
 
@@ -4255,7 +4353,7 @@ void ManualDouble(const bool isBuy)
    if(st.Busy())
      {
       ReportEvent(StringFormat("%s nelze zadat - ve směru leží obchod z tlačítka "
-                               "%s (tím se také odebere)", dir, plain));
+                               "%s (tím se také odebere)", dir, plain), true);
       return;
      }
 
@@ -4328,6 +4426,16 @@ void CheckHueAlerts()
   {
    if(!InpHueEnabled || InpHueUrl == "" || InpHueNearPoints <= 0)
       return;
+
+   // V automatickem rezimu upozorneni nemaji koho upozornit - obchod
+   // zada expert sam a blikajici zarovka by jen rusila. Pamet obou
+   // smeru se uvolni, aby po vypnuti rezimu upozorneni zase prislo.
+   if(g_autoMode)
+     {
+      g_dir[PUNTIKY_DIR_BUY].hueLevel  = 0.0;
+      g_dir[PUNTIKY_DIR_SELL].hueLevel = 0.0;
+      return;
+     }
 
    // V testeru ani pri optimalizaci WebRequest nefunguje
    if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION))
@@ -4555,6 +4663,7 @@ void InitPanelMetrics()
    g_btnHeight = MathMax(InpPanelFontSize * 2 + 4, 20) * 2;
    g_btnHueW   = ButtonWidth("TEST Hue", PUNTIKY_BTN_HUE_W);
    g_btnPanelW = ButtonWidth("PANEL VYP", PUNTIKY_BTN_PANEL_W);
+   g_btnAutoW  = ButtonWidth("AUTO VYP", PUNTIKY_BTN_AUTO_W);
    g_btnTradeW = ButtonWidth(PUNTIKY_BTN_TRADE_MAX, PUNTIKY_BTN_TRADE_W);
 
    g_accountHedging = (AccountInfoInteger(ACCOUNT_MARGIN_MODE) ==
@@ -4568,7 +4677,7 @@ void InitPanelMetrics()
 //+------------------------------------------------------------------+
 int ButtonRowCount()
   {
-   return(InpEntryMode == PUNTIKY_ENTRY_MANUAL ? 3 : 1);
+   return(EntryMode() == PUNTIKY_ENTRY_MANUAL ? 3 : 1);
   }
 
 //+------------------------------------------------------------------+
@@ -4705,7 +4814,10 @@ void DrawManualButton(const string name, SEntryPlan &pl, const int x, const int 
 int DrawPanelToggleButton(const int x, const int y)
   {
    const string name = PUNTIKY_PREFIX + "BTN_PANEL";
-   const string text = g_showPanel ? "PANEL ZAP" : "PANEL VYP";
+   // Popisek rika, co klik UDELA, ne jaky je stav - stav nese barva
+   // pozadi. Obracene to matlo: "PANEL VYP" u vypnuteho panelu vypadalo
+   // jako tlacitko, ktere ho ma teprve vypnout.
+   const string text = g_showPanel ? "PANEL VYP" : "PANEL ZAP";
    const color  bg   = g_showPanel ? PUNTIKY_BTN_BG_PANEL_ON : PUNTIKY_BTN_BG_PANEL_OFF;
 
    // Bublina zduraznuje, ze jde jen o vypis v grafu - do Expert logu se
@@ -4815,14 +4927,14 @@ void DrawManualDoubleButton(const string name, SEntryPlan &pl, const int x, cons
 //|  x, y - poloha prvniho tlacitka v pixelech                       |
 //|  ms   - prehled trhu z jedineho skenu                            |
 //+------------------------------------------------------------------+
-void DrawManualButtons(const int x, const int y, SMarketState &ms)
+int DrawManualButtons(const int x, const int y, SMarketState &ms)
   {
    const string nameLong   = PUNTIKY_PREFIX + "BTN_LONG";
    const string nameShort  = PUNTIKY_PREFIX + "BTN_SHORT";
    const string nameLong2  = PUNTIKY_PREFIX + "BTN_LONG2";
    const string nameShort2 = PUNTIKY_PREFIX + "BTN_SHORT2";
 
-   if(InpEntryMode != PUNTIKY_ENTRY_MANUAL)
+   if(EntryMode() != PUNTIKY_ENTRY_MANUAL)
      {
       // Mimo rucni rezim tlacitka nikdy nevzniknou, takze staci smazat
       // je jednou - ne ctyrikrat za sekundu po celou dobu behu
@@ -4834,8 +4946,14 @@ void DrawManualButtons(const int x, const int y, SMarketState &ms)
          ObjectDelete(0, nameLong2);
          ObjectDelete(0, nameShort2);
         }
-      return;
+      return(0);
      }
+
+   // Priznak "uz smazano" plati jen pro rezim, ve kterem vzniknul.
+   // Tlacitko AUTO prepina rezim za behu, takze se pri navratu do
+   // rucniho rezimu musi uvolnit - jinak by pristi prepnuti do AUTO
+   // tlacitka nesmazalo a hlaska pod nimi by se kreslila pres ne.
+   g_tradeBtnCleared = false;
 
    // Vsechna ctyri tlacitka maji stejnou sirku, takze dvojite varianty
    // sedi presne pod svymi protejsky (LONG 2x pod LONG, SHORT 2x pod SHORT)
@@ -4846,6 +4964,7 @@ void DrawManualButtons(const int x, const int y, SMarketState &ms)
    DrawManualButton(nameShort, g_plan[PUNTIKY_DIR_SELL], x2, y,  ms.sell);
    DrawManualDoubleButton(nameLong2,  g_plan[PUNTIKY_DIR_BUY],  x,  y2, ms.buy);
    DrawManualDoubleButton(nameShort2, g_plan[PUNTIKY_DIR_SELL], x2, y2, ms.sell);
+   return(2);
   }
 
 //+------------------------------------------------------------------+
@@ -4859,15 +4978,59 @@ void DrawManualButtons(const int x, const int y, SMarketState &ms)
 //|  y  - svisle odsazeni prvni rady v pixelech                      |
 //|  ms - prehled trhu z jedineho skenu                              |
 //+------------------------------------------------------------------+
-void DrawPanelButtons(const int y, SMarketState &ms)
+//+------------------------------------------------------------------+
+//| Tlacitko automatickeho rezimu.                                   |
+//| Text nese STAV (stejne jako u tlacitka panelu), aby slo od        |
+//| pohledu poznat, jestli expert prave obchoduje sam.                |
+//|  x, y - levy horni roh                                            |
+//| Vraci sirku vcetne mezery, aby na nej slo navazat dalsim.         |
+//+------------------------------------------------------------------+
+int DrawAutoModeButton(const int x, const int y)
+  {
+   const string name = PUNTIKY_PREFIX + "BTN_AUTO";
+   // Popisek rika, co klik UDELA (viz DrawPanelToggleButton)
+   const string text = g_autoMode ? "AUTO VYP" : "AUTO ZAP";
+   const color  bg   = g_autoMode ? PUNTIKY_BTN_BG_AUTO_ON : PUNTIKY_BTN_BG_AUTO_OFF;
+
+   const string tip = g_autoMode
+                      ? "Expert obchoduje SÁM: drží pending STOP příkazy na obou "
+                        "úrovních průrazu a po uzavření obchodu zadá další. "
+                        "Upozornění Hue jsou potlačená. Klik režim vypne a "
+                        "ležící příkazy zruší."
+                      : "Expert sám neobchoduje. Klik zapne automatický režim - "
+                        "pending STOP příkazy na obou úrovních průrazu, "
+                        "bez upozornění Hue.";
+
+   const int w = g_btnAutoW;
+
+   if(PuntikyButton(name, x, y, w, ButtonHeight(), text,
+                    InpColorPanel, bg, InpPanelFontSize, "Consolas", tip))
+      ChartRedraw();
+
+   return(w + PUNTIKY_PANEL_BTN_GAP);
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresleni rady obsluznych a obchodnich tlacitek.                |
+//+------------------------------------------------------------------+
+int DrawPanelButtons(const int y, SMarketState &ms)
   {
    //--- 1. rada: obsluzna tlacitka
    int x = InpPanelX;
    x += DrawHueTestButton(x, y);
-   DrawPanelToggleButton(x, y);
+   x += DrawPanelToggleButton(x, y);
+   DrawAutoModeButton(x, y);
 
    //--- 2. a 3. rada: obchodni tlacitka (mimo rucni rezim se jen smazou)
-   DrawManualButtons(InpPanelX, y + ButtonHeight() + PUNTIKY_PANEL_BTN_GAP, ms);
+   const int rows = 1 + DrawManualButtons(InpPanelX,
+                                          y + ButtonHeight() + PUNTIKY_PANEL_BTN_GAP, ms);
+
+   // Spodni hrana rady se pamatuje, protoze podle ni se umistuje text
+   // panelu i hlaska pod tlacitky. Odvozovat ji z rezimu nestaci: pri
+   // prepnuti rezimu se pocet rad a skutecne vykreslena tlacitka na
+   // jeden pruchod rozchazi a text pak pristal na tlacitkach.
+   g_btnBottomY = y + rows * (ButtonHeight() + PUNTIKY_PANEL_BTN_GAP);
+   return(g_btnBottomY - y);
   }
 
 //+------------------------------------------------------------------+
@@ -5049,6 +5212,11 @@ void PanelAdd(string &lines[], int &n, const string text)
 //+------------------------------------------------------------------+
 void ClearEventFlash()
   {
+   // Text se zahazuje spolu s objekty - jinak by hlasku pri dalsim
+   // pruchodu (timer bezi kazdou sekundu) DrawEventFlash nakreslil znovu
+   g_flashText = "";
+   g_flashTick = 0;
+
    if(g_eventShown == 0)
       return;
    PuntikyDeleteObjects("MSG_");
@@ -5067,7 +5235,7 @@ void ClearEventFlash()
 //+------------------------------------------------------------------+
 void DrawEventFlash()
   {
-   if(g_lastEvent == "" || g_lastEventTick == 0)
+   if(g_flashText == "" || g_flashTick == 0)
      {
       ClearEventFlash();
       return;
@@ -5075,7 +5243,7 @@ void DrawEventFlash()
 
    // GetTickCount64 bezi od startu systemu, takze se nemusi hlidat
    // pretoceni ani skok serveroveho casu
-   if(GetTickCount64() - g_lastEventTick >= (ulong)PUNTIKY_EVENT_FLASH_SEC * 1000)
+   if(GetTickCount64() - g_flashTick >= (ulong)PUNTIKY_EVENT_FLASH_SEC * 1000)
      {
       ClearEventFlash();
       return;
@@ -5083,15 +5251,18 @@ void DrawEventFlash()
 
    string lines[PUNTIKY_PANEL_MAX_LINES];
    int    n = 0;
-   PanelAdd(lines, n, g_lastEvent);
+   PanelAdd(lines, n, g_flashText);
    if(n > PUNTIKY_EVENT_MAX_LINES)
       n = PUNTIKY_EVENT_MAX_LINES;
 
    const int lineH = (InpPanelLineHeight > 0) ? InpPanelLineHeight
                                               : (InpPanelFontSize + 5);
    // Tataz vyska, na ktere zacina text zapnuteho panelu - hlaska tak
-   // nesedi na tlacitkach a po zapnuti panelu se nic neposune
-   const int y = PanelTopY() + ButtonRowHeight();
+   // nesedi na tlacitkach a po zapnuti panelu se nic neposune.
+   // Bere se skutecna spodni hrana rady tlacitek; nez se poprve
+   // vykresli, zastoupi ji odhad z rezimu.
+   const int y = (g_btnBottomY > 0) ? g_btnBottomY
+                                    : (PanelTopY() + ButtonRowHeight());
 
    for(int i = 0; i < n; i++)
       PuntikyLabel(PUNTIKY_PREFIX + "MSG_" + IntegerToString(i),
@@ -5116,7 +5287,7 @@ void UpdatePanel()
    // jen tam, kde ho nekdo cte: v rucnim rezimu kvuli tlacitkum a pri
    // zobrazenem panelu kvuli radku s pozici.
    SMarketState ms;
-   if(InpEntryMode == PUNTIKY_ENTRY_MANUAL || g_showPanel)
+   if(EntryMode() == PUNTIKY_ENTRY_MANUAL || g_showPanel)
       ScanBothDirections(ms);
    else
       ms.Reset();
@@ -5202,15 +5373,24 @@ void UpdatePanel()
                                       InpReliefMode == PUNTIKY_RELIEF_SKIP ? "přeskočit vstup"
                                                                            : "zkrátit PT"));
 
+   //--- Automaticky rezim: co prave dela expert sam
+   if(g_autoMode)
+      PanelAdd(lines, n, StringFormat("AUTO režim: expert obchoduje sám, %d ležící "
+                                      "příkaz(ů), max %d pozic",
+                                      CountOrders(), InpMaxPositions));
+
    //--- Stav upozorneni na zarovky Hue
    if(InpHueEnabled)
-      PanelAdd(lines, n, StringFormat("Hue: upozornění %d b od úrovně vstupu  (BUY %s / SELL %s)",
-                                      InpHueNearPoints,
-                                      g_dir[PUNTIKY_DIR_BUY].hueLevel  > 0.0 ? "posláno" : "-",
-                                      g_dir[PUNTIKY_DIR_SELL].hueLevel > 0.0 ? "posláno" : "-"));
+      PanelAdd(lines, n, g_autoMode
+                         ? "Hue: potlačeno (AUTO režim)"
+                         : StringFormat("Hue: upozornění %d b od úrovně vstupu  "
+                                        "(BUY %s / SELL %s)",
+                                        InpHueNearPoints,
+                                        g_dir[PUNTIKY_DIR_BUY].hueLevel  > 0.0 ? "posláno" : "-",
+                                        g_dir[PUNTIKY_DIR_SELL].hueLevel > 0.0 ? "posláno" : "-"));
 
    //--- Rucni rezim - co je v jednotlivych smerech na trhu
-   if(InpEntryMode == PUNTIKY_ENTRY_MANUAL)
+   if(EntryMode() == PUNTIKY_ENTRY_MANUAL)
       PanelAdd(lines, n, "ruční režim: LONG " + ManualStateText(g_plan[PUNTIKY_DIR_BUY], ms.buy) +
                          "   SHORT " + ManualStateText(g_plan[PUNTIKY_DIR_SELL], ms.sell));
 
@@ -5227,8 +5407,7 @@ void UpdatePanel()
 
    //--- Tlacitka jsou nahore, text panelu zacina az pod nimi
    const int panelY = PanelTopY();
-   const int textY  = panelY + ButtonRowHeight();
-   DrawPanelButtons(panelY, ms);
+   const int textY  = panelY + DrawPanelButtons(panelY, ms);
 
    // Vyska radku je samostatny parametr - odvozeni od velikosti pisma
    // nestaci na obrazovkach s vyssim DPI, kde se radky slepuji
