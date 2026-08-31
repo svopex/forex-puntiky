@@ -113,7 +113,7 @@ input int             InpEdgeProjBars     = 12;           // Strop projekce hran
 input double          InpInsideTolFrac    = 0.02;         // Tolerance testu "uvnitr kanalu"
 input bool            InpAllowBuy         = true;         // Povolit nakupy
 input bool            InpAllowSell        = true;         // Povolit prodeje
-input int             InpMaxPositions     = 1;            // Max. soucasnych pozic strategie
+input int             InpMaxPositions     = 2;            // Max. soucasnych pozic strategie
 input int             InpSlippage         = 20;           // Maximalni skluz (body)
 input long            InpMagic            = 67205475;     // Magic number
 input long            InpAllowedAccount   = 0;            // Povoleny ucet (0 = bez omezeni)
@@ -220,6 +220,7 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 #define PUNTIKY_BTN_HUE_W       130   // sirka tlacitka testu Hue (px)
 #define PUNTIKY_BTN_PANEL_W     145   // sirka tlacitka prepinace panelu (px)
 #define PUNTIKY_BTN_AUTO_W      140   // sirka tlacitka automatickeho rezimu (px)
+#define PUNTIKY_BTN_AUTO2_W     175   // sirka tlacitka dvojiteho automatu (px)
 #define PUNTIKY_BTN_TRADE_W     226   // sirka obchodnich tlacitek (px)
 
 // Nejdelsi text, ktery se v obchodnim tlacitku muze objevit. Sirku z nej
@@ -248,6 +249,10 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 // soucet obou obchodu odpovida riziku jednoho bezneho obchodu.
 #define PUNTIKY_DOUBLE_PT_MULT  2.0   // nasobek delky PT pro druhy obchod
 #define PUNTIKY_DOUBLE_RISK     0.5   // podil rizika pripadajici na jeden obchod
+
+// Kolik prikazu smi v automatickem rezimu lezet na JEDNOM smeru.
+// Bezny automat drzi jednu nohu, dvojity dve (PT 1:1 a PT na nasobku).
+#define PUNTIKY_MAX_LEGS        2
 
 // Znacka v komentari prikazu, podle ktere se pozna obchod z dvojiteho
 // vstupu. Cely komentar se vejde do limitu MT5 (31 znaku).
@@ -353,6 +358,27 @@ SDirection    g_dir[2];
 int DirIdx(const bool isBuy) { return(isBuy ? PUNTIKY_DIR_BUY : PUNTIKY_DIR_SELL); }
 
 //+------------------------------------------------------------------+
+//| Lezici pending prikaz strategie tak, jak ho vidi rekonciliace.   |
+//| Drzet ho ve strukture misto v peti paralelnich polich ma jediny  |
+//| duvod: pri dvou noha na smer uz by se indexy do peti poli musely |
+//| trefovat rucne na kazdem miste.                                  |
+//+------------------------------------------------------------------+
+struct SPendingOrder
+  {
+   ulong             ticket;
+   double            price;
+   double            sl;
+   double            tp;
+   double            volume;
+  };
+
+//--- Kolik prikazu ma v aktualnim rezimu lezet na jednom smeru
+int AutoLegCount()
+  {
+   return(g_autoDouble ? 2 : 1);
+  }
+
+//+------------------------------------------------------------------+
 //| Rezim vstupu platny PRAVE TED.                                   |
 //| Vstup InpEntryMode urcuje jen vychozi stav - tlacitko AUTO ho za |
 //| behu prepina do rezimu pending prikazu, ve kterem expert          |
@@ -393,6 +419,11 @@ bool          g_showPanel     = false;// kreslit textovy panel pod tlacitky
 // Zamerne se nikam neuklada: po restartu terminalu se expert vraci do
 // rezimu podle InpEntryMode a sam od sebe obchodovat nezacne.
 bool          g_autoMode      = false;
+// Dvojity automat: kazdy vstup se zada jako DVE nohy s polovicnim
+// objemem - prvni s PT podle navrhu (RRR 1:1), druha s PT na nasobku
+// delky vstupu. Totez, co delaji tlacitka LONG 2x / SHORT 2x, jen
+// automaticky a pres pending prikazy.
+bool          g_autoDouble    = false;
 bool          g_ordersDirty    = false;// navrhy se zmenily, prikazy je treba srovnat
 bool          g_needInitCalc   = true; // ceka se na data pro prvni vypocet
 
@@ -417,6 +448,7 @@ int           g_btnHeight  = 0;
 int           g_btnHueW    = 0;
 int           g_btnPanelW  = 0;
 int           g_btnAutoW   = 0;
+int           g_btnAuto2W  = 0;
 // Spodni hrana rady tlacitek z posledniho vykresleni - viz DrawPanelButtons
 int           g_btnBottomY = 0;
 int           g_btnTradeW  = 0;
@@ -517,6 +549,15 @@ void TogglePanel()
 //+------------------------------------------------------------------+
 void ToggleAutoMode()
   {
+   // Dvojity automat patri svemu tlacitku - stejne jako dvojity vstup
+   // neodebira tlacitko LONG, ale LONG 2x. Bez teto pojistky by klik na
+   // (zesedle) tlacitko vypnul rezim, ktery nezapnul.
+   if(g_autoMode && g_autoDouble)
+     {
+      ReportEvent("běží dvojitý automat - vypni ho tlačítkem AUTO VYP 2x", true);
+      return;
+     }
+
    if(!g_autoMode)
      {
       const string blocked = TradingDisabledReason();
@@ -526,7 +567,8 @@ void ToggleAutoMode()
          return;
         }
 
-      g_autoMode = true;
+      g_autoMode   = true;
+      g_autoDouble = false;
       ReportEvent("AUTO režim ZAPNUT - expert obchoduje sám "
                   "(upozornění Hue jsou potlačená)");
 
@@ -538,12 +580,82 @@ void ToggleAutoMode()
       return;
      }
 
-   g_autoMode = false;
+   StopAutoMode("AUTO režim");
+  }
+
+//+------------------------------------------------------------------+
+//| Prepnuti dvojiteho automatickeho rezimu tlacitkem AUTO 2x.       |
+//|                                                                  |
+//| Kazdy vstup se zada jako dve nohy s polovicnim objemem - prvni    |
+//| s PT podle navrhu, druha s PT na nasobku delky vstupu (totez, co  |
+//| delaji tlacitka LONG 2x / SHORT 2x, jen automaticky).            |
+//| Dve podminky navic proti beznemu automatu:                       |
+//|  - hedgovaci ucet: netting by obe nohy sloucil do jedine pozice   |
+//|    a z dvojiteho vstupu by se tise stal jeden obchod se spatnym PT|
+//|  - InpMaxPositions >= 2: pri limitu jedne pozice by po vyplneni    |
+//|    prvni nohy prestal navrh platit a rekonciliace by druhou nohu  |
+//|    zrusila drive, nez by se vyplnila                              |
+//+------------------------------------------------------------------+
+void ToggleAutoDouble()
+  {
+   // Zrcadlove k ToggleAutoMode: bezny automat toto tlacitko nevypina
+   if(g_autoMode && !g_autoDouble)
+     {
+      ReportEvent("běží běžný automat - vypni ho tlačítkem AUTO VYP", true);
+      return;
+     }
+
+   if(!g_autoMode)
+     {
+      const string blocked = TradingDisabledReason();
+      if(blocked != "")
+        {
+         ReportEvent("AUTO 2x - " + blocked, true);
+         return;
+        }
+      if(!AccountIsHedging())
+        {
+         ReportEvent("AUTO 2x nelze zapnout - účet není hedgovací", true);
+         return;
+        }
+      if(InpMaxPositions < 2)
+        {
+         ReportEvent("AUTO 2x nelze zapnout - InpMaxPositions musí být aspoň 2", true);
+         return;
+        }
+
+      g_autoMode   = true;
+      g_autoDouble = true;
+      ReportEvent("AUTO 2x ZAPNUT - expert obchoduje sám, dvojitý vstup "
+                  "(upozornění Hue jsou potlačená)");
+
+      RebuildPlans();
+      SyncPendingOrders();
+      UpdatePanel();
+      ChartRedraw();
+      return;
+     }
+
+   StopAutoMode("AUTO 2x");
+  }
+
+//+------------------------------------------------------------------+
+//| Spolecne vypnuti automatickeho rezimu.                           |
+//| Lezici prikazy se RUSI: rezim, do ktereho se expert vraci        |
+//| (typicky rucni), je uz nespravuje a zapomenuty GTC prikaz by se  |
+//| vyplnil do pozice, kterou nikdo nehlida.                          |
+//|  label - jmeno rezimu do hlasky                                   |
+//+------------------------------------------------------------------+
+void StopAutoMode(const string label)
+  {
+   g_autoMode   = false;
+   g_autoDouble = false;
+
    const int left = CountOrders();
    if(left > 0 && CancelPendingOrders())
-      ReportEvent(StringFormat("AUTO režim VYPNUT - %d ležící příkaz(ů) zrušen(o)", left));
+      ReportEvent(StringFormat("%s VYPNUT - %d ležící příkaz(ů) zrušen(o)", label, left));
    else
-      ReportEvent("AUTO režim VYPNUT");
+      ReportEvent(label + " VYPNUT");
 
    RebuildPlans();
    UpdatePanel();
@@ -1056,11 +1168,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
    const bool isHue    = (sparam == PUNTIKY_PREFIX + "BTN_HUETEST");
    const bool isPanel  = (sparam == PUNTIKY_PREFIX + "BTN_PANEL");
    const bool isAuto   = (sparam == PUNTIKY_PREFIX + "BTN_AUTO");
+   const bool isAuto2  = (sparam == PUNTIKY_PREFIX + "BTN_AUTO2");
    const bool isLong   = (sparam == PUNTIKY_PREFIX + "BTN_LONG");
    const bool isShort  = (sparam == PUNTIKY_PREFIX + "BTN_SHORT");
    const bool isLong2  = (sparam == PUNTIKY_PREFIX + "BTN_LONG2");
    const bool isShort2 = (sparam == PUNTIKY_PREFIX + "BTN_SHORT2");
-   if(!isHue && !isPanel && !isAuto && !isLong && !isShort && !isLong2 && !isShort2)
+   if(!isHue && !isPanel && !isAuto && !isAuto2 &&
+      !isLong && !isShort && !isLong2 && !isShort2)
       return;
 
    ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
@@ -1081,6 +1195,9 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
       else
       if(isAuto)
          ToggleAutoMode();
+      else
+      if(isAuto2)
+         ToggleAutoDouble();
       else
          if(isLong2 || isShort2)
             ManualDouble(isLong2);
@@ -3857,10 +3974,93 @@ bool PlaceStopOrder(SEntryPlan &pl, const bool isDouble = false)
 //|  price  - jeho vstupni cena, sl / tp - jeho stopy                |
 //|  volume - jeho objem                                             |
 //+------------------------------------------------------------------+
-void SyncOneDirection(SEntryPlan &pl, const ulong ticket, const double price,
-                      const double sl, const double tp, const double volume)
+//| Pozadovane nohy vstupu pro aktualni rezim.                       |
+//| Bezny automat ma jednu nohu presne podle navrhu. Dvojity ma dve  |
+//| s POLOVICNIM objemem: prvni s PT podle navrhu (RRR 1:1), druha   |
+//| se stejnym vstupem i SL, ale s PT na nasobku delky vstupu -      |
+//| tedy totez, co zada tlacitko LONG 2x / SHORT 2x.                 |
+//| Objem i vzdalenejsi cil pocita uz BuildPlan, aby zadani a bubliny|
+//| tlacitek nemely kazde vlastni cislo.                             |
+//|  pl   - navrh vstupu                                             |
+//|  legs - out: jednotlive nohy                                     |
+//| Vraci pocet noh; 0 znamena, ze navrh v tomto rezimu zadat nelze  |
+//| (duvod nese pl.doubleReason a ukazuje ho panel).                 |
+//+------------------------------------------------------------------+
+int PlanLegs(SEntryPlan &pl, SEntryPlan &legs[])
   {
-   //--- Navrh neplati -> zadny prikaz lezet nema.
+   if(!g_autoDouble)
+     {
+      legs[0] = pl;
+      return(1);
+     }
+
+   if(pl.lotsDouble <= 0.0)
+      return(0);
+
+   legs[0] = pl;
+   legs[0].lots = pl.lotsDouble;
+
+   legs[1] = pl;
+   legs[1].lots = pl.lotsDouble;
+   legs[1].tp   = pl.tpDouble;
+   return(2);
+  }
+
+//+------------------------------------------------------------------+
+//| Srovna JEDEN lezici prikaz s pozadovanou nohou.                  |
+//| Uprava se dela jen pri skutecnem rozdilu - drive se prikaz rusil |
+//| a zadaval znovu i beze zmeny (2-4 blokujici pozadavky kazdych 15 |
+//| minut), zatimco zmena SL/PT/objemu bez zmeny platnosti navrhu se |
+//| do nej naopak nepromitla vubec.                                  |
+//|  want     - pozadovana noha                                      |
+//|  ord      - lezici prikaz                                        |
+//|  isDouble - noha dvojiteho vstupu (znacka v komentari prikazu)   |
+//+------------------------------------------------------------------+
+void SyncLeg(SEntryPlan &want, SPendingOrder &ord, const bool isDouble)
+  {
+   const bool sameVolume = (MathAbs(ord.volume - want.lots) < PUNTIKY_VOLUME_EPS);
+   if(SamePrice(ord.price, want.entry) && SamePrice(ord.sl, want.sl) &&
+      SamePrice(ord.tp, want.tp) && sameVolume)
+      return;
+
+   if(OrderIsFrozen(want.isBuy, ord.price))
+     {
+      PrintFormat("PUNTIKY: příkaz #%I64u je ve freeze zóně brokera, úprava odložena.",
+                  ord.ticket);
+      return;
+     }
+
+   // Objem leziciho prikazu zmenit nelze - musi se zadat znovu
+   if(!sameVolume)
+     {
+      if(DeleteOrder(ord.ticket) && !PlaceStopOrder(want, isDouble))
+         Print("PUNTIKY: ", g_lastEvent);
+      return;
+     }
+
+   if(!g_trade.OrderModify(ord.ticket, want.entry, want.sl, want.tp, ORDER_TIME_GTC, 0, 0.0))
+      PrintFormat("PUNTIKY: úpravu příkazu #%I64u se nepodařilo provést, retcode %d (%s)",
+                  ord.ticket, g_trade.ResultRetcode(),
+                  g_trade.ResultRetcodeDescription());
+  }
+
+//+------------------------------------------------------------------+
+//| Srovna lezici prikazy JEDNOHO smeru s navrhem vstupu.            |
+//| Prikazy se k noham paruji podle PT, ne podle poradi: broker je   |
+//| vraci v libovolnem poradi a dvojity vstup ma obe nohy na stejne  |
+//| cene i SL, takze PT je jedine, cim se od sebe lisi.              |
+//|  pl    - navrh vstupu tohoto smeru                               |
+//|  have  - spolecne pole lezicich prikazu obou smeru               |
+//|  base  - index, na kterem zacinaji prikazy tohoto smeru          |
+//|  count - kolik jich je                                           |
+//+------------------------------------------------------------------+
+void SyncOneDirection(SEntryPlan &pl, SPendingOrder &have[], const int base, const int count)
+  {
+   SEntryPlan want[PUNTIKY_MAX_LEGS];
+   const int  n = pl.valid ? PlanLegs(pl, want) : 0;
+
+   //--- Navrh neplati (nebo ho v tomto rezimu nelze zadat) -> zadny
+   //--- prikaz lezet nema.
    //--- Vyjimka: prikaz uz lezi presne na planovane cene a jedinou
    //--- vadou navrhu je, ze se k nemu trh priblizil na stop level
    //--- brokera. Ten omezuje ZADANI a upravu prikazu, ne jeho drzeni -
@@ -3868,47 +4068,55 @@ void SyncOneDirection(SEntryPlan &pl, const ulong ticket, const double price,
    //--- pruraz, kvuli kteremu prikaz lezi. Vsechny ostatni duvody
    //--- (spotrebovana nebo vymenena uroven, limit pozic, vypnuty smer)
    //--- znamenaji, ze prikaz na trhu byt nema.
-   if(!pl.valid)
+   if(n == 0)
      {
-      const bool keep = (pl.block == PUNTIKY_BLOCK_REACH) && SamePrice(price, pl.entry);
-      if(ticket != 0 && !keep && !OrderIsFrozen(pl.isBuy, price))
-         DeleteOrder(ticket);
+      for(int i = 0; i < count; i++)
+        {
+         const bool keep = (pl.block == PUNTIKY_BLOCK_REACH) &&
+                           SamePrice(have[base + i].price, pl.entry);
+         if(!keep && !OrderIsFrozen(pl.isBuy, have[base + i].price))
+            DeleteOrder(have[base + i].ticket);
+        }
       return;
      }
 
-   //--- Navrh plati a prikaz chybi -> zadat novy
-   if(ticket == 0)
+   //--- Kazda noha si najde lezici prikaz s nejblizsim PT
+   bool used[PUNTIKY_MAX_LEGS];
+   for(int i = 0; i < PUNTIKY_MAX_LEGS; i++)
+      used[i] = false;
+
+   for(int leg = 0; leg < n; leg++)
      {
-      if(!PlaceStopOrder(pl))
-         Print("PUNTIKY: ", g_lastEvent);
-      return;
+      int    best     = -1;
+      double bestDiff = 0.0;
+      for(int i = 0; i < count; i++)
+        {
+         if(used[i])
+            continue;
+         const double diff = MathAbs(have[base + i].tp - want[leg].tp);
+         if(best < 0 || diff < bestDiff)
+           {
+            best     = i;
+            bestDiff = diff;
+           }
+        }
+
+      //--- Noha chybi -> zadat novy prikaz
+      if(best < 0)
+        {
+         if(!PlaceStopOrder(want[leg], n > 1))
+            Print("PUNTIKY: ", g_lastEvent);
+         continue;
+        }
+
+      used[best] = true;
+      SyncLeg(want[leg], have[base + best], n > 1);
      }
 
-   //--- Lezici prikaz se upravuje jen pri skutecnem rozdilu. Drive se
-   //--- rusil a zadaval znovu i beze zmeny (2-4 blokujici pozadavky
-   //--- kazdych 15 minut), zatimco zmena SL/PT/objemu bez zmeny
-   //--- platnosti navrhu se do nej naopak nepromitla vubec.
-   const bool sameVolume = (MathAbs(volume - pl.lots) < PUNTIKY_VOLUME_EPS);
-   if(SamePrice(price, pl.entry) && SamePrice(sl, pl.sl) && SamePrice(tp, pl.tp) && sameVolume)
-      return;
-
-   if(OrderIsFrozen(pl.isBuy, price))
-     {
-      PrintFormat("PUNTIKY: příkaz #%I64u je ve freeze zóně brokera, úprava odložena.", ticket);
-      return;
-     }
-
-   // Objem leziciho prikazu zmenit nelze - musi se zadat znovu
-   if(!sameVolume)
-     {
-      if(DeleteOrder(ticket) && !PlaceStopOrder(pl))
-         Print("PUNTIKY: ", g_lastEvent);
-      return;
-     }
-
-   if(!g_trade.OrderModify(ticket, pl.entry, pl.sl, pl.tp, ORDER_TIME_GTC, 0, 0.0))
-      PrintFormat("PUNTIKY: úpravu příkazu #%I64u se nepodařilo provést, retcode %d (%s)",
-                  ticket, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+   //--- Prikazy navic (napr. po prepnuti z dvojiteho automatu na bezny)
+   for(int i = 0; i < count; i++)
+      if(!used[i] && !OrderIsFrozen(pl.isBuy, have[base + i].price))
+         DeleteOrder(have[base + i].ticket);
   }
 
 //+------------------------------------------------------------------+
@@ -3966,12 +4174,12 @@ void SyncPendingOrders()
    if(!TradingEnabled())
       return;
 
-   //--- Prehled skutecnych prikazu strategie (indexy jako v g_plan)
-   ulong  ticket[2]  = {0, 0};
-   double price[2]   = {0.0, 0.0};
-   double slPrice[2] = {0.0, 0.0};
-   double tpPrice[2] = {0.0, 0.0};
-   double volume[2]  = {0.0, 0.0};
+   //--- Prehled skutecnych prikazu strategie. Pole je spolecne pro oba
+   //--- smery, kazdy ma v nem vyhrazeny usek PUNTIKY_MAX_LEGS prikazu
+   //--- (index smeru urcuje DirIdx, stejne jako u g_plan).
+   SPendingOrder have[2 * PUNTIKY_MAX_LEGS];
+   int           count[2] = {0, 0};
+   const int     legs     = AutoLegCount();
 
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
@@ -3980,29 +4188,32 @@ void SyncPendingOrders()
          continue;
 
       const long type = OrderGetInteger(ORDER_TYPE);
-      int slot = -1;
+      int dir = -1;
       if(type == ORDER_TYPE_BUY_STOP)
-         slot = PUNTIKY_DIR_BUY;
+         dir = PUNTIKY_DIR_BUY;
       if(type == ORDER_TYPE_SELL_STOP)
-         slot = PUNTIKY_DIR_SELL;
+         dir = PUNTIKY_DIR_SELL;
 
-      // Prikaz jineho typu nebo druhy prikaz tehoz smeru (pozustatek po
-      // nezdarilem ruseni) - prebytek se rusi, jinak by se vyplnily oba
-      if(slot < 0 || ticket[slot] != 0)
+      // Prikaz jineho typu nebo prikaz nad ramec poctu noh (pozustatek
+      // po nezdarilem ruseni nebo po prepnuti rezimu) - prebytek se
+      // rusi, jinak by se vyplnilo vic obchodu, nez rezim pripousti
+      if(dir < 0 || count[dir] >= legs)
         {
          DeleteOrder(t);
          continue;
         }
 
-      ticket[slot]  = t;
-      price[slot]   = OrderGetDouble(ORDER_PRICE_OPEN);
-      slPrice[slot] = OrderGetDouble(ORDER_SL);
-      tpPrice[slot] = OrderGetDouble(ORDER_TP);
-      volume[slot]  = OrderGetDouble(ORDER_VOLUME_CURRENT);
+      const int k = dir * PUNTIKY_MAX_LEGS + count[dir];
+      have[k].ticket = t;
+      have[k].price  = OrderGetDouble(ORDER_PRICE_OPEN);
+      have[k].sl     = OrderGetDouble(ORDER_SL);
+      have[k].tp     = OrderGetDouble(ORDER_TP);
+      have[k].volume = OrderGetDouble(ORDER_VOLUME_CURRENT);
+      count[dir]++;
      }
 
-   for(int i = 0; i < 2; i++)
-      SyncOneDirection(g_plan[i], ticket[i], price[i], slPrice[i], tpPrice[i], volume[i]);
+   for(int d = 0; d < 2; d++)
+      SyncOneDirection(g_plan[d], have, d * PUNTIKY_MAX_LEGS, count[d]);
   }
 
 //+------------------------------------------------------------------+
@@ -4664,6 +4875,7 @@ void InitPanelMetrics()
    g_btnHueW   = ButtonWidth("TEST Hue", PUNTIKY_BTN_HUE_W);
    g_btnPanelW = ButtonWidth("PANEL VYP", PUNTIKY_BTN_PANEL_W);
    g_btnAutoW  = ButtonWidth("AUTO VYP", PUNTIKY_BTN_AUTO_W);
+   g_btnAuto2W = ButtonWidth("AUTO ZAP 2x", PUNTIKY_BTN_AUTO2_W);
    g_btnTradeW = ButtonWidth(PUNTIKY_BTN_TRADE_MAX, PUNTIKY_BTN_TRADE_W);
 
    g_accountHedging = (AccountInfoInteger(ACCOUNT_MARGIN_MODE) ==
@@ -4988,20 +5200,68 @@ int DrawManualButtons(const int x, const int y, SMarketState &ms)
 int DrawAutoModeButton(const int x, const int y)
   {
    const string name = PUNTIKY_PREFIX + "BTN_AUTO";
-   // Popisek rika, co klik UDELA (viz DrawPanelToggleButton)
-   const string text = g_autoMode ? "AUTO VYP" : "AUTO ZAP";
-   const color  bg   = g_autoMode ? PUNTIKY_BTN_BG_AUTO_ON : PUNTIKY_BTN_BG_AUTO_OFF;
 
-   const string tip = g_autoMode
-                      ? "Expert obchoduje SÁM: drží pending STOP příkazy na obou "
-                        "úrovních průrazu a po uzavření obchodu zadá další. "
-                        "Upozornění Hue jsou potlačená. Klik režim vypne a "
-                        "ležící příkazy zruší."
-                      : "Expert sám neobchoduje. Klik zapne automatický režim - "
-                        "pending STOP příkazy na obou úrovních průrazu, "
-                        "bez upozornění Hue.";
+   // Dvojity automat patri svemu tlacitku - to tento vypnout nesmi,
+   // stejne jako tlacitko LONG neodebira dvojity vstup
+   const bool   busy = (g_autoMode && g_autoDouble);
+   const bool   on   = (g_autoMode && !g_autoDouble);
+
+   // Popisek rika, co klik UDELA (viz DrawPanelToggleButton)
+   const string text = on ? "AUTO VYP" : "AUTO ZAP";
+   const color  bg   = busy ? PUNTIKY_BTN_BG_OFF
+                            : (on ? PUNTIKY_BTN_BG_AUTO_ON : PUNTIKY_BTN_BG_AUTO_OFF);
+
+   const string tip = busy
+                      ? "Běží dvojitý automat - vypni ho tlačítkem AUTO VYP 2x."
+                      : (on
+                         ? "Expert obchoduje SÁM: drží pending STOP příkazy na obou "
+                           "úrovních průrazu a po uzavření obchodu zadá další. "
+                           "Upozornění Hue jsou potlačená. Klik režim vypne a "
+                           "ležící příkazy zruší."
+                         : "Expert sám neobchoduje. Klik zapne automatický režim - "
+                           "pending STOP příkazy na obou úrovních průrazu, "
+                           "bez upozornění Hue.");
 
    const int w = g_btnAutoW;
+
+   if(PuntikyButton(name, x, y, w, ButtonHeight(), text,
+                    InpColorPanel, bg, InpPanelFontSize, "Consolas", tip))
+      ChartRedraw();
+
+   return(w + PUNTIKY_PANEL_BTN_GAP);
+  }
+
+//+------------------------------------------------------------------+
+//| Tlacitko dvojiteho automatickeho rezimu.                         |
+//| Stejna dvojice jako LONG / LONG 2x: kazde tlacitko odebira jen   |
+//| to, co samo zapnulo, druhe je mezitim nedostupne.                |
+//|  x, y - levy horni roh                                            |
+//| Vraci sirku vcetne mezery.                                        |
+//+------------------------------------------------------------------+
+int DrawAutoDoubleButton(const int x, const int y)
+  {
+   const string name = PUNTIKY_PREFIX + "BTN_AUTO2";
+
+   const bool   busy = (g_autoMode && !g_autoDouble);
+   const bool   on   = (g_autoMode && g_autoDouble);
+
+   const string text = on ? "AUTO VYP 2x" : "AUTO ZAP 2x";
+   const color  bg   = busy ? PUNTIKY_BTN_BG_OFF
+                            : (on ? PUNTIKY_BTN_BG_AUTO_ON : PUNTIKY_BTN_BG_AUTO_OFF);
+
+   const string tip = busy
+                      ? "Běží běžný automat - vypni ho tlačítkem AUTO VYP."
+                      : (on
+                         ? StringFormat("Expert obchoduje SÁM dvojitým vstupem: dvě nohy "
+                                        "s polovičním objemem, PT 1:1 a %.0fx. "
+                                        "Klik režim vypne a ležící příkazy zruší.",
+                                        PUNTIKY_DOUBLE_PT_MULT)
+                         : StringFormat("Klik zapne automatický režim s dvojitým vstupem - "
+                                        "dvě nohy s polovičním objemem, PT 1:1 a %.0fx. "
+                                        "Vyžaduje hedgovací účet a InpMaxPositions >= 2.",
+                                        PUNTIKY_DOUBLE_PT_MULT));
+
+   const int w = g_btnAuto2W;
 
    if(PuntikyButton(name, x, y, w, ButtonHeight(), text,
                     InpColorPanel, bg, InpPanelFontSize, "Consolas", tip))
@@ -5019,7 +5279,8 @@ int DrawPanelButtons(const int y, SMarketState &ms)
    int x = InpPanelX;
    x += DrawHueTestButton(x, y);
    x += DrawPanelToggleButton(x, y);
-   DrawAutoModeButton(x, y);
+   x += DrawAutoModeButton(x, y);
+   DrawAutoDoubleButton(x, y);
 
    //--- 2. a 3. rada: obchodni tlacitka (mimo rucni rezim se jen smazou)
    const int rows = 1 + DrawManualButtons(InpPanelX,
@@ -5375,8 +5636,9 @@ void UpdatePanel()
 
    //--- Automaticky rezim: co prave dela expert sam
    if(g_autoMode)
-      PanelAdd(lines, n, StringFormat("AUTO režim: expert obchoduje sám, %d ležící "
+      PanelAdd(lines, n, StringFormat("AUTO režim%s: expert obchoduje sám, %d ležící "
                                       "příkaz(ů), max %d pozic",
+                                      g_autoDouble ? " 2x" : "",
                                       CountOrders(), InpMaxPositions));
 
    //--- Stav upozorneni na zarovky Hue

@@ -490,6 +490,7 @@ s důvodem `čeká na návrat pod/nad úroveň`. Možné důvody:
 | Panel vlevo nahoře | hlavička, přehled kanálů, úrovně průrazu, reliéf, stav upozornění Hue, stav směrů, návrhy vstupu, pozice / pending, poslední událost |
 | Hláška pod tlačítky (`InpColorPanel`) | poslední událost při **vypnutém** panelu; po 10 s zmizí |
 | Tlačítko `AUTO ZAP/VYP` | automatický režim — expert obchoduje sám (pending STOP na obou úrovních), Hue potlačeno |
+| Tlačítko `AUTO ZAP/VYP 2x` | totéž s dvojitým vstupem — dvě nohy s polovičním objemem, PT 1:1 a 2×; vyžaduje hedgovací účet a `InpMaxPositions >= 2` |
 | Tři řady tlačítek nad panelem | 1. řada obslužná (`TEST Hue`, `PANEL`), 2. řada `LONG` / `SHORT`, 3. řada `LONG 2x` / `SHORT 2x` přesně pod nimi (2. a 3. jen v ručním režimu); text panelu začíná až pod nimi |
 
 Popisky sdílené opory se slučují (`E1 E3`), panel uhýbá one-click SELL/BUY panelu
