@@ -153,7 +153,7 @@ struct SReliefParams
    double            maxAgeFactor; // jak dlouho primka plati za druhou oporou
    double            maxDrift;     // jak daleko smi primka ujet od druhe opory (v cene)
    double            maxDriftATR;  // totez jako nasobek ATR (0 = jen bodova mez)
-   double            atr;          // aktualni ATR pracovniho TF
+   double            atr;          // aktualni ATR timeframu, na kterem se hleda
    bool              needMidTouch; // vyzadovat dotyk i uprostred primky
    double            midTol;       // tolerance stredniho dotyku (v cene)
    double            midFrom;      // zacatek stredniho useku (0..1)
@@ -180,6 +180,33 @@ double PuntikyReliefDriftLimit(const SReliefParams &p)
    if(p.atr > 0.0 && p.maxDriftATR > 0.0)
       return(MathMax(p.maxDrift, p.maxDriftATR * p.atr));
    return(p.maxDrift);
+  }
+
+//+------------------------------------------------------------------+
+//| Tolerance detekce primek: VETSI z bodove meze a nasobku ATR.     |
+//|                                                                  |
+//| Ze stejneho duvodu jako u prahu driftu vyse - bodova mez se      |
+//| neprizpusobi nastroji. Zadani 10 b znamena na petimistnem FX     |
+//| paru 1 pip, tedy asi tretinu rozpeti svicky M1, kdezto na zlate  |
+//| (2 desetinna mista) 0,10 USD, tedy jen par procent rozpeti       |
+//| svicky - a protoze telo pres primku nesmi vubec, takova mez      |
+//| zahodi skoro kazdeho kandidata. Nasobek ATR drzi toleranci v     |
+//| pomeru k volatilite nastroje i timeframu, na kterem se hleda.    |
+//|                                                                  |
+//| Bere se VETSI z obou, takze nasobek ATR muze toleranci jen       |
+//| UVOLNIT, nikdy ji nezprisnit - zadana bodova mez zustava dolni   |
+//| hranici a zapnuti nasobku nemuze zadnou dosud nalezenou primku   |
+//| zahodit, jen pridat dalsi.                                       |
+//| Nula v nasobku znamena "jen bodova mez" (puvodni chovani).       |
+//|  points    - bodova mez uz prepoctena na cenu                    |
+//|  atrFactor - nasobek ATR (0 = vypnuto)                           |
+//|  atr       - ATR timeframu, na kterem se primky hledaji          |
+//+------------------------------------------------------------------+
+double PuntikyReliefTol(const double points, const double atrFactor, const double atr)
+  {
+   if(atrFactor <= 0.0 || atr <= 0.0)
+      return(points);
+   return(MathMax(points, atrFactor * atr));
   }
 
 //+------------------------------------------------------------------+

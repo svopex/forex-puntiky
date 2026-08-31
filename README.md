@@ -313,6 +313,31 @@ v cestě, takže ji strategie hlídá při plánování vstupu.
 
 Jak daleko smí přímka ujet od své druhé opory, hlídá **dvojí mez**: bodová
 (`InpReliefMaxDrift`) a relativní k ATR (`InpReliefMaxDriftATR`); platí ta **větší**.
+#### Tolerance detekce a ATR
+
+Tolerance proříznutí, knotu a dotyku mají vedle bodové meze i **násobek ATR** —
+ze stejného důvodu jako práh driftu níže. Zadání 10 b znamená na pětimístném FX
+páru 1 pip, tedy asi třetinu rozpětí svíčky M1, kdežto na zlatě (2 desetinná
+místa) 0,10 USD, tedy jen pár procent rozpětí svíčky. A protože tělo přes přímku
+nesmí vůbec, taková mez zahodí skoro každého kandidáta.
+
+Platí **větší** z obou hodnot, takže násobek ATR může toleranci jen *uvolnit*,
+nikdy zpřísnit: zapnutí násobku nemůže žádnou dosud nalezenou přímku zahodit, jen
+přidat další. `0` v násobku vrací původní chování (jen bodová mez).
+
+ATR se bere z **timeframu, na kterém přímka vzniká**, ne z referenčního TF kanálů
+— rozpětí svíčky D1 je o řády jinde než u M1 a jedno společné ATR by na dlouhých
+timeframech znamenalo prakticky nulovou toleranci. Každý zapnutý TF reliéfu má
+proto vlastní ATR handle. Dokud terminál ATR nedopočítá, přepočet toho timeframu
+se **odloží** (ne spočítá s pouhou bodovou mezí) — jinak by takto postavené
+přímky zůstaly v paměti až do dalšího plného přepočtu, na D1 klidně tři týdny.
+
+Co zrovna platí, vypisuje diagnostika; hvězdička znamená, že rozhodl násobek ATR:
+
+```
+PUNTIKY diag: reliéf M1 - ATR 1.42, proříznutí 21 b *, knot 142 b, dotyk 50 b *, drift 3000 b
+```
+
 Samotná bodová mez se totiž nepřizpůsobí nástroji — zadání 3000 b znamená na zlatě
 přiměřených pár ATR, ale na BTCUSD (ATR M15 kolem 84 USD) jen 0,36 ATR, takže filtr
 zahazoval **99 % kandidátů** (v diagnostice `drift 2450` z 2470) a zbyly jen vodorovné
@@ -772,8 +797,11 @@ překreslila i celý reliéf.
 | `InpReliefMinSpan` | 120 | minimální délka přímky ve svíčkách |
 | `InpReliefMinTouches` | 0 | minimální počet dotyků **mimo vlastní opory přímky** (0 = stačí čistá spojnice) |
 | `InpReliefPierceTol` | 10 | proříznutí přímky tělem svíčky (body) |
+| `InpReliefPierceATR` | 0.15 | totéž jako násobek ATR (0 = jen bodová mez) |
 | `InpReliefWickTol` | 150 | povolený přesah přímky knotem mezi oporami (body) |
+| `InpReliefWickATR` | 1.00 | totéž jako násobek ATR (0 = jen bodová mez) |
 | `InpReliefTouchTol` | 25 | tolerance dotyku (body) |
+| `InpReliefTouchATR` | 0.35 | totéž jako násobek ATR (0 = jen bodová mez) |
 | `InpReliefDedupTol` | 40 | práh shody dvou přímek (body) |
 | `InpReliefMaxAge` | 0.0 | platnost přímky za 2. oporou v násobcích délky (0 = neomezeno) |
 | `InpReliefMaxDrift` | 3000 | max. vzdálení přímky od 2. opory (body; 0 = filtr vypnutý) |

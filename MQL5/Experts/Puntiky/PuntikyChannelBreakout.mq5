@@ -131,8 +131,11 @@ input int             InpReliefSwingGap   = 20;           // Max. odstup opor (p
 input int             InpReliefMinSpan    = 120;          // Minimalni delka primky (bary)
 input int             InpReliefMinTouches = 0;            // Min. dotyku primky mimo jeji opory (0 = staci cista spojnice)
 input int             InpReliefPierceTol  = 10;           // Proriznuti primky TELEM svicky (body)
+input double          InpReliefPierceATR  = 0.15;         // Proriznuti primky TELEM svicky (nasobek ATR)
 input int             InpReliefWickTol    = 150;          // Povoleny presah primky KNOTEM (body)
+input double          InpReliefWickATR    = 1.00;         // Povoleny presah primky KNOTEM (nasobek ATR)
 input int             InpReliefTouchTol   = 25;           // Tolerance dotyku primky (body)
+input double          InpReliefTouchATR   = 0.35;         // Tolerance dotyku primky (nasobek ATR)
 input int             InpReliefDedupTol   = 40;           // Prah shody dvou primek (body)
 input double          InpReliefMaxAge     = 0.0;          // Platnost primky za 2. oporou (0 = neomezeno)
 input int             InpReliefMaxDrift   = 3000;         // Max. vzdaleni primky od 2. opory (body)
@@ -278,6 +281,15 @@ SReliefLine   g_relief[];              // reliefni primky vsech zapnutych TF
 SChannel      g_channels[];            // vybrane hlavni kanaly vsech zapnutych TF
 int           g_atrHandle = INVALID_HANDLE;
 double        g_atr       = 0.0;       // ATR referencniho TF, cte se jednou za prepocet
+
+//--- ATR KAZDEHO zapnuteho TF reliefu. Tolerance primek se odvozuji od
+//--- volatility timeframu, na kterem primka vznikla, ne od referencniho
+//--- TF kanalu: rozpeti svicky D1 je o rady jinde nez u M1, takze jedno
+//--- spolecne ATR by na dlouhych timeframech drzelo tolerance neunosne
+//--- tesne a primky by tam nevznikly vubec.
+int           g_relAtrHandle[PUNTIKY_TF_SLOTS];
+double        g_relAtr[PUNTIKY_TF_SLOTS];
+bool          g_relAtrWarned[PUNTIKY_TF_SLOTS];  // hlaska o cekani na ATR jen jednou
 
 //--- Zapnute timeframy detekce. Vstupy se za behu nemeni, takze se
 //--- seznamy sestavi jednou v ResolveTFSlots: vypnute sloty vypadnou a
@@ -469,6 +481,25 @@ int OnInit()
       Print("PUNTIKY: nepodařilo se vytvořit ATR handle.");
       return(INIT_FAILED);
      }
+
+   //--- Vlastni ATR pro kazdy zapnuty TF reliefu (viz g_relAtr)
+   for(int s = 0; s < PUNTIKY_TF_SLOTS; s++)
+     {
+      g_relAtrHandle[s] = INVALID_HANDLE;
+      g_relAtr[s]       = 0.0;
+      g_relAtrWarned[s] = false;
+     }
+   if(InpUseRelief)
+      for(int s = 0; s < g_relTFCount; s++)
+        {
+         g_relAtrHandle[s] = iATR(_Symbol, g_relTF[s], InpATRPeriod);
+         if(g_relAtrHandle[s] == INVALID_HANDLE)
+           {
+            PrintFormat("PUNTIKY: nepodařilo se vytvořit ATR handle pro reliéf %s.",
+                        TFText(g_relTF[s]));
+            return(INIT_FAILED);
+           }
+        }
    PrintFormat("PUNTIKY: kanály %s | reliéf %s | ATR a projekce z %s",
                TFListText(g_chTF, g_chTFCount),
                InpUseRelief ? TFListText(g_relTF, g_relTFCount) : "vypnuto",
@@ -559,6 +590,9 @@ void OnDeinit(const int reason)
    EventKillTimer();
    if(g_atrHandle != INVALID_HANDLE)
       IndicatorRelease(g_atrHandle);
+   for(int s = 0; s < PUNTIKY_TF_SLOTS; s++)
+      if(g_relAtrHandle[s] != INVALID_HANDLE)
+         IndicatorRelease(g_relAtrHandle[s]);
 
    if(DeinitShouldCancel(reason))
      {
@@ -622,10 +656,24 @@ void OnTick()
    //--- reliefu se netestuje vubec: pocitadla by zustala nulova, priznak
    //--- by platil na kazdem ticku a s nim by se na kazdem ticku
    //--- prepocitaly i navrhy vstupu.
-   bool newReliefBar = false;
+   //--- Slot, ktery jeste ceka na sve ATR, se zkousi prepocitat na
+   //--- kazdem ticku - revalidace uz mu totiz posunula posledni
+   //--- zkontrolovanou svicku, takze samotny test "novy bar" by dalsi
+   //--- pokus odlozil az na dalsi bar TOHOTO timeframu (na D1 o den).
+   //--- Cekani se drzi zvlast od "noveho baru": navrhy vstupu se
+   //--- prepocitavaji na novem baru vzdy (sikma primka ma na kazdem
+   //--- baru jinou hodnotu, i kdyz se sama neprepocitala), ale kvuli
+   //--- cekani na ATR by se prepocitavaly na kazdem ticku zbytecne.
+   bool newReliefBar   = false;
+   bool reliefWaitsATR = false;
    if(InpUseRelief)
-      for(int s = 0; s < g_relTFCount && !newReliefBar; s++)
-         newReliefBar = (iTime(_Symbol, g_relTF[s], 1) != g_reliefCheckedBar[s]);
+      for(int s = 0; s < g_relTFCount; s++)
+        {
+         if(g_relAtr[s] <= 0.0)
+            reliefWaitsATR = true;
+         if(iTime(_Symbol, g_relTF[s], 1) != g_reliefCheckedBar[s])
+            newReliefBar = true;
+        }
 
    //--- Navrhy se prepocitaji nejvyse JEDNOU za tick, az kdyz je vse
    //--- ostatni srovnane. Drive to na hodinove hranici bylo az trikrat
@@ -660,11 +708,11 @@ void OnTick()
      }
 
    //--- 4) Novy bar nektereho TF reliefu -> prepocet jeho primek
-   if(newReliefBar)
-     {
+   //---    (nebo dotazeni slotu, ktery cekal na sve ATR)
+   if(newReliefBar || reliefWaitsATR)
       RecalcRelief(false, reliefDropped);
+   if(newReliefBar)
       plansDirty = true;
-     }
 
    //--- 5) Novy bar TF prurazu -> nove urovne high/low
    if(newBreakoutBar)
@@ -996,6 +1044,12 @@ bool ValidateInputs()
    if(InpReliefMaxDrift < 0)     err += "InpReliefMaxDrift >= 0; ";
    if(InpReliefMaxDriftATR < 0.0) err += "InpReliefMaxDriftATR >= 0; ";
 
+   // Nasobky ATR u tolerance primek - zaporny by z tolerance udelal
+   // zapornou cenu a test by se obratil (viz PuntikyReliefTol)
+   if(InpReliefPierceATR < 0.0)  err += "InpReliefPierceATR >= 0; ";
+   if(InpReliefWickATR < 0.0)    err += "InpReliefWickATR >= 0; ";
+   if(InpReliefTouchATR < 0.0)   err += "InpReliefTouchATR >= 0; ";
+
    // Upozorneni Hue - nulovy timeout by WebRequest nechal viset
    if(InpHueTimeout < 1)         err += "InpHueTimeout >= 1; ";
    if(InpHueNearPoints < 0)      err += "InpHueNearPoints >= 0; ";
@@ -1155,7 +1209,9 @@ void InitParams()
    g_reliefParams.maxAgeFactor = InpReliefMaxAge;
    g_reliefParams.maxDrift     = InpReliefMaxDrift * _Point;
    g_reliefParams.maxDriftATR  = InpReliefMaxDriftATR;
-   g_reliefParams.atr          = 0.0;         // doplni RefreshATR
+   // ATR se doplnuje az per timeframe v ReliefParamsForSlot - kazdy TF
+   // reliefu ma vlastni a tolerance se od nej odvozuji
+   g_reliefParams.atr          = 0.0;
    g_reliefParams.needMidTouch = InpReliefMidTouch;
    g_reliefParams.midTol       = InpReliefMidTol * _Point;
    g_reliefParams.midFrom      = InpReliefMidFrom;
@@ -1184,6 +1240,12 @@ void PrintPointDiagnostics()
                InpEdgeBuffer, DoubleToString(InpEdgeBuffer * _Point, _Digits),
                InpReliefBuffer, DoubleToString(InpReliefBuffer * _Point, _Digits),
                InpMinWidthPoints, DoubleToString(InpMinWidthPoints * _Point, _Digits));
+   // Nasobky ATR se sem nevypisuji v cene - ta zavisi na ATR kazdeho
+   // TF reliefu zvlast a vypisuje ji az diagnostika po prvnim prepoctu
+   PrintFormat("PUNTIKY: reliéf - násobky ATR: proříznutí %.2f, knot %.2f, dotyk %.2f, "
+               "drift %.1f  (0 = jen bodová mez; platí větší z obou)",
+               InpReliefPierceATR, InpReliefWickATR, InpReliefTouchATR,
+               InpReliefMaxDriftATR);
    PrintFormat("PUNTIKY: reliéf - proříznutí %d b = %s, knot %d b = %s, dotyk %d b = %s, "
                "shoda %d b = %s, drift %d b = %s, střed %d b = %s",
                InpReliefPierceTol, DoubleToString(InpReliefPierceTol * _Point, _Digits),
@@ -1213,10 +1275,54 @@ bool RefreshATR()
    if(buf[0] <= 0.0)
       return(false);
 
-   g_atr              = buf[0];
-   g_chParams.atr     = g_atr;
-   g_reliefParams.atr = g_atr;   // prah driftu je nasobkem ATR
+   g_atr          = buf[0];
+   g_chParams.atr = g_atr;
    return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Nacte ATR jednoho TF reliefu do g_relAtr[slot].                  |
+//| Plati totez co u RefreshATR: handle na jinem TF, nez ma graf, se |
+//| pocita asynchronne, takze hned po startu jeste hodnotu nema.     |
+//|  slot - poradi timeframu v g_relTF                               |
+//| Vraci true, kdyz je ATR tohoto timeframu k dispozici.            |
+//+------------------------------------------------------------------+
+bool RefreshReliefATR(const int slot)
+  {
+   if(g_relAtrHandle[slot] == INVALID_HANDLE)
+      return(false);
+   if(BarsCalculated(g_relAtrHandle[slot]) <= 0)
+      return(false);
+
+   double buf[];
+   if(CopyBuffer(g_relAtrHandle[slot], 0, 1, 1, buf) != 1)
+      return(false);
+   if(buf[0] <= 0.0)
+      return(false);
+
+   g_relAtr[slot] = buf[0];
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Parametry hledani reliefu pro jeden timeframe.                   |
+//| Prahy detekce jsou pro vsechny timeframy tytez, ale tolerance se |
+//| dopocitavaji z ATR TOHOTO timeframu - rozpeti svicky D1 je o     |
+//| rady jinde nez u M1 a jedina bodova mez by na dlouhych           |
+//| timeframech znamenala nulovou toleranci (viz PuntikyReliefTol).  |
+//| Parametry se vraci KOPII, ne prepsanim globalu: prepocet jednoho |
+//| timeframu se tak nemuze projevit na tom, cim se prave meri jiny. |
+//|  slot - poradi timeframu v g_relTF                               |
+//|  p    - out: parametry platne pro tento timeframe                |
+//+------------------------------------------------------------------+
+void ReliefParamsForSlot(const int slot, SReliefParams &p)
+  {
+   p = g_reliefParams;
+   p.atr = (slot >= 0 && slot < PUNTIKY_TF_SLOTS) ? g_relAtr[slot] : 0.0;
+
+   p.pierceTol = PuntikyReliefTol(g_reliefParams.pierceTol, InpReliefPierceATR, p.atr);
+   p.wickTol   = PuntikyReliefTol(g_reliefParams.wickTol,   InpReliefWickATR,   p.atr);
+   p.touchTol  = PuntikyReliefTol(g_reliefParams.touchTol,  InpReliefTouchATR,  p.atr);
   }
 
 //+------------------------------------------------------------------+
@@ -2265,15 +2371,10 @@ void PrintDiagnostics(const int bars)
 
    if(InpUseRelief)
      {
-      // Ktery prah driftu zrovna plati - bez toho se ladi naslepo,
-      // protoze bodova mez a nasobek ATR daji na kazdem nastroji jine
-      // cislo (viz PuntikyReliefDriftLimit)
-      PrintFormat("PUNTIKY diag: reliéf - přímek celkem %d, práh driftu %.0f b  "
-                  "(bodově %d b, ATR %.2f × %.1f)",
-                  ReliefCount(), PuntikyReliefDriftLimit(g_reliefParams) / _Point,
-                  InpReliefMaxDrift, g_atr, InpReliefMaxDriftATR);
+      PrintFormat("PUNTIKY diag: reliéf - přímek celkem %d", ReliefCount());
 
       for(int s = 0; s < g_relTFCount; s++)
+        {
          // "prošlo" je pocet skutecnych kandidatu, ne pocet dvojic, ktere
          // prosly filtry - vejir primek z jedne kotvy da jednoho kandidata
          // a ostatni se do nej slouci (proto je uvedeno i "sloučeno")
@@ -2285,6 +2386,22 @@ void PrintDiagnostics(const int bars)
                      g_reliefStats[s].midTouch, g_reliefStats[s].touches,
                      g_reliefStats[s].passed, g_reliefStats[s].merged,
                      g_reliefStats[s].selected);
+
+         // Ktere meze zrovna plati - bez toho se ladi naslepo, protoze
+         // bodova mez a nasobek ATR daji na kazdem nastroji i timeframu
+         // jine cislo (viz PuntikyReliefTol a PuntikyReliefDriftLimit).
+         // Hvezdicka znaci, ze rozhodl nasobek ATR, ne zadana bodova mez.
+         SReliefParams p;
+         ReliefParamsForSlot(s, p);
+         PrintFormat("PUNTIKY diag: reliéf %s - ATR %.2f, proříznutí %.0f b%s, "
+                     "knot %.0f b%s, dotyk %.0f b%s, drift %.0f b%s",
+                     TFText(g_relTF[s]), p.atr,
+                     p.pierceTol / _Point, p.pierceTol > g_reliefParams.pierceTol ? " *" : "",
+                     p.wickTol   / _Point, p.wickTol   > g_reliefParams.wickTol   ? " *" : "",
+                     p.touchTol  / _Point, p.touchTol  > g_reliefParams.touchTol  ? " *" : "",
+                     PuntikyReliefDriftLimit(p) / _Point,
+                     PuntikyReliefDriftLimit(p) > g_reliefParams.maxDrift ? " *" : "");
+        }
 
       double relBarNow[], relBarProj[];
       ReliefBarIndexes(relBarNow, relBarProj);
@@ -2442,10 +2559,29 @@ void RedrawChannels()
 //| - prorazena primka uz neni prekazkou a mezi kandidaty se         |
 //| nedostane. Primky ostatnich timeframu zustanou nedotcene.        |
 //|  slot - poradi timeframu v g_relTF (zaroven tfIdx primek)        |
+//| Vraci false, kdyz se prepocet odlozil (ceka se na ATR).          |
 //+------------------------------------------------------------------+
-void RecalcReliefSlot(const int slot)
+bool RecalcReliefSlot(const int slot)
   {
    SReliefLine part[];
+
+   // Bez ATR tohoto timeframu by tolerance spadly na pouhou bodovou mez
+   // a s ni postavene primky by v pameti zustaly az do dalsiho plneho
+   // prepoctu - na D1 klidne tri tydny. Prepocet se proto odlozi:
+   // pocitadlo ani posledni zkontrolovana svicka se neposunou, takze to
+   // dalsi tick zkusi znovu. Handle na cizim TF se pocita asynchronne,
+   // jde tedy o par ticku po startu.
+   if(!RefreshReliefATR(slot))
+     {
+      if(!g_relAtrWarned[slot])
+        {
+         g_relAtrWarned[slot] = true;
+         PrintFormat("PUNTIKY: čeká se na dopočet ATR %s, reliéf tohoto timeframu "
+                     "se spočítá s prvními daty.", TFText(g_relTF[slot]));
+        }
+      return(false);
+     }
+   g_relAtrWarned[slot] = false;
 
    g_reliefBarsSinceBuild[slot] = 0;
    g_reliefCheckedBar[slot]     = iTime(_Symbol, g_relTF[slot], 1);
@@ -2459,14 +2595,17 @@ void RecalcReliefSlot(const int slot)
       // nikdo neprepocitava
       PuntikyReplaceSlot(g_relief, slot, part);
       g_reliefStats[slot].Reset();
-      return;
+      return(true);
      }
 
    // Primky jsou vedene v indexech tohoto pole (viz BarIndexNow)
    g_reliefRefTime[slot] = rates[copied - 1].time;
    g_reliefRefIdx[slot]  = copied - 1;
 
-   PuntikyBuildReliefLines(rates, g_reliefParams, part, g_reliefStats[slot]);
+   // Tolerance se odvozuji od ATR tohoto timeframu (viz ReliefParamsForSlot)
+   SReliefParams p;
+   ReliefParamsForSlot(slot, p);
+   PuntikyBuildReliefLines(rates, p, part, g_reliefStats[slot]);
 
    // Az ted se primky oznaci timeframem - modul o slotech nevi a
    // indexy i1/i2 bez nej neni proti cemu vyhodnotit
@@ -2474,6 +2613,7 @@ void RecalcReliefSlot(const int slot)
       part[i].tfIdx = slot;
 
    PuntikyReplaceSlot(g_relief, slot, part);
+   return(true);
   }
 
 //+------------------------------------------------------------------+
@@ -2532,10 +2672,17 @@ void RecalcRelief(const bool force, const bool &dropped[])
    bool changed = false;
    for(int s = 0; s < g_relTFCount; s++)
      {
-      if(!force && !fell[s] && g_reliefBarsSinceBuild[s] < PUNTIKY_RELIEF_REBUILD_BARS)
+      // Slot, ktery minule cekal na ATR, se musi zkusit znovu bez ohledu
+      // na pocitadlo baru - jeho prepocet se neuskutecnil, takze by
+      // pocitadlo (jeste nevynulovane) rebuild odlozilo az za 15 baru
+      const bool waiting = (g_relAtr[s] <= 0.0);
+      if(!force && !waiting && !fell[s] &&
+         g_reliefBarsSinceBuild[s] < PUNTIKY_RELIEF_REBUILD_BARS)
          continue;
-      RecalcReliefSlot(s);
-      changed = true;
+
+      // Odlozeny prepocet (ceka se na ATR) nic neprekreslil
+      if(RecalcReliefSlot(s))
+         changed = true;
      }
 
    // Kresli se az po vsech timeframech - kazde volani DrawRelief
@@ -2584,15 +2731,21 @@ bool RevalidateRelief(bool &dropped[])
    for(int s = 0; s < g_relTFCount; s++)
       dropped[s] = false;
 
-   const double tol        = g_reliefParams.pierceTol;
-   const double driftLimit = PuntikyReliefDriftLimit(g_reliefParams);
-   bool         anyDropped = false;
+   bool anyDropped = false;
 
    for(int s = 0; s < g_relTFCount; s++)
      {
       const datetime lastClosed = iTime(_Symbol, g_relTF[s], 1);
       if(lastClosed <= 0 || lastClosed == g_reliefCheckedBar[s])
          continue;
+
+      // Tytez tolerance, se kterymi primky tohoto timeframu vznikly -
+      // jinak by je levna kontrola zahazovala prisneji, nez podle ceho
+      // je plny prepocet vybral, a primky by kazdych par baru blikaly
+      SReliefParams p;
+      ReliefParamsForSlot(s, p);
+      const double tol        = p.pierceTol;
+      const double driftLimit = PuntikyReliefDriftLimit(p);
 
       // Kolik svicek se od posledni kontroly uzavrelo. Pocitadlo do
       // plneho prepoctu se zvysuje o skutecny pocet baru, ne o pocet
@@ -2634,7 +2787,7 @@ bool RevalidateRelief(bool &dropped[])
          // Posledni UZAVRENA svicka lezi o bar zpet za prave otevrenou.
          const double lastBar = barNow - 1.0;
          bool dead = g_relief[i].Drifted(lastBar, driftLimit) ||
-                     g_relief[i].Expired(lastBar, g_reliefParams.maxAgeFactor);
+                     g_relief[i].Expired(lastBar, p.maxAgeFactor);
 
          // Vsechny svicky uzavrene od posledni kontroly. Jsou to bary za
          // druhou oporou, kde je primka tvrdou hranici i pro knot - proto
