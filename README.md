@@ -770,9 +770,9 @@ překreslila i celý reliéf.
 ### Úrovně průrazu
 | Parametr | Výchozí | Význam |
 |---|---|---|
-| `InpUseSwingLevels` | true | prorážet jen swingové H1 svíčky |
-| `InpBreakSwingDepth` | 2 | šířka okna pro H1 swingy |
-| `InpBreakLookback` | 300 | kolik H1 svíček se prohledává |
+| `InpUseSwingLevels` | true | prorážet jen swingové svíčky TF průrazu |
+| `InpBreakSwingDepth` | 2 | šířka okna pro swingy TF průrazu |
+| `InpBreakLookback` | 300 | kolik svíček TF průrazu se prohledává |
 
 ### Detekce kanálů
 | Parametr | Výchozí | Význam |

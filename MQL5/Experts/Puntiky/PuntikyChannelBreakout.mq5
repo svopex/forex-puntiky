@@ -74,9 +74,9 @@ input ENUM_TIMEFRAMES InpReliefTF4        = PERIOD_D1;    // Reliefni primky 4 -
 
 //--- Urovne prurazu
 input group "=== Urovne prurazu ==="
-input bool            InpUseSwingLevels   = true;         // Prorazet jen swingove H1 svicky
-input int             InpBreakSwingDepth  = 2;            // Sirka okna pro H1 swingy
-input int             InpBreakLookback    = 300;          // Kolik H1 svicek prohledat
+input bool            InpUseSwingLevels   = true;         // Prorazet jen swingove svicky TF prurazu
+input int             InpBreakSwingDepth  = 2;            // Sirka okna pro swingy TF prurazu
+input int             InpBreakLookback    = 300;          // Kolik svicek TF prurazu prohledat
 
 //--- Detekce kanalu
 input group "=== Detekce kanalu ==="
