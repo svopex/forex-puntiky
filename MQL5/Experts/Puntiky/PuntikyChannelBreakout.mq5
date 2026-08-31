@@ -194,7 +194,7 @@ input double          InpHueResetFactor   = 1.50;          // Hystereze - pamet 
 input int             InpHueRepeatMinutes = 0;             // Opakovat upozorneni po N minutach (0 = jen jednou)
 input int             InpHueTimeout       = 1000;          // Timeout HTTP pozadavku (ms)
 input bool            InpHueTestButton    = true;          // Zobrazit tlacitko pro test upozorneni
-input bool            InpHueOnEntry       = false;         // Bliknout 1x pri vstupu do pozice (jen AUTO rezim)
+input bool            InpHueOnEntry       = true;         // Bliknout 1x pri vstupu do pozice (jen AUTO rezim)
 
 //--- Diagnostika a ladeni
 input group "=== Diagnostika ==="
