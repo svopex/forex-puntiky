@@ -660,8 +660,32 @@ void StopAutoMode(const string label)
       ReportEvent(label + " VYPNUT");
 
    RebuildPlans();
+   ArmHueAfterAuto();
    UpdatePanel();
    ChartRedraw();
+  }
+
+//+------------------------------------------------------------------+
+//| Umlci upozorneni Hue na urovne, u kterych trh uz je.             |
+//|                                                                  |
+//| Vola se pri vypnuti automatickeho rezimu. V nem je pamet          |
+//| upozorneni drzena prazdna, takze bez tohoto kroku by prvni        |
+//| kontrola po vypnuti nasla cenu uz uvnitr pasma a hned rozblikala  |
+//| zarovku - jenze tlacitko prave zmackl uzivatel u grafu a          |
+//| upozorneni na to, co ma pred ocima, mu nic nerekne.               |
+//| Urovne se proto oznaci jako "uz ohlasene". Neni to natrvalo:      |
+//| jakmile se cena vzdali za hysterezi (nebo uroven mine), pamet se  |
+//| sama uvolni a upozorneni zase funguji (viz HueCheckDirection).    |
+//+------------------------------------------------------------------+
+void ArmHueAfterAuto()
+  {
+   for(int i = 0; i < 2; i++)
+     {
+      if(!g_plan[i].valid)
+         continue;
+      g_dir[i].hueLevel = g_plan[i].entry;
+      g_dir[i].hueTime  = TimeCurrent();
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -4667,7 +4691,8 @@ void CheckHueAlerts()
 
    // V automatickem rezimu upozorneni nemaji koho upozornit - obchod
    // zada expert sam a blikajici zarovka by jen rusila. Pamet obou
-   // smeru se uvolni, aby po vypnuti rezimu upozorneni zase prislo.
+   // smeru se drzi prazdna, aby v ni nezustala stara uroven; stav pro
+   // prvni kontrolu po vypnuti rezimu nastavi ArmHueAfterAuto.
    if(g_autoMode)
      {
       g_dir[PUNTIKY_DIR_BUY].hueLevel  = 0.0;
