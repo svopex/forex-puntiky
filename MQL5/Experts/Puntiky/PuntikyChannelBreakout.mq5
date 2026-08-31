@@ -194,6 +194,7 @@ input double          InpHueResetFactor   = 1.50;          // Hystereze - pamet 
 input int             InpHueRepeatMinutes = 0;             // Opakovat upozorneni po N minutach (0 = jen jednou)
 input int             InpHueTimeout       = 1000;          // Timeout HTTP pozadavku (ms)
 input bool            InpHueTestButton    = true;          // Zobrazit tlacitko pro test upozorneni
+input bool            InpHueOnEntry       = false;         // Bliknout 1x pri vstupu do pozice (jen AUTO rezim)
 
 //--- Diagnostika a ladeni
 input group "=== Diagnostika ==="
@@ -1078,6 +1079,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       ReportEvent(StringFormat("%s vyplněn @ %s (úroveň už posunuta na %s)", dir,
                                DoubleToString(dealPrice, _Digits),
                                DoubleToString(level, _Digits)));
+
+   // Jedno bliknuti na to, ze obchod vznikl. Bezna upozorneni Hue hlasi
+   // PRIBLIZENI k urovni a v automatickem rezimu jsou potlacena (nemaji
+   // koho upozornit) - tohle je opacny pripad: expert uz vstoupil sam a
+   // uzivatel u toho nebyl. Proto jen v AUTO rezimu a jen jednou, primo
+   // z obsluhy vyplneni; zadna pamet se nevede, protoze kazde vyplneni
+   // je samostatna udalost.
+   HueOnEntry(isBuy, dealPrice);
 
    // Odtud dal se uz saha na obchodni ucet, takze instance urcena jen
    // ke kresleni (vypnute obchodovani nebo jiny ucet) konci. Stav
@@ -4734,6 +4743,25 @@ void HueCheckDirection(const bool isBuy, const double level, const double dist,
    d.hueLevel = level;
    d.hueTime  = TimeCurrent();
    HueSend(isBuy, level, dist);
+  }
+
+//+------------------------------------------------------------------+
+//| Bliknuti zarovkou pri vstupu do pozice v automatickem rezimu.    |
+//| Vypnuto vstupem InpHueOnEntry, mimo AUTO rezim se nedela vubec.  |
+//| Neuspech se nikde neresi - jde o informaci navic, ne o podminku  |
+//| obchodu; duvod uz zapsal HueSend do logu i panelu.               |
+//|  isBuy - smer vznikle pozice, price - cena plneni                |
+//+------------------------------------------------------------------+
+void HueOnEntry(const bool isBuy, const double price)
+  {
+   if(!InpHueOnEntry || !g_autoMode || InpHueUrl == "")
+      return;
+
+   // V testeru ani pri optimalizaci WebRequest nefunguje
+   if(MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_OPTIMIZATION))
+      return;
+
+   HueSend(isBuy, price, 0.0);
   }
 
 //+------------------------------------------------------------------+

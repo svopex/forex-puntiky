@@ -888,6 +888,7 @@ překreslila i celý reliéf.
 | `InpHueRepeatMinutes` | 0 | opakovat upozornění po N minutách (0 = jen jednou) |
 | `InpHueTimeout` | 1000 | timeout HTTP požadavku (ms) |
 | `InpHueTestButton` | true | zobrazit tlačítko `TEST Hue` nad panelem |
+| `InpHueOnEntry` | **false** | bliknout jednou při vstupu do pozice; jen v AUTO režimu (běžná upozornění jsou tam potlačená) |
 
 ### Diagnostika
 | Parametr | Výchozí | Význam |
