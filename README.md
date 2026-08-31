@@ -313,6 +313,29 @@ v cestě, takže ji strategie hlídá při plánování vstupu.
 
 Jak daleko smí přímka ujet od své druhé opory, hlídá **dvojí mez**: bodová
 (`InpReliefMaxDrift`) a relativní k ATR (`InpReliefMaxDriftATR`); platí ta **větší**.
+#### Vzdálenost od ceny a přilnutí
+
+Práh driftu měří, jak daleko přímka ujela od **své druhé opory** — ne jak daleko
+je od trhu. Téměř vodorovná čára ukotvená stovky bodů od ceny jím proto projde:
+neujela nikam, jen tam nikdy nebyla. Přesně takové přímky pak obsadily všechny
+sloty a kreslily se mimo viditelný rozsah grafu (na D1 i tisíce bodů od ceny).
+
+Proto jsou tu dva samostatné filtry:
+
+- `InpReliefMaxDist` / `InpReliefMaxDistATR` — jak daleko od **aktuální ceny**
+  (závěr poslední uzavřené svíčky) smí přímka ležet. Překážkou průrazu je jen
+  přímka, na kterou cena během obchodu vůbec může dosáhnout. Test je O(1), takže
+  běží ještě před průchodem svíčkami; kontroluje ho i levná revalidace, aby
+  přímka zmizela hned, jakmile se od ní trh vzdálí.
+- `InpReliefMaxGap` / `InpReliefMaxGapATR` — strop na **přilnutí** (`meanGap`),
+  tedy průměrný odstup přímky od ceny mezi oporami. Odlišuje trendlinii od pouhé
+  tětivy: čistá spojnice dvou vzdálených swingů není proražená a bez tohoto prahu
+  projde, i když se ceny mezi oporami ani jednou nedotkne. Testuje se až po
+  průchodu svíčkami, protože dřív průměrný odstup není znám.
+
+Obě používají stejné pravidlo jako drift — platí **větší** z bodové meze
+a násobku ATR, `0` v bodové mezi filtr vypne úplně.
+
 #### Tolerance detekce a ATR
 
 Tolerance proříznutí, knotu a dotyku mají vedle bodové meze i **násobek ATR** —
@@ -465,6 +488,7 @@ s důvodem `čeká na návrat pod/nad úroveň`. Možné důvody:
 | Tečkované čáry (`InpColorEntry` / `InpColorSL` / `InpColorTP`) | plánovaný vstup, SL a PT pro oba směry, s popisky `SL` / `PT` |
 | Tečkované čáry (`InpColorRelief`, MediumOrchid) | reliéfní přímky ze všech zapnutých TF reliéfu |
 | Panel vlevo nahoře | hlavička, přehled kanálů, úrovně průrazu, reliéf, stav upozornění Hue, stav směrů, návrhy vstupu, pozice / pending, poslední událost |
+| Hláška pod tlačítky (`InpColorPanel`) | poslední událost při **vypnutém** panelu; po 10 s zmizí |
 | Tři řady tlačítek nad panelem | 1. řada obslužná (`TEST Hue`, `PANEL`), 2. řada `LONG` / `SHORT`, 3. řada `LONG 2x` / `SHORT 2x` přesně pod nimi (2. a 3. jen v ručním režimu); text panelu začíná až pod nimi |
 
 Popisky sdílené opory se slučují (`E1 E3`), panel uhýbá one-click SELL/BUY panelu
@@ -709,8 +733,12 @@ v bublině úsečky, v panelu i v diagnostice). Vypnutý slot se přeskočí, po
 slotů na výsledek nemá vliv a tentýž timeframe zadaný dvakrát se započítá jednou.
 
 **První zapnutý** timeframe je zároveň *referenční*: počítá se z něj ATR (filtr
-šířky kanálu, práh driftu reliéfu, slučování popisků) a v jeho svíčkách se zadává
-`InpEdgeProjBars`.
+šířky kanálu, slučování popisků) a v jeho svíčkách se zadává `InpEdgeProjBars`,
+tedy horizont, ke kterému se posuzují hrany i reliéfní přímky.
+
+Vypnout **všechny** timeframy kanálů je legitimní nastavení — reliéfní přímky mají
+vlastní timeframy i vlastní ATR, takže bez kanálů fungují dál. Horizont projekce
+pak drží `InpEntryTF`.
 
 | Parametr | Výchozí | Význam |
 |---|---|---|
@@ -806,6 +834,10 @@ překreslila i celý reliéf.
 | `InpReliefMaxAge` | 0.0 | platnost přímky za 2. oporou v násobcích délky (0 = neomezeno) |
 | `InpReliefMaxDrift` | 3000 | max. vzdálení přímky od 2. opory (body; 0 = filtr vypnutý) |
 | `InpReliefMaxDriftATR` | 4.0 | totéž jako násobek ATR — platí větší z obou mezí |
+| `InpReliefMaxDist` | 1500 | max. vzdálenost přímky od **ceny** (body; 0 = filtr vypnutý) |
+| `InpReliefMaxDistATR` | 8.0 | totéž jako násobek ATR — platí větší z obou mezí |
+| `InpReliefMaxGap` | 2000 | max. průměrný odstup přímky od ceny mezi oporami (body; 0 = vypnuto) |
+| `InpReliefMaxGapATR` | 5.0 | totéž jako násobek ATR — platí větší z obou mezí |
 | `InpReliefMidTouch` | false | vyžadovat dotyk i uprostřed přímky |
 | `InpReliefMidTol` | 60 | tolerance středního dotyku (body) |
 | `InpReliefMidFrom` / `InpReliefMidTo` | 0.20 / 0.80 | prostřední úsek přímky |

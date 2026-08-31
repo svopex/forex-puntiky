@@ -31,7 +31,7 @@
 
 //--- Timeframy
 input group "=== Timeframy ==="
-input ENUM_TIMEFRAMES InpBreakoutTF       = PERIOD_H1;    // TF urovni prurazu (high/low svicky)
+input ENUM_TIMEFRAMES InpBreakoutTF       = PERIOD_15;    // TF urovni prurazu (high/low svicky)
 input ENUM_TIMEFRAMES InpEntryTF          = PERIOD_M1;    // TF vyhodnoceni vstupu (potvrzeni svickou, spread)
 
 //--- Timeframy detekce kanalu. Kanaly se hledaji v kazdem zapnutem
@@ -140,6 +140,10 @@ input int             InpReliefDedupTol   = 40;           // Prah shody dvou pri
 input double          InpReliefMaxAge     = 0.0;          // Platnost primky za 2. oporou (0 = neomezeno)
 input int             InpReliefMaxDrift   = 3000;         // Max. vzdaleni primky od 2. opory (body)
 input double          InpReliefMaxDriftATR = 4.0;         // Max. vzdaleni primky od 2. opory (nasobek ATR)
+input int             InpReliefMaxDist    = 1500;         // Max. vzdalenost primky od CENY (body, 0 = bez omezeni)
+input double          InpReliefMaxDistATR = 8.0;          // Max. vzdalenost primky od CENY (nasobek ATR)
+input int             InpReliefMaxGap     = 2000;         // Max. prumerny odstup primky od ceny (body, 0 = bez omezeni)
+input double          InpReliefMaxGapATR  = 5.0;          // Max. prumerny odstup primky od ceny (nasobek ATR)
 input bool            InpReliefMidTouch   = false;        // Vyzadovat dotyk i uprostred primky
 input int             InpReliefMidTol     = 60;           // Tolerance stredniho dotyku (body)
 input double          InpReliefMidFrom    = 0.20;         // Stredni usek primky - od (0..1)
@@ -256,6 +260,13 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 #define PUNTIKY_PANEL_MAX_CHARS 63
 #define PUNTIKY_PANEL_INDENT    "     "   // odsazeni pokracovaciho radku
 
+// Jak dlouho zustane posledni udalost viset pod tlacitky, kdyz je panel
+// vypnuty. Se zapnutym panelem se nemaze - tam ma vlastni radek
+// "poslední:" a jeho zmizeni by z panelu udelalo blikajici plochu.
+#define PUNTIKY_EVENT_FLASH_SEC 10
+// Kolik radku smi hlaska zabrat (delsi duvody zamitnuti se zalomi)
+#define PUNTIKY_EVENT_MAX_LINES 4
+
 // Referencni spread pro testy urovni prurazu. Zivy spread se pri
 // rolloveru nafoukne i desetinasobne a takova spicka se nesmi dostat
 // do prepoctu bidu na exekucni cenu: "prorazila" by naraz vsechny
@@ -345,6 +356,11 @@ datetime      g_breakSwapBar     = 0;  // bar vstupniho TF, ve kterem pruraz nas
 
 SEntryPlan    g_plan[2];               // aktualni navrhy obou smeru
 string        g_lastEvent = "";        // posledni udalost pro panel
+// Kdy udalost vznikla a kolik radku hlasky je prave vykresleno pod
+// tlacitky. Cas se bere z GetTickCount64, ne ze serveroveho casu: ten
+// se na klidnem trhu nehne a hlaska by viselo dokud neprijde tick.
+ulong         g_lastEventTick  = 0;
+int           g_eventShown     = 0;
 bool          g_tradingAllowed = true; // vysledek kontroly uctu
 bool          g_showPanel     = false;// kreslit textovy panel pod tlacitky
                                       // (prepina se tlacitkem PANEL v grafu)
@@ -419,8 +435,17 @@ bool          g_spreadPrimed = false;  // vzorky uz naplneny z historickych svic
 //+------------------------------------------------------------------+
 void ReportEvent(const string text)
   {
-   g_lastEvent = text;
+   g_lastEvent     = text;
+   g_lastEventTick = GetTickCount64();
    Print("PUNTIKY: ", text);
+
+   // Pri vypnutem panelu je hlaska pod tlacitky jedine misto, kde ji
+   // uzivatel uvidi - vykresli se hned, ne az za sekundu z timeru
+   if(!g_showPanel)
+     {
+      DrawEventFlash();
+      ChartRedraw();
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -609,8 +634,8 @@ void OnDeinit(const int reason)
                         "zadaných tlačítkem.", left);
          else
             if(!TradingEnabled())
-               PrintFormat("PUNTIKY: obchodování je vypnuté - na trhu zůstává %d "
-                           "příkaz(ů) bez dozoru experta.", left);
+               PrintFormat("PUNTIKY: %s - na trhu zůstává %d příkaz(ů) bez dozoru "
+                           "experta.", TradingDisabledReason(), left);
             else
                CancelPendingOrders();
         }
@@ -978,13 +1003,14 @@ bool ValidateInputs()
   {
    string err = "";
 
-   // Bez jedineho zapnuteho TF kanalu by strategie nemela kanaly ani
-   // referencni timeframe pro ATR a projekci hran - to uz neni
-   // nastaveni, ale tise nefunkcni expert
-   if(g_chTFCount < 1)
-      err += "zapni aspoň jeden timeframe kanálů; ";
-   // Totez pro relief: zapnute hlidani primek bez jedineho timeframu
-   // by znamenalo, ze se primky nikdy nenajdou a nikdo se to nedozvi
+   // Vypnout VSECHNY timeframy kanalu je legitimni nastaveni - reliefni
+   // primky maji vlastni timeframy i vlastni ATR, takze bez kanalu
+   // funguji dal. Neni to tedy chyba vstupu; kdyby jí bylo, expert by
+   // se nespustil a OnDeinit by z grafu smazal i reliéf.
+   // Referencni timeframe pro ATR a projekci prekazek pak zastoupi TF
+   // vstupu (viz ResolveTFSlots).
+   // Zapnute hlidani primek bez jedineho timeframu reliefu uz ale chyba
+   // je - primky by se nikdy nenasly a nikdo by se to nedozvedel.
    if(InpUseRelief && g_relTFCount < 1)
       err += "zapni aspoň jeden timeframe reliéfu (nebo vypni InpUseRelief); ";
 
@@ -1043,6 +1069,10 @@ bool ValidateInputs()
    if(InpReliefMaxAge < 0.0)     err += "InpReliefMaxAge >= 0; ";
    if(InpReliefMaxDrift < 0)     err += "InpReliefMaxDrift >= 0; ";
    if(InpReliefMaxDriftATR < 0.0) err += "InpReliefMaxDriftATR >= 0; ";
+   if(InpReliefMaxDist < 0)      err += "InpReliefMaxDist >= 0; ";
+   if(InpReliefMaxDistATR < 0.0) err += "InpReliefMaxDistATR >= 0; ";
+   if(InpReliefMaxGap < 0)       err += "InpReliefMaxGap >= 0; ";
+   if(InpReliefMaxGapATR < 0.0)  err += "InpReliefMaxGapATR >= 0; ";
 
    // Nasobky ATR u tolerance primek - zaporny by z tolerance udelal
    // zapornou cenu a test by se obratil (viz PuntikyReliefTol)
@@ -1147,10 +1177,14 @@ void ResolveTFSlots()
    CollectTFSlots(use, tf, g_relTF, g_relTFCount);
 
    // Referencni timeframe je prvni zapnuty TF kanalu - z nej se cte ATR
-   // a v jeho barech je zadany InpEdgeProjBars. Kdyz zadny zapnuty
-   // neni, chybu ohlasi ValidateInputs; nahradni hodnota je tu jen
-   // proto, aby se do te doby nepracovalo s PERIOD_CURRENT.
+   // (slucovani popisku) a v jeho barech je zadany InpEdgeProjBars,
+   // tedy horizont, ke kteremu se posuzuji hrany i reliefni primky.
+   // Kanaly smi byt vypnute uplne; horizont pak drzi TF vstupu, aby
+   // projekce prekazek nezustala bez meritka.
    g_refTF = (g_chTFCount > 0) ? g_chTF[0] : InpEntryTF;
+   if(g_chTFCount < 1)
+      PrintFormat("PUNTIKY: kanály jsou vypnuté (žádný zapnutý timeframe) - "
+                  "projekce překážek se měří ve svíčkách %s.", TFText(g_refTF));
   }
 
 //+------------------------------------------------------------------+
@@ -1209,6 +1243,10 @@ void InitParams()
    g_reliefParams.maxAgeFactor = InpReliefMaxAge;
    g_reliefParams.maxDrift     = InpReliefMaxDrift * _Point;
    g_reliefParams.maxDriftATR  = InpReliefMaxDriftATR;
+   g_reliefParams.maxDist      = InpReliefMaxDist * _Point;
+   g_reliefParams.maxDistATR   = InpReliefMaxDistATR;
+   g_reliefParams.maxGap       = InpReliefMaxGap * _Point;
+   g_reliefParams.maxGapATR    = InpReliefMaxGapATR;
    // ATR se doplnuje az per timeframe v ReliefParamsForSlot - kazdy TF
    // reliefu ma vlastni a tolerance se od nej odvozuji
    g_reliefParams.atr          = 0.0;
@@ -1243,9 +1281,10 @@ void PrintPointDiagnostics()
    // Nasobky ATR se sem nevypisuji v cene - ta zavisi na ATR kazdeho
    // TF reliefu zvlast a vypisuje ji az diagnostika po prvnim prepoctu
    PrintFormat("PUNTIKY: reliéf - násobky ATR: proříznutí %.2f, knot %.2f, dotyk %.2f, "
-               "drift %.1f  (0 = jen bodová mez; platí větší z obou)",
+               "drift %.1f, od ceny %.1f, odstup %.1f  (0 = jen bodová mez; "
+               "platí větší z obou)",
                InpReliefPierceATR, InpReliefWickATR, InpReliefTouchATR,
-               InpReliefMaxDriftATR);
+               InpReliefMaxDriftATR, InpReliefMaxDistATR, InpReliefMaxGapATR);
    PrintFormat("PUNTIKY: reliéf - proříznutí %d b = %s, knot %d b = %s, dotyk %d b = %s, "
                "shoda %d b = %s, drift %d b = %s, střed %d b = %s",
                InpReliefPierceTol, DoubleToString(InpReliefPierceTol * _Point, _Digits),
@@ -1390,14 +1429,15 @@ void TryCleanupOrders()
       return;
      }
 
-   if(!TradingEnabled())
+   const string blocked = TradingDisabledReason();
+   if(blocked != "")
      {
       if(!g_cleanupWarned)
         {
          g_cleanupWarned = true;
-         PrintFormat("PUNTIKY: režim M1 - obchodování je vypnuté, %d ležící "
-                     "příkaz(ů) zatím nelze zrušit; uklidí se, jakmile bude "
-                     "obchodování povoleno.", left);
+         PrintFormat("PUNTIKY: režim M1 - %d ležící příkaz(ů) zatím nelze zrušit "
+                     "(%s); uklidí se, jakmile bude obchodování povoleno.",
+                     left, blocked);
         }
       return;
      }
@@ -1824,13 +1864,37 @@ int CountOrders()
 //+------------------------------------------------------------------+
 bool TradingEnabled()
   {
-   if(!InpEnableTrading || !g_tradingAllowed)
-      return(false);
-   if(!MQLInfoInteger(MQL_TRADE_ALLOWED) || !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
-      return(false);
-   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
-      return(false);
-   return(true);
+   return(TradingDisabledReason() == "");
+  }
+
+//+------------------------------------------------------------------+
+//| Proc expert nesmi obchodovat ("" = smi).                         |
+//| Duvodu je sest a kazdy se resi jinde: dva ve vstupech experta,   |
+//| dva v terminalu a dva na strane brokera. Spolecna hlaska         |
+//| "obchodování je vypnuto" nutila uzivatele hledat, ktery z nich   |
+//| to zrovna je - typicky pritom jde o globalni tlacitko            |
+//| algoritmickeho obchodovani v liste MT5.                          |
+//| Poradi neni libovolne: pri vypnutem globalnim tlacitku vraci     |
+//| MQL_TRADE_ALLOWED taky false, takze by se ohlasilo zaskrtavatko  |
+//| ve vlastnostech experta misto skutecne priciny.                  |
+//+------------------------------------------------------------------+
+string TradingDisabledReason()
+  {
+   if(!InpEnableTrading)
+      return("obchodování je vypnuté vstupem InpEnableTrading");
+   if(!g_tradingAllowed)
+      return(StringFormat("účet %d neodpovídá povolenému účtu %d (InpAllowedAccount)",
+                          AccountInfoInteger(ACCOUNT_LOGIN), InpAllowedAccount));
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+      return("zapni algoritmické obchodování v MT5 (tlačítko v liště nahoře)");
+   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return("povol obchodování ve vlastnostech experta "
+             "(záložka Obecné > Povolit algoritmické obchodování)");
+   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
+      return("broker má na tomto účtu obchodování zakázané");
+   if(!AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
+      return("broker má na tomto účtu zakázané obchodování experty");
+   return("");
   }
 
 //+------------------------------------------------------------------+
@@ -2379,10 +2443,12 @@ void PrintDiagnostics(const int bars)
          // prosly filtry - vejir primek z jedne kotvy da jednoho kandidata
          // a ostatni se do nej slouci (proto je uvedeno i "sloučeno")
          PrintFormat("PUNTIKY diag: reliéf %s - dvojic %d, délka %d, stáří %d, drift %d, "
-                     "proraženo %d, střed %d, dotyky %d -> prošlo %d (sloučeno %d), vybráno %d",
+                     "daleko od ceny %d, nesedí na ceně %d, proraženo %d, střed %d, "
+                     "dotyky %d -> prošlo %d (sloučeno %d), vybráno %d",
                      TFText(g_relTF[s]),
                      g_reliefStats[s].pairs, g_reliefStats[s].span, g_reliefStats[s].age,
-                     g_reliefStats[s].drift, g_reliefStats[s].pierced,
+                     g_reliefStats[s].drift, g_reliefStats[s].farPrice,
+                     g_reliefStats[s].looseGap, g_reliefStats[s].pierced,
                      g_reliefStats[s].midTouch, g_reliefStats[s].touches,
                      g_reliefStats[s].passed, g_reliefStats[s].merged,
                      g_reliefStats[s].selected);
@@ -2394,13 +2460,18 @@ void PrintDiagnostics(const int bars)
          SReliefParams p;
          ReliefParamsForSlot(s, p);
          PrintFormat("PUNTIKY diag: reliéf %s - ATR %.2f, proříznutí %.0f b%s, "
-                     "knot %.0f b%s, dotyk %.0f b%s, drift %.0f b%s",
+                     "knot %.0f b%s, dotyk %.0f b%s, drift %.0f b%s, "
+                     "od ceny %.0f b%s, odstup %.0f b%s",
                      TFText(g_relTF[s]), p.atr,
                      p.pierceTol / _Point, p.pierceTol > g_reliefParams.pierceTol ? " *" : "",
                      p.wickTol   / _Point, p.wickTol   > g_reliefParams.wickTol   ? " *" : "",
                      p.touchTol  / _Point, p.touchTol  > g_reliefParams.touchTol  ? " *" : "",
                      PuntikyReliefDriftLimit(p) / _Point,
-                     PuntikyReliefDriftLimit(p) > g_reliefParams.maxDrift ? " *" : "");
+                     PuntikyReliefDriftLimit(p) > g_reliefParams.maxDrift ? " *" : "",
+                     PuntikyReliefDistLimit(p) / _Point,
+                     PuntikyReliefDistLimit(p) > g_reliefParams.maxDist ? " *" : "",
+                     PuntikyReliefGapLimit(p) / _Point,
+                     PuntikyReliefGapLimit(p) > g_reliefParams.maxGap ? " *" : "");
         }
 
       double relBarNow[], relBarProj[];
@@ -2689,6 +2760,13 @@ void RecalcRelief(const bool force, const bool &dropped[])
    // znamena smazani a vytvoreni vsech objektu reliefu i kanalu
    if(changed)
       DrawRelief();
+
+   // Diagnostiku vypisuje prepocet kanalu, jenze pri vypnutych kanalech
+   // uz zadny nebezi a s nim by zmizel i vypis filtru reliefu - prave
+   // ten, podle ktereho se prahy ladi. V tom pripade ji vypise prepocet
+   // reliefu, aby v logu nechybela.
+   if(changed && g_chTFCount < 1)
+      PrintDiagnostics(0);
   }
 
 //+------------------------------------------------------------------+
@@ -2746,6 +2824,12 @@ bool RevalidateRelief(bool &dropped[])
       ReliefParamsForSlot(s, p);
       const double tol        = p.pierceTol;
       const double driftLimit = PuntikyReliefDriftLimit(p);
+      const double distLimit  = PuntikyReliefDistLimit(p);
+
+      // Tataz cena, ke ktere vzdalenost meri plny prepocet (zaver
+      // posledni uzavrene svicky) - jinak by se obe cesty rozesly a
+      // primka by mezi prepocty blikala
+      const double lastPrice = iClose(_Symbol, g_relTF[s], 1);
 
       // Kolik svicek se od posledni kontroly uzavrelo. Pocitadlo do
       // plneho prepoctu se zvysuje o skutecny pocet baru, ne o pocet
@@ -2786,8 +2870,12 @@ bool RevalidateRelief(bool &dropped[])
          // zaroven starne; za prahem uz to neni relief, ale artefakt.
          // Posledni UZAVRENA svicka lezi o bar zpet za prave otevrenou.
          const double lastBar = barNow - 1.0;
+         // Trh se od primky vzdaluje i bez toho, aby ji prorazil - pak
+         // uz neni prekazkou a nema dal zkracovat PT ani strasit v grafu
          bool dead = g_relief[i].Drifted(lastBar, driftLimit) ||
-                     g_relief[i].Expired(lastBar, p.maxAgeFactor);
+                     g_relief[i].Expired(lastBar, p.maxAgeFactor) ||
+                     (lastPrice > 0.0 &&
+                      g_relief[i].TooFarFrom(lastBar, lastPrice, distLimit));
 
          // Vsechny svicky uzavrene od posledni kontroly. Jsou to bary za
          // druhou oporou, kde je primka tvrdou hranici i pro knot - proto
@@ -4104,9 +4192,10 @@ void ManualToggle(const bool isBuy)
   {
    const string dir = isBuy ? "LONG" : "SHORT";
 
-   if(!TradingEnabled())
+   const string blocked = TradingDisabledReason();
+   if(blocked != "")
      {
-      ReportEvent(dir + " - obchodování je vypnuto");
+      ReportEvent(dir + " - " + blocked);
       return;
      }
 
@@ -4145,9 +4234,10 @@ void ManualDouble(const bool isBuy)
    const string plain = isBuy ? "LONG" : "SHORT";
    const string dir   = plain + " 2x";
 
-   if(!TradingEnabled())
+   const string blocked = TradingDisabledReason();
+   if(blocked != "")
      {
-      ReportEvent(dir + " - obchodování je vypnuto");
+      ReportEvent(dir + " - " + blocked);
       return;
      }
 
@@ -4953,6 +5043,67 @@ void PanelAdd(string &lines[], int &n, const string text)
   }
 
 //+------------------------------------------------------------------+
+//| Smaze hlasku posledni udalosti pod tlacitky.                     |
+//| Vlastni prefix MSG_ je nutny: uklid panelu maze PNL_, takze pri  |
+//| vypnutem panelu by hlasku smazal hned po jejim vykresleni.       |
+//+------------------------------------------------------------------+
+void ClearEventFlash()
+  {
+   if(g_eventShown == 0)
+      return;
+   PuntikyDeleteObjects("MSG_");
+   g_eventShown = 0;
+  }
+
+//+------------------------------------------------------------------+
+//| Vypise posledni udalost pod radu tlacitek.                       |
+//| Pri vypnutem panelu je to jedine misto v grafu, kde se uzivatel  |
+//| dozvi, proc klik na LONG / SHORT nic neudelal - proto se kresli  |
+//| i tehdy. Po PUNTIKY_EVENT_FLASH_SEC sekundach zmizi, aby v grafu |
+//| nevisela stara hlaska; se zapnutym panelem se nekresli vubec,    |
+//| tam ma udalost vlastni radek.                                    |
+//| Text se zalamuje toutez cestou jako panel - duvody zamitnuti     |
+//| byvaji delsi nez limit MT5 na text objektu.                      |
+//+------------------------------------------------------------------+
+void DrawEventFlash()
+  {
+   if(g_lastEvent == "" || g_lastEventTick == 0)
+     {
+      ClearEventFlash();
+      return;
+     }
+
+   // GetTickCount64 bezi od startu systemu, takze se nemusi hlidat
+   // pretoceni ani skok serveroveho casu
+   if(GetTickCount64() - g_lastEventTick >= (ulong)PUNTIKY_EVENT_FLASH_SEC * 1000)
+     {
+      ClearEventFlash();
+      return;
+     }
+
+   string lines[PUNTIKY_PANEL_MAX_LINES];
+   int    n = 0;
+   PanelAdd(lines, n, g_lastEvent);
+   if(n > PUNTIKY_EVENT_MAX_LINES)
+      n = PUNTIKY_EVENT_MAX_LINES;
+
+   const int lineH = (InpPanelLineHeight > 0) ? InpPanelLineHeight
+                                              : (InpPanelFontSize + 5);
+   // Tataz vyska, na ktere zacina text zapnuteho panelu - hlaska tak
+   // nesedi na tlacitkach a po zapnuti panelu se nic neposune
+   const int y = PanelTopY() + ButtonRowHeight();
+
+   for(int i = 0; i < n; i++)
+      PuntikyLabel(PUNTIKY_PREFIX + "MSG_" + IntegerToString(i),
+                   InpPanelX, y + i * lineH,
+                   lines[i], InpColorPanel, InpPanelFontSize, "Consolas");
+
+   // Radky, ktere po kratsi hlasce zbyly navic
+   PuntikyDeleteIndexed("MSG_", n, g_eventShown);
+   g_eventShown = n;
+  }
+
+//+------------------------------------------------------------------+
 //| Vykresleni informacniho panelu.                                  |
 //| Prekresluji se jen radky, jejichz text se zmenil - panel ma pres |
 //| deset radku a kazdy je nekolik volani do terminalu, takze plne   |
@@ -4979,8 +5130,13 @@ void UpdatePanel()
          g_panelShown = 0;
         }
       DrawPanelButtons(PanelTopY(), ms);
+      DrawEventFlash();
       return;
      }
+
+   // Se zapnutym panelem ma udalost vlastni radek "poslední:", takze
+   // samostatna hlaska pod tlacitky by se jen zdvojila
+   ClearEventFlash();
 
    string lines[PUNTIKY_PANEL_MAX_LINES];
    int    n = 0;
@@ -4995,7 +5151,12 @@ void UpdatePanel()
    //--- jeden se pri limitu 63 znaku nevejde ani polovina udaju.
    const int channels = ChannelCount();
    if(channels <= 0)
-      PanelAdd(lines, n, "kanály: žádný hlavní kanál nesplnil filtry");
+      // "Vypnuto" a "nic neprošlo filtry" jsou dva ruzne stavy - spolecna
+      // hlaska by nutila hledat v nastaveni prahy, kdyz jsou jen vypnute
+      // vsechny timeframy
+      PanelAdd(lines, n, (g_chTFCount < 1)
+                         ? "kanály: vypnuté (žádný zapnutý timeframe)"
+                         : "kanály: žádný hlavní kanál nesplnil filtry");
    else
      {
       PanelAdd(lines, n, StringFormat("kanály: %d", channels));

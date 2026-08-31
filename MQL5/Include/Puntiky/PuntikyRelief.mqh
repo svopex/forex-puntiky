@@ -110,6 +110,16 @@ struct SReliefLine
       return(maxAgeFactor > 0.0 &&
              (idx - (double)i2) > maxAgeFactor * (double)spanBars);
      }
+   //--- Lezi primka prilis daleko od aktualni ceny? (0 = filtr vypnuty)
+   //--- Neni to totez co Drifted: ten meri, jak daleko primka ujela od
+   //--- SVE DRUHE OPORY, takze temer vodorovna cara kotvena stovky
+   //--- bodu od trhu ho projde - neujela nikam, jen tam nikdy nebyla.
+   //--- Prekazkou prurazu je pritom jen primka, na kterou cena vubec
+   //--- muze dosahnout (viz PuntikyReliefLimit).
+   bool              TooFarFrom(const double idx, const double price, const double distLimit)
+     {
+      return(distLimit > 0.0 && MathAbs(ValueAtBar(idx) - price) > distLimit);
+     }
   };
 
 //+------------------------------------------------------------------+
@@ -122,6 +132,8 @@ struct SReliefStats
    int               span;       // prilis kratka primka
    int               age;        // prilis stara druha opora
    int               drift;      // primka ujela od opory
+   int               farPrice;   // primka lezi prilis daleko od ceny
+   int               looseGap;   // primka na cene nesedi (velky prumerny odstup)
    int               pierced;    // primka prorazena cenou
    int               midTouch;   // chybi dotyk uprostred
    int               touches;    // malo dotyku celkem
@@ -131,8 +143,8 @@ struct SReliefStats
 
    void              Reset()
      {
-      pairs = 0; span = 0; age = 0; drift = 0; pierced = 0;
-      midTouch = 0; touches = 0; merged = 0; passed = 0; selected = 0;
+      pairs = 0; span = 0; age = 0; drift = 0; farPrice = 0; looseGap = 0;
+      pierced = 0; midTouch = 0; touches = 0; merged = 0; passed = 0; selected = 0;
      }
   };
 
@@ -153,6 +165,10 @@ struct SReliefParams
    double            maxAgeFactor; // jak dlouho primka plati za druhou oporou
    double            maxDrift;     // jak daleko smi primka ujet od druhe opory (v cene)
    double            maxDriftATR;  // totez jako nasobek ATR (0 = jen bodova mez)
+   double            maxDist;      // jak daleko smi primka byt od aktualni ceny (v cene)
+   double            maxDistATR;   // totez jako nasobek ATR (0 = jen bodova mez)
+   double            maxGap;       // max. prumerny odstup primky od ceny mezi oporami
+   double            maxGapATR;    // totez jako nasobek ATR (0 = jen bodova mez)
    double            atr;          // aktualni ATR timeframu, na kterem se hleda
    bool              needMidTouch; // vyzadovat dotyk i uprostred primky
    double            midTol;       // tolerance stredniho dotyku (v cene)
@@ -171,15 +187,53 @@ struct SReliefParams
 //| bodova mez vedle nasobku ATR.                                    |
 //| Nula v bodove mezi znamena vypnuty filtr, i kdyz je nasobek ATR  |
 //| zadany - "bez omezeni" musi zustat bez omezeni.                  |
-//|  p - parametry hledani (vcetne aktualniho ATR)                   |
+//|  points    - bodova mez uz prepoctena na cenu (0 = filtr vypnuty)|
+//|  atrFactor - nasobek ATR (0 = jen bodova mez)                    |
+//|  atr       - ATR timeframu, na kterem se primky hledaji          |
 //+------------------------------------------------------------------+
+double PuntikyReliefLimit(const double points, const double atrFactor, const double atr)
+  {
+   if(points <= 0.0)
+      return(0.0);
+   if(atr > 0.0 && atrFactor > 0.0)
+      return(MathMax(points, atrFactor * atr));
+   return(points);
+  }
+
+//--- Prahy odvozene stejnym pravidlem. Kazdy z nich ma vlastni funkci,
+//--- aby se volajici nemusel trefovat do spravne dvojice poli.
 double PuntikyReliefDriftLimit(const SReliefParams &p)
   {
-   if(p.maxDrift <= 0.0)
-      return(0.0);
-   if(p.atr > 0.0 && p.maxDriftATR > 0.0)
-      return(MathMax(p.maxDrift, p.maxDriftATR * p.atr));
-   return(p.maxDrift);
+   return(PuntikyReliefLimit(p.maxDrift, p.maxDriftATR, p.atr));
+  }
+
+//+------------------------------------------------------------------+
+//| Jak daleko od aktualni ceny smi primka lezet.                    |
+//|                                                                  |
+//| Prah driftu tohle NEPOKRYVA: meri posun primky od jeji druhe     |
+//| opory, takze temer vodorovna cara kotvena stovky bodu od trhu ho |
+//| projde - neujela nikam, jen tam nikdy nebyla. Presne takove      |
+//| primky pak zaplnily vsechny sloty a v grafu se kreslily daleko   |
+//| mimo viditelny rozsah (na D1 i tisice bodu od ceny).             |
+//| Prekazkou prurazu je pritom jen primka, na kterou cena muze       |
+//| behem obchodu vubec dosahnout.                                    |
+//+------------------------------------------------------------------+
+double PuntikyReliefDistLimit(const SReliefParams &p)
+  {
+   return(PuntikyReliefLimit(p.maxDist, p.maxDistATR, p.atr));
+  }
+
+//+------------------------------------------------------------------+
+//| Jak volne smi primka mezi svymi oporami viset nad cenou.         |
+//|                                                                  |
+//| Prumerny odstup od ceny (meanGap) odlisuje trendlinii od pouhe   |
+//| tetivy: cistá spojnice dvou vzdalenych swingu neni prorazena a    |
+//| bez tohoto prahu projde, i kdyz se mezi oporami ceny ani jednou  |
+//| nedotkne a visi od ni desitky ATR.                               |
+//+------------------------------------------------------------------+
+double PuntikyReliefGapLimit(const SReliefParams &p)
+  {
+   return(PuntikyReliefLimit(p.maxGap, p.maxGapATR, p.atr));
   }
 
 //+------------------------------------------------------------------+
@@ -351,8 +405,15 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
 
    const int maxGap = MathMax(p.maxSwingGap, 2);
 
-   // Prah driftu se spocita jednou - zavisi jen na parametrech a ATR
+   // Prahy se spocitaji jednou - zavisi jen na parametrech a ATR
    const double driftLimit = PuntikyReliefDriftLimit(p);
+   const double distLimit  = PuntikyReliefDistLimit(p);
+   const double gapLimit   = PuntikyReliefGapLimit(p);
+
+   // Cena, ke ktere se meri vzdalenost primky: zaver posledni uzavrene
+   // svicky. Ziva cena by se menila uvnitr baru a vysledek prepoctu by
+   // pak zavisel na tom, na kterem ticku zrovna probehl.
+   const double lastPrice = rates[n - 1].close;
 
    //--- Swingy se hledaji ve vice meritkach - jemne okno da cerstve
    //--- lokalni primky, hrube okno vidi jen hlavni vrcholy/dna, takze
@@ -428,6 +489,17 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
                  }
               }
 
+            // Jak daleko primka lezi od aktualni ceny. Drift vyse tohle
+            // nepokryva (viz PuntikyReliefDistLimit) - temer vodorovna
+            // cara kotvena daleko od trhu jim projde, prestoze na ni
+            // cena behem obchodu nemuze dosahnout. Take O(1), takze
+            // bezi jeste pred pruchodem svickami.
+            if(ln.TooFarFrom((double)(n - 1), lastPrice, distLimit))
+              {
+               st.farPrice++;
+               continue;
+              }
+
             // Levny predfiltr pred pruchodem celou historii: swing
             // tehoz typu ZA druhou oporou, ktery primku presahuje vic
             // nez pierceTol, ji prorazi urcite (tam uz je primka tvrdou
@@ -457,6 +529,14 @@ int PuntikyBuildReliefLines(const MqlRates &rates[], const SReliefParams &p, SRe
             if(!PuntikyReliefScan(rates, ln, p, midTouch))
               {
                st.pierced++;
+               continue;
+              }
+
+            // Primka ma na cene sedet, ne pres ni vest tetivu. Test je az
+            // tady, protoze prumerny odstup zna teprve pruchod svickami.
+            if(gapLimit > 0.0 && ln.meanGap > gapLimit)
+              {
+               st.looseGap++;
                continue;
               }
 
