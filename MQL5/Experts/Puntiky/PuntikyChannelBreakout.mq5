@@ -108,7 +108,7 @@ input int             InpMaxEntryPoints   = 300;          // Maximalni delka vst
 input int             InpMinEntryPoints   = 150;          // Minimalni delka vstupu (body)
 input double          InpRiskReward       = 1.0;          // Pomer PT:SL (1 = 1:1, 2 = PT dvakrat dal nez SL)
 input int             InpBreakoutBuffer   = 10;           // Potvrzeni prurazu - buffer za urovni (body)
-input int             InpEntryOffset      = -5;           // Posun vstupu od urovne - jen pending (body, zaporne = pred urovni)
+input int             InpEntryOffset      = -10;           // Posun vstupu od urovne - jen pending (body, zaporne = pred urovni)
 input int             InpMaxLevelOffset   = 30;           // Tolerance pripsani vstupu k urovni (body)
 input int             InpEdgeBuffer       = 20;           // Rezerva PT pred hranou kanalu (body)
 input int             InpEdgeProjBars     = 12;           // Strop projekce hran dopredu (bary referencniho TF)
@@ -196,7 +196,7 @@ input double          InpHueResetFactor   = 1.50;          // Hystereze - pamet 
 input int             InpHueRepeatMinutes = 0;             // Opakovat upozorneni po N minutach (0 = jen jednou)
 input int             InpHueTimeout       = 1000;          // Timeout HTTP pozadavku (ms)
 input bool            InpHueTestButton    = true;          // Zobrazit tlacitko pro test upozorneni
-input bool            InpHueOnEntry       = true;         // Bliknout 1x pri vstupu do pozice (jen AUTO rezim)
+input bool            InpHueOnEntry       = false;         // Bliknout 1x pri vstupu do pozice (jen AUTO rezim)
 
 //--- Diagnostika a ladeni
 input group "=== Diagnostika ==="
