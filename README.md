@@ -117,6 +117,19 @@ otestovaný ale není.
   **každém ticku**; jakmile úroveň padne, hledá se další okamžitě, nečeká se na
   otevření další H1 svíčky — do testu proražení vstupuje i **právě otevřená**
   H1 svíčka, ne jen ty uzavřené.
+- **Nepotvrzená noha** (`InpPendingLegLevel`, výchozí zapnuto). Pivot potřebuje
+  `InpBreakSwingDepth` svíček **napravo**, které extrém nepodlezou — a v trvalém
+  trendu takové nikdy nepřijdou, protože každá další svíčka udělá nový extrém.
+  Dno se tedy v pádu (a vrchol v růstu) nepotvrdí a kostra swingů zůstane viset
+  u posledního bodu **před** začátkem pohybu, který je už dávno proražený. Ta
+  strana pak vyjde jako nenalezená a přestane se obchodovat přesně v trendu, na
+  který čeká — protisměrná úroveň přitom drží dál, takže expert nabízí vstup
+  proti pohybu a po směru nic. Chybějící strana se proto dobere jako **extrém
+  úseku za posledním potvrzeným swingem**. Je to tatáž S/R úroveň, jakou by pivot
+  dal o pár svíček později, jen bez čekání na potvrzení; uzavřené svíčky ji
+  prorazit nemohly (je to jejich minimum, resp. maximum), takže se testuje jen
+  právě otevřená svíčka. V diagnostice je taková úroveň označená
+  `(z nepotvrzené nohy)`.
 - Průraz se posuzuje proti ceně, za kterou se daný směr **skutečně plní**: graf
   i historie jsou v BID, ale BuyStop se plní za ASK, takže se u nákupu k ceně
   přičítá spread. Bez toho se BUY při širokém spreadu plnil ještě *pod* úrovní
@@ -790,6 +803,7 @@ překreslila i celý reliéf.
 | `InpUseSwingLevels` | true | prorážet jen swingové svíčky TF průrazu |
 | `InpBreakSwingDepth` | 2 | šířka okna pro swingy TF průrazu |
 | `InpBreakLookback` | 300 | kolik svíček TF průrazu se prohledává |
+| `InpPendingLegLevel` | true | chybějící úroveň doplnit z nepotvrzené nohy (jinak v trendu jedna strana zmizí) |
 
 ### Detekce kanálů
 | Parametr | Výchozí | Význam |

@@ -77,6 +77,7 @@ input group "=== Urovne prurazu ==="
 input bool            InpUseSwingLevels   = true;         // Prorazet jen swingove svicky TF prurazu
 input int             InpBreakSwingDepth  = 2;            // Sirka okna pro swingy TF prurazu
 input int             InpBreakLookback    = 300;          // Kolik svicek TF prurazu prohledat
+input bool            InpPendingLegLevel  = true;         // Doplnit chybejici uroven z nepotvrzene nohy (trend)
 
 //--- Detekce kanalu
 input group "=== Detekce kanalu ==="
@@ -207,6 +208,7 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 
 //--- Pojmenovane konstanty misto magickych cisel v kodu
 #define PUNTIKY_MIN_BARS        50    // minimum svicek pro smysluplnou detekci
+#define PUNTIKY_DIAG_SWINGS      8    // kolik kandidatu urovne vypsat do diagnostiky
 #define PUNTIKY_PANEL_MAX_LINES 40    // kapacita panelu (radku)
 #define PUNTIKY_PANEL_RESERVE   14    // radky drzene pro vypis pod kanaly
 #define PUNTIKY_PANEL_BTN_GAP   6     // mezera mezi tlacitky a panelem (px)
@@ -3334,8 +3336,7 @@ void DrawRelief()
 //+------------------------------------------------------------------+
 void DrawBreakoutLevels()
   {
-   if(!InpShowBreakLevels || g_dir[PUNTIKY_DIR_BUY].level <= 0.0 ||
-      g_dir[PUNTIKY_DIR_SELL].level <= 0.0)
+   if(!InpShowBreakLevels)
      {
       PuntikyDeleteObjects("BRK_");
       return;
@@ -3343,18 +3344,38 @@ void DrawBreakoutLevels()
 
    const datetime tTo = FutureBarTime(InpBreakoutTF, 2);
 
-   // Cara zacina u svicky, ze ktere uroven pochazi - u swingoveho
-   // rezimu je tak na prvni pohled videt, ktery swing se prorazi
-   const SDirection buy  = g_dir[PUNTIKY_DIR_BUY];
-   const SDirection sell = g_dir[PUNTIKY_DIR_SELL];
-
-   PuntikyTrendLine(PUNTIKY_PREFIX + "BRK_H", buy.levelTime, buy.level, tTo, buy.level,
-                 InpColorBreak, 1, STYLE_DASH, false,
-                 "Úroveň průrazu HIGH " + DoubleToString(buy.level, _Digits));
-   PuntikyTrendLine(PUNTIKY_PREFIX + "BRK_L", sell.levelTime, sell.level, tTo, sell.level,
-                 InpColorBreak, 1, STYLE_DASH, false,
-                 "Úroveň průrazu LOW " + DoubleToString(sell.level, _Digits));
+   // Kazda strana se kresli SAMOSTATNE. Drive stacila chybejici uroven
+   // jedne strany (v trendu bezny stav - vsechny swingy protistrany uz
+   // cena prosla) a smazaly se obe cary najednou, takze z grafu zmizela
+   // i uroven, kterou expert normalne obchodoval.
+   DrawOneBreakoutLevel(true,  g_dir[PUNTIKY_DIR_BUY],  tTo);
+   DrawOneBreakoutLevel(false, g_dir[PUNTIKY_DIR_SELL], tTo);
    ChartRedraw();
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresleni urovne prurazu jedne strany.                          |
+//| Cara zacina u svicky, ze ktere uroven pochazi - u swingoveho     |
+//| rezimu je tak na prvni pohled videt, ktery swing se prorazi.     |
+//| Chybejici uroven svou caru jen smaze, druhe strany se to netyka. |
+//|  isHigh - strana (true = HIGH uroven pro nakup)                  |
+//|  dir    - stav smeru s urovni a jejim casem                      |
+//|  tTo    - pravy konec cary                                       |
+//+------------------------------------------------------------------+
+void DrawOneBreakoutLevel(const bool isHigh, const SDirection &dir, const datetime tTo)
+  {
+   const string name = PUNTIKY_PREFIX + (isHigh ? "BRK_H" : "BRK_L");
+
+   if(dir.level <= 0.0 || dir.levelTime <= 0)
+     {
+      ObjectDelete(0, name);
+      return;
+     }
+
+   PuntikyTrendLine(name, dir.levelTime, dir.level, tTo, dir.level,
+                 InpColorBreak, 1, STYLE_DASH, false,
+                 StringFormat("Úroveň průrazu %s %s", isHigh ? "HIGH" : "LOW",
+                              DoubleToString(dir.level, _Digits)));
   }
 
 //+------------------------------------------------------------------+
@@ -3411,6 +3432,21 @@ bool LevelBrokenNow(const bool isBuy, const double level)
 bool SwingBroken(const MqlRates &rates[], const SSwing &s, const bool isHigh,
                  const double buffer)
   {
+   string why = "";
+   return(SwingBrokenWhy(rates, s, isHigh, buffer, false, why));
+  }
+
+//+------------------------------------------------------------------+
+//| Totez, ale umi rict, CIM byl swing proražen.                     |
+//| Duvod se sestavuje jen pro diagnostiku (explain): StringFormat na |
+//| horke ceste by se platil pri kazdem swingu kazdeho prepoctu.      |
+//|  explain - sestavovat text duvodu do why                         |
+//|  why     - out: co uroven prorazilo ("" = swing plati)           |
+//+------------------------------------------------------------------+
+bool SwingBrokenWhy(const MqlRates &rates[], const SSwing &s, const bool isHigh,
+                    const double buffer, const bool explain, string &why)
+  {
+   why = "";
    const int n = ArraySize(rates);
    for(int i = s.index + 1; i < n; i++)
      {
@@ -3418,9 +3454,24 @@ bool SwingBroken(const MqlRates &rates[], const SSwing &s, const bool isHigh,
       // ten se s casem posouva a menil by stav davno uzavreneho swingu
       const double ext = isHigh ? rates[i].high : rates[i].low;
       if(PriceBeyondLevel(isHigh, ext, s.price, buffer, RatesSpread(rates[i])))
+        {
+         if(explain)
+            why = StringFormat("prošla svíčka %s (%s %s)", ShortTime(rates[i].time),
+                               isHigh ? "high" : "low", DoubleToString(ext, _Digits));
          return(true);
+        }
      }
-   return(LevelBrokenNow(isHigh, s.price));
+
+   if(LevelBrokenNow(isHigh, s.price))
+     {
+      if(explain)
+         why = StringFormat("prošla probíhající svíčka (%s %s)",
+                            isHigh ? "high" : "low",
+                            DoubleToString(isHigh ? iHigh(_Symbol, InpBreakoutTF, 0)
+                                                  : iLow(_Symbol, InpBreakoutTF, 0), _Digits));
+      return(true);
+     }
+   return(false);
   }
 
 //+------------------------------------------------------------------+
@@ -3448,12 +3499,26 @@ void FindBreakoutSwings(double &hi, datetime &hiTime, bool &foundHi,
    MqlRates rates[];
    const int copied = LoadClosedBars(InpBreakoutTF, InpBreakLookback, rates);
    if(copied < InpBreakSwingDepth * 2 + 3)
+     {
+      // Malo svicek je samostatny druh selhani - bez teto hlasky vypada
+      // stejne jako "vsechno je prorazene", pritom se nehledalo vubec
+      if(InpDiagnostics)
+         PrintFormat("PUNTIKY diag: úrovně průrazu - %s vrátil jen %d svíček, "
+                     "potřeba aspoň %d; úrovně zůstávají beze změny.",
+                     TFText(InpBreakoutTF), copied, InpBreakSwingDepth * 2 + 3);
       return;
+     }
 
    SSwing sw[];
    const int ns = PuntikyDetectSwings(rates, InpBreakSwingDepth, sw);
    if(ns < 1)
+     {
+      if(InpDiagnostics)
+         PrintFormat("PUNTIKY diag: úrovně průrazu - v %d svíčkách %s nenalezen "
+                     "žádný swing (šířka okna %d).",
+                     copied, TFText(InpBreakoutTF), InpBreakSwingDepth);
       return;
+     }
 
    for(int i = ns - 1; i >= 0; i--)
      {
@@ -3471,6 +3536,159 @@ void FindBreakoutSwings(double &hi, datetime &hiTime, bool &foundHi,
         }
       if(foundHi && foundLo)
          break;
+     }
+
+   // Strana, kterou potvrzeny swing nedal, se dobere z nepotvrzene nohy
+   // (viz PendingLegLevel) - jinak by v trendu chybela uplne
+   const int lastIdx = sw[ns - 1].index;
+   const bool legHi  = (!foundHi && PendingLegLevel(rates, lastIdx, true,  hi, hiTime));
+   const bool legLo  = (!foundLo && PendingLegLevel(rates, lastIdx, false, lo, loTime));
+   foundHi = foundHi || legHi;
+   foundLo = foundLo || legLo;
+
+   DiagBreakoutSwings(rates, sw, ns, copied, foundHi, foundLo, hi, lo, legHi, legLo);
+  }
+
+//+------------------------------------------------------------------+
+//| Popis nalezene urovne pro diagnostiku vcetne jejiho zdroje.      |
+//|  found - podarilo se ji najit, level - jeji cena                 |
+//|  fromLeg - pochazi z nepotvrzene nohy, ne z potvrzeneho swingu   |
+//+------------------------------------------------------------------+
+string BreakLevelText(const bool found, const double level, const bool fromLeg)
+  {
+   if(!found)
+      return("NENALEZEN");
+   return(DoubleToString(level, _Digits) + (fromLeg ? " (z nepotvrzené nohy)" : ""));
+  }
+
+//+------------------------------------------------------------------+
+//| Nahradni uroven z nepotvrzene nohy.                              |
+//|                                                                  |
+//| Pivot potrebuje InpBreakSwingDepth svicek NAPRAVO, ktere extrem   |
+//| nepodlezou. V trvalem trendu takove nikdy neprijdou - kazda dalsi |
+//| svicka udela novy extrem - takze se dno (v pádu) nebo vrchol (v   |
+//| rustu) nepotvrdi a kostra konci u posledniho bodu PRED zacatkem   |
+//| pohybu. Ten uz je davno proraženy, strana proto vyjde jako        |
+//| nenalezena a smer se prestane obchodovat prave v trendu, na ktery |
+//| ceka.                                                             |
+//| Extrem useku ZA poslednim potvrzenym swingem je pritom tataz S/R  |
+//| uroven, jakou by pivot dal o par svicek pozdeji - jen bez cekani  |
+//| na potvrzeni. Uzavrene svicky ho uz nemohly prorazit (je to jejich|
+//| minimum, resp. maximum), staci tedy otestovat probihajici svicku. |
+//|  rates     - svicky TF prurazu (index 0 = nejstarsi)             |
+//|  fromIdx   - index posledniho potvrzeneho swingu                 |
+//|  isHigh    - hledana strana (true = vrchol)                      |
+//|  price     - out: cena urovne                                    |
+//|  levelTime - out: cas svicky, ze ktere uroven pochazi            |
+//| Vraci true, kdyz se uroven nasla a jeste neni prorazena.         |
+//+------------------------------------------------------------------+
+bool PendingLegLevel(const MqlRates &rates[], const int fromIdx, const bool isHigh,
+                     double &price, datetime &levelTime)
+  {
+   if(!InpPendingLegLevel)
+      return(false);
+
+   const int n = ArraySize(rates);
+   int best = -1;
+
+   // Noha zacina az ZA poslednim potvrzenym swingem - jeho vlastni
+   // svicka do ni nepatri, ta uz kostru ma
+   for(int i = MathMax(fromIdx + 1, 0); i < n; i++)
+     {
+      if(best < 0)
+        {
+         best = i;
+         continue;
+        }
+      const double cur = isHigh ? rates[i].high : rates[i].low;
+      const double ref = isHigh ? rates[best].high : rates[best].low;
+      if(isHigh ? (cur > ref) : (cur < ref))
+         best = i;
+     }
+
+   if(best < 0)
+      return(false);
+
+   const double level = isHigh ? rates[best].high : rates[best].low;
+   if(level <= 0.0)
+      return(false);
+
+   // Probihajici svicka uz uroven prorazit mohla - pak nema smysl ji
+   // nabizet, stejne by ji EntryBlockReason vzapeti zamitl
+   if(LevelBrokenNow(isHigh, level))
+      return(false);
+
+   price     = level;
+   levelTime = rates[best].time;
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
+//| Diagnostika vyberu urovni prurazu.                               |
+//| Bez ni je nenalezena uroven jen prazdna nula v panelu a nejde     |
+//| poznat, jestli chybi data, swingy, nebo uz cena prosla vsemi.     |
+//| Souhrn se vypisuje vzdy (jeden radek na prepocet), rozbor         |
+//| jednotlivych kandidatu jen pro stranu, ktera se NENASLA - pri     |
+//| kazdem novem baru TF prurazu by jinak log zaplnil vypis, ktery    |
+//| nikdo necte.                                                      |
+//|  rates   - svicky, ze kterych se swingy hledaly                   |
+//|  sw      - detekovane swingy (chronologicky, 0 = nejstarsi)       |
+//|  ns      - jejich pocet, copied - pocet nactenych svicek          |
+//|  foundHi, foundLo - povedlo se stranu najit?                      |
+//+------------------------------------------------------------------+
+void DiagBreakoutSwings(const MqlRates &rates[], const SSwing &sw[], const int ns,
+                        const int copied, const bool foundHi, const bool foundLo,
+                        const double hi, const double lo,
+                        const bool legHi, const bool legLo)
+  {
+   if(!InpDiagnostics)
+      return;
+
+   //--- Kolik den a vrcholu kostra vubec obsahuje. Prevaha jednoho typu
+   //--- sama o sobe napovi, ze zig-zag v trendu slucuje stejne typy.
+   int highs = 0, lows = 0;
+   for(int i = 0; i < ns; i++)
+      if(sw[i].isHigh)
+         highs++;
+      else
+         lows++;
+
+   PrintFormat("PUNTIKY diag: úrovně průrazu %s - %d svíček (%s .. %s), swingů %d "
+               "(vrcholů %d, den %d), HIGH %s, LOW %s",
+               TFText(InpBreakoutTF), copied,
+               ShortTime(rates[0].time), ShortTime(rates[copied - 1].time),
+               ns, highs, lows,
+               BreakLevelText(foundHi, hi, legHi),
+               BreakLevelText(foundLo, lo, legLo));
+
+   //--- Rozbor kandidatu chybejici strany, od nejnovejsiho
+   for(int side = 0; side < 2; side++)
+     {
+      const bool isHigh = (side == 0);
+      // Rozbor se vypisuje i pro stranu doplnenou z nohy - prave tam je
+      // videt, ze vsechny potvrzene swingy uz cena prosla
+      if(isHigh ? (foundHi && !legHi) : (foundLo && !legLo))
+         continue;
+
+      int shown = 0;
+      for(int i = ns - 1; i >= 0 && shown < PUNTIKY_DIAG_SWINGS; i--)
+        {
+         if(sw[i].isHigh != isHigh)
+            continue;
+
+         string why = "";
+         SwingBrokenWhy(rates, sw[i], isHigh, g_breakBuffer, true, why);
+         PrintFormat("PUNTIKY diag:   %s kandidát %s @ %s - %s",
+                     isHigh ? "HIGH" : "LOW",
+                     DoubleToString(sw[i].price, _Digits), ShortTime(sw[i].time),
+                     why == "" ? "platný (nemělo by nastat)" : why);
+         shown++;
+        }
+
+      if(shown == 0)
+         PrintFormat("PUNTIKY diag:   %s - v kostře není ANI JEDEN %s swing; "
+                     "zig-zag v trendu slučuje stejné typy do jednoho extrému.",
+                     isHigh ? "HIGH" : "LOW", isHigh ? "vrcholový" : "dnový");
      }
   }
 
@@ -5560,10 +5778,18 @@ string PlanToText(SEntryPlan &pl)
   {
    const string dir = pl.isBuy ? "BUY " : "SELL";
 
+   // Prazdny duvod u nuloveho spoustece znamena, ze strana nema uroven
+   // prurazu (ResetPlan duvod nevyplnuje). Puvodni "ceka na kanal"
+   // ukazovalo uplne jinam - kanaly se vstupu netykaji.
    if(!pl.valid)
+     {
+      string why = pl.reason;
+      if(why == "")
+         why = (pl.trigger > 0.0) ? "čeká na kanál"
+                                  : "chybí úroveň průrazu (vše proraženo)";
       return(StringFormat("%s  spouštěč %s  -  %s", dir,
-                          DoubleToString(pl.trigger, _Digits),
-                          pl.reason == "" ? "čeká na kanál" : pl.reason));
+                          DoubleToString(pl.trigger, _Digits), why));
+     }
 
    // Popisky jsou zkracene zamerne - na radek panelu se vejde 63 znaku
    // a delka i objem jsou z pozice v radku zrejme. "k-" znamena obchod
