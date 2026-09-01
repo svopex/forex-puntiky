@@ -528,7 +528,9 @@ a mají tooltip s popisem; při odebrání experta se smažou jen tyto objekty.
 
 S **vypnutým automatem** (stav po startu experta) rozhoduje člověk. Obchody se
 **jen zobrazují** (kanály, úrovně průrazu, návrh vstupu se SL a PT) a upozorňuje
-se na ně blikáním žárovek Hue — na trh se sám nic nepošle.
+se na ně blikáním žárovek Hue — sám od sebe expert na trh nic nepošle. Jakmile
+ale obchod zadáte tlačítkem, stará se o něj dál stejně jako automat, viz
+[Ruční vstup je automat na jeden obchod](#ruční-vstup-je-automat-na-jeden-obchod).
 
 Tlačítka jsou nad panelem ve **třech řadách** — v první obslužná (`TEST Hue`,
 `PANEL`, `AUTO ZAP`, `AUTO ZAP 2x`), ve druhé `LONG` a `SHORT`, ve třetí jejich
@@ -570,6 +572,49 @@ Tlačítko se tedy chová **střídavě**: zadat → odebrat → zadat. Jediné,
 automatickým režimům nové, je právě toto zapnutí a vypnutí STOP příkazu (a s ním
 SL a PT) — detekce, filtry i výpočet návrhu zůstávají beze změny a **obchod se
 nabídne jen tehdy, když na něj je místo**.
+
+#### Ruční vstup je automat na jeden obchod
+
+Klik na `LONG` / `SHORT` (nebo `LONG 2x` / `SHORT 2x`) **zapne ve směru ruční
+vstup** a od té chvíle se o něj expert stará přesně tak, jako by běžel automat.
+Jediný rozdíl je konec: po **vyplnění** už ruční vstup další příkaz nezadá,
+kdežto automat pokračuje dál a dál.
+
+Je to nutné proto, že šířka obchodu není konstanta: hrany kanálů jsou šikmé
+a reliéfní přímky se s každým novým barem posouvají, takže se překážka před cílem
+odsune (nebo přiblíží) a **návrh se přepočítá na jinou délku SL i PT** — a s ní
+i na jiný objem, protože ten vychází z délky SL.
+
+| | automat | ruční vstup |
+|---|---|---|
+| upraví SL a PT ležícího příkazu | ano | ano |
+| přepočítá objem (zruší a zadá znovu) | ano | ano |
+| posune cenu vstupu za vyměněnou úrovní | ano | ano |
+| zadá chybějící příkaz | ano | ano |
+| zruší příkaz, když návrh přestane platit | ano | ano |
+| po vyplnění zadá **další** obchod | ano | **ne** |
+
+Ruční vstup končí vyplněním, klikem na `ZRUŠIT` / `ZAVŘÍT`, nebo přepnutím
+automatu. Dokud běží, drží směr obsazený — i ve chvíli, kdy na trhu zrovna žádný
+příkaz neleží, protože ten předchozí zmizel se spotřebovanou úrovní a na
+následující se teprve zadá. Panel to na řádku `ručně:` ukazuje jako
+`čeká na úroveň` a tlačítko po celou dobu nabízí `ZRUŠIT`.
+
+Směr, ve kterém ruční vstup **neběží**, expert nechává úplně na pokoji — příkaz
+se stejným magicem zadaný ručně přímo v terminálu tedy nikdo nepřepíše. Po
+restartu terminálu se stav obnoví z trhu: každý náš ležící STOP příkaz znamená
+běžící ruční vstup (`PrimeManualEntries`), jinak by o něj expert přestal pečovat.
+
+Dřív rekonciliace v ručním režimu neběžela vůbec: když se hrana kanálu odsunula
+a návrh se roztáhl zpět na plnou délku, kreslené úrovně vstupu se posunuly, ale
+příkaz na trhu si nechal původní (kratší) SL i PT — a s nimi objem, který
+zadanému riziku už neodpovídal. Každá úprava ručního příkazu se proto **vypíše
+do panelu i do logu** (`SHORT příkaz #… srovnán s návrhem: vstup … → …,
+SL … → …, PT … → …, … → … lot`), protože s ní uživatel nepočítá.
+
+Objem ležícího příkazu změnit nejde, musí se zrušit a zadat znovu. Nejdřív se
+proto ověří, že nový příkaz na trh vůbec projde (kotace a stop-level brokera) —
+jinak by se ten starý zrušil, zadání selhalo a obchod by z trhu zmizel.
 
 #### `LONG 2x` / `SHORT 2x` — dva obchody s odstupňovaným cílem
 
@@ -632,9 +677,9 @@ Další vlastnosti režimu:
   skutečnou plnicí cenu a úroveň se označí za spotřebovanou, takže se na ní
   podruhé neobchoduje.
 - Stav obou směrů je vidět v panelu na řádku `ručně:`
-  (`lze zadat` / `není místo` / `příkaz` / `pozice`; u dvojitého vstupu i s počtem
-  a značkou, např. `2 příkazy 2x` nebo `pozice + příkaz 2x`) a každý klik se
-  zapíše na řádek `poslední:` i do Expert logu.
+  (`lze zadat` / `není místo` / `čeká na úroveň` / `příkaz` / `pozice`; u dvojitého
+  vstupu i s počtem a značkou, např. `2 příkazy 2x` nebo `pozice + příkaz 2x`)
+  a každý klik se zapíše na řádek `poslední:` i do Expert logu.
 - Při `InpEnableTrading = false`, na nepovoleném účtu nebo se zakázaným
   obchodováním v terminálu tlačítka jen nahlásí `obchodování je vypnuto`.
 
@@ -656,6 +701,22 @@ tlačítky (přehled kanálů, úrovně průrazu, návrhy vstupu, pozice, řáde
   s tímto tlačítkem to nesouvisí.
 
 ### Upozornění Hue na blížící se vstup
+
+Blikání řídí **čtyři samostatné přepínače** hned pod sebou v nastavení experta —
+dvě události krát dva režimy. **Všechny jsou výchozí vypnuté**, takže bez zásahu
+do nastavení se neblikne nikdy:
+
+| Přepínač | Kdy blikne |
+|---|---|
+| `InpHueNearAuto` | cena se přiblížila k úrovni vstupu — pod automatem |
+| `InpHueNearManual` | cena se přiblížila k úrovni vstupu — v ručním režimu |
+| `InpHueFillAuto` | příkaz se vyplnil do pozice — pod automatem |
+| `InpHueFillManual` | příkaz se vyplnil do pozice — v ručním režimu |
+
+Každý režim má vlastní přepínač proto, že blikání znamená v každém něco jiného:
+pod automatem je to zpráva „expert právě něco udělal“, v ručním režimu výzva
+„podívej se na graf“. Dřív byla přiblížení pod automatem natvrdo potlačená
+a bliknutí při vyplnění naopak jen pod automatem — obojí je teď na uživateli.
 
 Když se cena přiblíží k úrovni plánovaného vstupu na `InpHueNearPoints` bodů
 (výchozí 500), expert pošle POST požadavek na `InpHueUrl` a rozbliká tím žárovky
@@ -685,8 +746,12 @@ Tělo požadavku se skládá automaticky ze symbolu, směru a ceny vstupu —
 - Cenu **za** úrovní vstupu (`dist < 0`) bere expert jako uvolnění příznaku vždy,
   na hysterezi nezávisle. Proto se při kolísání kolem samotné úrovně vstupu
   hlásí znovu, i když je `InpHueRepeatMinutes = 0`.
-- Stav upozornění je vidět v panelu na řádku `Hue:` a odeslání se loguje do
-  Expert logu i s tělem požadavku.
+- Stav upozornění je vidět v panelu na řádku `Hue:` (co je v aktuálním režimu
+  zapnuté a jestli už se v obou směrech hlásilo) a odeslání se loguje do
+  Expert logu i s tělem požadavku. Při všech čtyřech přepínačích vypnutých
+  řádek zmizí úplně.
+- Bliknutí **při vyplnění** je samostatná událost: posílá se přímo z obsluhy
+  vyplnění, jednou, bez paměti a bez ohledu na hysterezi přiblížení.
 
 **Nutné povolení v terminálu:** Nástroje → Možnosti → Strategie →
 *Povolit WebRequest pro uvedené URL* a přidat `http://192.168.0.157:8082`.
@@ -911,14 +976,16 @@ překreslila i celý reliéf.
 ### Upozornění Hue
 | Parametr | Výchozí | Význam |
 |---|---|---|
-| `InpHueEnabled` | true | blikat žárovkou při přiblížení k úrovni vstupu |
+| `InpHueNearAuto` | **false** | blikat při přiblížení k úrovni vstupu — AUTO režim |
+| `InpHueNearManual` | **false** | blikat při přiblížení k úrovni vstupu — ruční režim |
+| `InpHueFillAuto` | **false** | bliknout jednou při vyplnění příkazu — AUTO režim |
+| `InpHueFillManual` | **false** | bliknout jednou při vyplnění příkazu — ruční režim |
 | `InpHueUrl` | http://192.168.0.157:8082/hue | URL služby Hue včetně portu |
 | `InpHueNearPoints` | 500 | vzdálenost od úrovně vstupu pro upozornění (body) |
 | `InpHueResetFactor` | 1.50 | hystereze — paměť se uvolní až za N× prahem (1 = bez hystereze) |
 | `InpHueRepeatMinutes` | 0 | opakovat upozornění po N minutách (0 = jen jednou) |
 | `InpHueTimeout` | 1000 | timeout HTTP požadavku (ms) |
 | `InpHueTestButton` | true | zobrazit tlačítko `TEST Hue` nad panelem |
-| `InpHueOnEntry` | **false** | bliknout jednou při vstupu do pozice; jen v AUTO režimu (běžná upozornění jsou tam potlačená) |
 
 ### Diagnostika
 | Parametr | Výchozí | Význam |

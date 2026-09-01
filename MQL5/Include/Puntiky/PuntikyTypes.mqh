@@ -43,17 +43,25 @@ enum ENUM_PUNTIKY_MANUAL
 //|  positions - pocet otevrenych pozic tohoto smeru                 |
 //|  orders    - pocet lezicich STOP prikazu tohoto smeru            |
 //|  kind      - z ktereho tlacitka obchod pochazi                   |
+//|  live      - ve smeru bezi rucni vstup z tlacitka (viz            |
+//|              SDirection.manualLive). Smer je obsazeny i tehdy,    |
+//|              kdyz na trhu prave nic nelezi: expert prikaz na      |
+//|              spotrebovane urovni zrusil a na te nasledujici ho    |
+//|              zada s pristim prepoctem. Bez tohoto priznaku by     |
+//|              tlacitko v tom mezicase nabizelo "zadat", i kdyz je  |
+//|              vstup porad zapnuty.                                 |
 //+------------------------------------------------------------------+
 struct SDirectionState
   {
    int               positions;
    int               orders;
    ENUM_PUNTIKY_MANUAL kind;
+   bool              live;
 
    //--- Lezi ve smeru vubec neco?
    bool              Busy()
      {
-      return(positions > 0 || orders > 0);
+      return(positions > 0 || orders > 0 || live);
      }
    //--- Prazdny prehled - mimo rucni rezim se seznam vubec neprochazi
    void              Reset()
@@ -61,6 +69,7 @@ struct SDirectionState
       positions = 0;
       orders    = 0;
       kind      = PUNTIKY_MANUAL_NONE;
+      live      = false;
      }
   };
 
@@ -138,6 +147,14 @@ enum ENUM_PUNTIKY_BLOCK
 //|               (0 = zadny); hlida minimalni odstup dvou vstupu    |
 //|  hueLevel   - uroven vstupu, pro kterou uz odeslo upozorneni Hue |
 //|  hueTime    - cas posledniho odeslaneho upozorneni               |
+//|  manualLive - ve smeru bezi RUCNI vstup z tlacitka. Expert ho    |
+//|               spravuje presne jako pod automatem (vstup, SL, PT  |
+//|               i objem jdou za navrhem), jen po vyplneni uz dalsi |
+//|               obchod nezada - rucni vstup je automat na JEDEN    |
+//|               obchod. Priznak se drzi i pres ticky, kdy na trhu  |
+//|               nic nelezi (mezi zrusenim prikazu na spotrebovane  |
+//|               urovni a jeho zadanim na te nasledujici).          |
+//|  manualDbl  - ...a byl zadan tlacitkem 2x, takze ma dve nohy     |
 //+------------------------------------------------------------------+
 struct SDirection
   {
@@ -149,6 +166,8 @@ struct SDirection
    datetime          lastEntry;
    double            hueLevel;
    datetime          hueTime;
+   bool              manualLive;
+   bool              manualDbl;
 
    void              Reset()
      {
@@ -160,6 +179,8 @@ struct SDirection
       lastEntry  = 0;
       hueLevel   = 0.0;
       hueTime    = 0;
+      manualLive = false;
+      manualDbl  = false;
      }
   };
 

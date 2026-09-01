@@ -19,7 +19,7 @@
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
-#property version   "1.24"
+#property version   "1.26"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -188,15 +188,22 @@ input int             InpPointFontSize    = 10;           // Velikost pisma popi
 input double          InpLabelMergeATR    = 0.5;          // Slouceni blizkych popisku (nasobek ATR)
 
 //--- Upozorneni na priblizeni k urovni vstupu (zarovky Philips Hue)
+//--- Ctyri spinace hned pod sebou: dve udalosti (priblizeni k urovni a
+//--- vyplneni prikazu) krat dva rezimy (automat a rucni). Kazdy rezim
+//--- ma svuj, protoze se hodi na neco jineho - pod automatem je bliknuti
+//--- zprava "expert prave neco udelal", v rucnim rezimu vyzva "podivej
+//--- se na graf". Vse je vychozi VYPNUTE, blika se az po zapnuti.
 input group "=== Upozorneni Hue ==="
-input bool            InpHueEnabled       = true;          // Blikat zarovkou pri priblizeni k urovni vstupu
+input bool            InpHueNearAuto      = false;         // Blikat pri priblizeni k urovni vstupu - AUTO rezim
+input bool            InpHueNearManual    = false;         // Blikat pri priblizeni k urovni vstupu - rucni rezim
+input bool            InpHueFillAuto      = false;         // Bliknout pri vyplneni prikazu - AUTO rezim
+input bool            InpHueFillManual    = false;         // Bliknout pri vyplneni prikazu - rucni rezim
 input string          InpHueUrl           = "http://192.168.0.157:8082/hue"; // URL sluzby Hue (vcetne portu)
 input int             InpHueNearPoints    = 500;           // Vzdalenost od urovne vstupu pro upozorneni (body)
 input double          InpHueResetFactor   = 1.50;          // Hystereze - pamet se uvolni az za N-nasobkem prahu
 input int             InpHueRepeatMinutes = 0;             // Opakovat upozorneni po N minutach (0 = jen jednou)
 input int             InpHueTimeout       = 1000;          // Timeout HTTP pozadavku (ms)
 input bool            InpHueTestButton    = true;          // Zobrazit tlacitko pro test upozorneni
-input bool            InpHueOnEntry       = false;         // Bliknout 1x pri vstupu do pozice (jen AUTO rezim)
 
 //--- Diagnostika a ladeni
 input group "=== Diagnostika ==="
@@ -377,6 +384,11 @@ struct SPendingOrder
    double            sl;
    double            tp;
    double            volume;
+   // Prikaz je nohou dvojiteho vstupu (znacka 2x v komentari). Rucni
+   // rekonciliace podle toho pozna, jestli ma prikaz srovnavat s
+   // jednoduchym navrhem, nebo s dvojici noh tlacitka LONG 2x /
+   // SHORT 2x - pod automatem to rika rezim, v rucnim rezimu jen trh.
+   bool              isDouble;
   };
 
 //--- Kolik prikazu ma v aktualnim rezimu lezet na jednom smeru
@@ -552,8 +564,7 @@ void ToggleAutoMode()
 
       g_autoMode   = true;
       g_autoDouble = false;
-      ReportEvent("AUTO režim ZAPNUT - expert obchoduje sám "
-                  "(upozornění Hue jsou potlačená)");
+      ReportEvent("AUTO režim ZAPNUT - expert obchoduje sám");
 
       // Prikazy se zadaji hned, ne az s dalsim barem
       RebuildPlans();
@@ -609,8 +620,7 @@ void ToggleAutoDouble()
 
       g_autoMode   = true;
       g_autoDouble = true;
-      ReportEvent("AUTO 2x ZAPNUT - expert obchoduje sám, dvojitý vstup "
-                  "(upozornění Hue jsou potlačená)");
+      ReportEvent("AUTO 2x ZAPNUT - expert obchoduje sám, dvojitý vstup");
 
       RebuildPlans();
       SyncPendingOrders();
@@ -624,15 +634,22 @@ void ToggleAutoDouble()
 
 //+------------------------------------------------------------------+
 //| Spolecne vypnuti automatickeho rezimu.                           |
-//| Lezici prikazy se RUSI: rezim, do ktereho se expert vraci        |
-//| (typicky rucni), je uz nespravuje a zapomenuty GTC prikaz by se  |
-//| vyplnil do pozice, kterou nikdo nehlida.                          |
+//| Lezici prikazy se RUSI: zadal je automat bez uzivatele, takze by |
+//| zapomenuty GTC prikaz otevrel pozici, o kterou uz nikdo nestoji. |
+//| Rucni rezim je sice dal srovnava s navrhem (sirku obchodu podle  |
+//| kanalu a reliefu), ale sam od sebe zadny prikaz nezada ani       |
+//| nezrusi - to zustava na tlacitkach.                               |
 //|  label - jmeno rezimu do hlasky                                   |
 //+------------------------------------------------------------------+
 void StopAutoMode(const string label)
   {
    g_autoMode   = false;
    g_autoDouble = false;
+
+   // Prikazy automatu se za chvili zrusi, takze v rucnim rezimu, do
+   // ktereho se expert vraci, nic "beziciho" nezustava
+   DisarmManualEntry(true);
+   DisarmManualEntry(false);
 
    const int left = CountOrders();
    if(left > 0 && CancelPendingOrders())
@@ -649,11 +666,12 @@ void StopAutoMode(const string label)
 //+------------------------------------------------------------------+
 //| Umlci upozorneni Hue na urovne, u kterych trh uz je.             |
 //|                                                                  |
-//| Vola se pri vypnuti automatickeho rezimu. V nem je pamet          |
-//| upozorneni drzena prazdna, takze bez tohoto kroku by prvni        |
-//| kontrola po vypnuti nasla cenu uz uvnitr pasma a hned rozblikala  |
-//| zarovku - jenze tlacitko prave zmackl uzivatel u grafu a          |
-//| upozorneni na to, co ma pred ocima, mu nic nerekne.               |
+//| Vola se pri vypnuti automatickeho rezimu. Kdyz je upozorneni na    |
+//| priblizeni v jednom z rezimu vypnute, drzi se jeho pamet prazdna,  |
+//| takze bez tohoto kroku by prvni kontrola po prepnuti nasla cenu uz |
+//| uvnitr pasma a hned rozblikala zarovku - jenze tlacitko prave      |
+//| zmackl uzivatel u grafu a upozorneni na to, co ma pred ocima, mu   |
+//| nic nerekne.                                                       |
 //| Urovne se proto oznaci jako "uz ohlasene". Neni to natrvalo:      |
 //| jakmile se cena vzdali za hysterezi (nebo uroven mine), pamet se  |
 //| sama uvolni a upozorneni zase funguji (viz HueCheckDirection).    |
@@ -745,18 +763,26 @@ int OnInit()
       ResetPlan(g_plan[i], i == PUNTIKY_DIR_BUY);
      }
    PrimeEntryTimes();       // odstup vstupu musi platit i po restartu
+   PrimeManualEntries();    // prikaz z tlacitka spravovat i po restartu
 
    PrintPointDiagnostics();
 
    EventSetTimer(1);
 
    // Bez povoleni adresy v nastaveni terminalu skonci WebRequest chybou 4014,
-   // proto se URL vypise hned pri startu
-   if(InpHueEnabled)
-      PrintFormat("PUNTIKY: upozornění Hue zapnuto - %d b od úrovně vstupu, paměť se "
+   // proto se URL vypise hned pri startu. Vypisuji se vsechny ctyri
+   // spinace - jinak by nebylo poznat, ktera udalost a ktery rezim blika.
+   if(HueAnyEnabled())
+      PrintFormat("PUNTIKY: upozornění Hue - přiblížení (AUTO %s, ručně %s), "
+                  "vyplnění (AUTO %s, ručně %s); %d b od úrovně vstupu, paměť se "
                   "uvolní za %.0f b, %s (adresu povol v Nástroje > Možnosti > "
                   "Strategie > Povolit WebRequest)",
+                  OnOffText(InpHueNearAuto), OnOffText(InpHueNearManual),
+                  OnOffText(InpHueFillAuto), OnOffText(InpHueFillManual),
                   InpHueNearPoints, InpHueNearPoints * InpHueResetFactor, InpHueUrl);
+   else
+      Print("PUNTIKY: upozornění Hue jsou vypnutá - zapni je vstupy "
+            "InpHueNearAuto / InpHueNearManual / InpHueFillAuto / InpHueFillManual.");
 
    // Automat je po startu vzdy vypnuty, takze expert zacina jen kreslenim
    Print("PUNTIKY: automat je vypnutý - expert sám neobchoduje. Zapni ho "
@@ -970,8 +996,11 @@ void OnTick()
    if(plansDirty)
       RebuildPlans();
 
-   //--- 8) Skutecne prikazy se srovnaji s navrhy nejvyse jednou za tick
-   if(g_autoMode && g_ordersDirty)
+   //--- 8) Skutecne prikazy se srovnaji s navrhy nejvyse jednou za tick.
+   //---    Bezi to i v rucnim rezimu - prikaz zadany tlacitkem se tam
+   //---    jen upravuje (nezadava ani nerusi), aby se s posunutou hranou
+   //---    kanalu roztahl stejne jako kreslene urovne vstupu.
+   if(g_ordersDirty)
       SyncPendingOrders();
 
    //--- 9) Priblizeni k urovni vstupu rozblika zarovky Hue
@@ -1023,6 +1052,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    // patri - minimalni odstup hlida SMER, ne uroven
    MarkEntryTime(isBuy, (datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME));
 
+   // Tim rucni vstup skoncil - je to automat na JEDEN obchod, takze se
+   // dalsi prikaz uz nezada. Automat naopak pokracuje dal.
+   DisarmManualEntry(isBuy);
+
    // Prikaz, ze ktereho obchod vznikl, se vybira jednou: jeho cena urcuje
    // uroven, ke ktere obchod patri, jeho typ rozhoduje o dorovnani stopu
    // a jeho SL / PT davaji delky, na ktere se stopy dorovnaji. Kdyz uz
@@ -1072,12 +1105,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                                DoubleToString(dealPrice, _Digits),
                                DoubleToString(level, _Digits)));
 
-   // Jedno bliknuti na to, ze obchod vznikl. Bezna upozorneni Hue hlasi
-   // PRIBLIZENI k urovni a v automatickem rezimu jsou potlacena (nemaji
-   // koho upozornit) - tohle je opacny pripad: expert uz vstoupil sam a
-   // uzivatel u toho nebyl. Proto jen v AUTO rezimu a jen jednou, primo
-   // z obsluhy vyplneni; zadna pamet se nevede, protoze kazde vyplneni
-   // je samostatna udalost.
+   // Jedno bliknuti na to, ze obchod vznikl. Je to jina udalost nez bezne
+   // upozorneni (to hlasi PRIBLIZENI k urovni), takze ma vlastni spinac
+   // pro kazdy rezim. Blika se primo z obsluhy vyplneni a zadna pamet se
+   // nevede - kazde vyplneni je samostatna udalost.
    HueOnEntry(isBuy, dealPrice);
 
    // Odtud dal se uz saha na obchodni ucet, takze instance urcena jen
@@ -1991,12 +2022,53 @@ void ScanBothDirections(SMarketState &ms)
         }
      }
 
+   // Bezici rucni vstup obsazuje smer i ve chvili, kdy na trhu prave
+   // nic nelezi (prikaz na spotrebovane urovni uz zmizel, na te
+   // nasledujici jeste nevznikl). Ktere tlacitko mu patri, rika
+   // priznak z jeho zadani - komentar prikazu tu neni z ceho precist.
+   ms.buy.live  = g_dir[PUNTIKY_DIR_BUY].manualLive;
+   ms.sell.live = g_dir[PUNTIKY_DIR_SELL].manualLive;
+   buyDouble    = buyDouble  || (ms.buy.live  && g_dir[PUNTIKY_DIR_BUY].manualDbl);
+   sellDouble   = sellDouble || (ms.sell.live && g_dir[PUNTIKY_DIR_SELL].manualDbl);
+
    // Dvojity vstup se pozna i podle jedine nohy: po vyplneni PT1 zbyva
    // druha pozice a ta porad patri tlacitku 2x
    if(ms.buy.Busy())
       ms.buy.kind = buyDouble ? PUNTIKY_MANUAL_DOUBLE : PUNTIKY_MANUAL_SINGLE;
    if(ms.sell.Busy())
       ms.sell.kind = sellDouble ? PUNTIKY_MANUAL_DOUBLE : PUNTIKY_MANUAL_SINGLE;
+  }
+
+//+------------------------------------------------------------------+
+//| Obnovi po restartu stav rucnich vstupu z toho, co lezi na trhu.  |
+//| Priznak manualLive restart neprezije, takze by expert prikaz     |
+//| zadany tlacitkem pred restartem prestal spravovat - a pritom se  |
+//| o nej ma starat presne jako pod automatem, dokud se nevyplni.    |
+//| Po startu je rezim vzdy rucni, takze se nic rozlisovat nemusi:   |
+//| kazdy nas lezici STOP prikaz patri rucnimu vstupu.               |
+//+------------------------------------------------------------------+
+void PrimeManualEntries()
+  {
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(OrderGetTicket(i) == 0 || !IsOurOrder())
+         continue;
+
+      const long type = OrderGetInteger(ORDER_TYPE);
+      if(type != ORDER_TYPE_BUY_STOP && type != ORDER_TYPE_SELL_STOP)
+         continue;
+
+      const int idx = DirIdx(type == ORDER_TYPE_BUY_STOP);
+      g_dir[idx].manualLive = true;
+
+      // Znacka 2x v komentari rika, ze prikaz patri dvojitemu vstupu.
+      // Staci jedna noha - druha uz mohla byt vyplnena.
+      if(LooksDoubleEntry(OrderGetString(ORDER_COMMENT),
+                          OrderGetDouble(ORDER_PRICE_OPEN),
+                          OrderGetDouble(ORDER_SL),
+                          OrderGetDouble(ORDER_TP)))
+         g_dir[idx].manualDbl = true;
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -4255,6 +4327,43 @@ bool CancelPendingOrders()
   }
 
 //+------------------------------------------------------------------+
+//| Prosel by STOP prikaz na tuto cenu vubec na trh?                 |
+//| Vyclenene z PlaceStopOrder, protoze se to musi dat zjistit i      |
+//| PREDEM: zmenu objemu lze provest jen zrusenim a novym zadanim, a  |
+//| kdyby se prikaz zrusil a zadani pak selhalo, obchod by z trhu     |
+//| zmizel uplne (v rucnim rezimu nenavratne - tam expert sam         |
+//| nezadava nic).                                                    |
+//|  isBuy - smer prikazu, entry - jeho cena                         |
+//|  why   - out: duvod, proc prikaz nelze zadat ("" = lze)          |
+//+------------------------------------------------------------------+
+bool StopOrderPlaceable(const bool isBuy, const double entry, string &why)
+  {
+   why = "";
+
+   // Bez kotaci nelze cenu prikazu vubec posoudit. Drive se tenhle
+   // pripad tise preskocil, takze volajici vypsal duvod, ktery v
+   // g_lastEvent zbyl po nejake starsi (a uplne jine) udalosti.
+   if(SymbolInfoDouble(_Symbol, SYMBOL_ASK) <= 0.0 ||
+      SymbolInfoDouble(_Symbol, SYMBOL_BID) <= 0.0)
+     {
+      why = "chybí kotace";
+      return(false);
+     }
+
+   // Broker nedovoli STOP prikaz bliz k trhu, nez je jeho stop level.
+   // Drive se takovy pripad jen tise preskocil a panel dal hlasil
+   // "pripraven", i kdyz na trhu zadny prikaz nelezel.
+   string tooClose = "";
+   if(StopTooClose(isBuy, entry, StopsLevelPrice(), tooClose))
+     {
+      why = tooClose;
+      return(false);
+     }
+
+   return(true);
+  }
+
+//+------------------------------------------------------------------+
 //| Zada STOP prikaz podle navrhu vstupu.                            |
 //|  pl       - navrh vstupu (musi byt platny)                       |
 //|  isDouble - prikaz je cast dvojiteho vstupu (tlacitko 2x);       |
@@ -4268,23 +4377,10 @@ bool PlaceStopOrder(SEntryPlan &pl, const bool isDouble = false)
   {
    const string dir = pl.isBuy ? "BUY" : "SELL";
 
-   // Bez kotaci nelze cenu prikazu vubec posoudit. Drive se tenhle
-   // pripad tise preskocil, takze volajici vypsal duvod, ktery v
-   // g_lastEvent zbyl po nejake starsi (a uplne jine) udalosti.
-   if(SymbolInfoDouble(_Symbol, SYMBOL_ASK) <= 0.0 ||
-      SymbolInfoDouble(_Symbol, SYMBOL_BID) <= 0.0)
+   string why = "";
+   if(!StopOrderPlaceable(pl.isBuy, pl.entry, why))
      {
-      g_lastEvent = dir + " nezadán - chybí kotace";
-      return(false);
-     }
-
-   // Broker nedovoli STOP prikaz bliz k trhu, nez je jeho stop level.
-   // Drive se takovy pripad jen tise preskocil a panel dal hlasil
-   // "pripraven", i kdyz na trhu zadny prikaz nelezel.
-   string tooClose = "";
-   if(StopTooClose(pl.isBuy, pl.entry, StopsLevelPrice(), tooClose))
-     {
-      g_lastEvent = dir + " nezadán - " + tooClose;
+      g_lastEvent = dir + " nezadán - " + why;
       return(false);
      }
 
@@ -4313,20 +4409,23 @@ bool PlaceStopOrder(SEntryPlan &pl, const bool isDouble = false)
 //|  volume - jeho objem                                             |
 //+------------------------------------------------------------------+
 //| Pozadovane nohy vstupu pro aktualni rezim.                       |
-//| Bezny automat ma jednu nohu presne podle navrhu. Dvojity ma dve  |
-//| s POLOVICNIM objemem: prvni s PT podle navrhu (RRR 1:1), druha   |
-//| se stejnym vstupem i SL, ale s PT na nasobku delky vstupu -      |
+//| Jednoduchy vstup ma jednu nohu presne podle navrhu. Dvojity ma   |
+//| dve s POLOVICNIM objemem: prvni s PT podle navrhu (RRR 1:1),     |
+//| druha se stejnym vstupem i SL, ale s PT na nasobku delky vstupu -|
 //| tedy totez, co zada tlacitko LONG 2x / SHORT 2x.                 |
 //| Objem i vzdalenejsi cil pocita uz BuildPlan, aby zadani a bubliny|
 //| tlacitek nemely kazde vlastni cislo.                             |
-//|  pl   - navrh vstupu                                             |
-//|  legs - out: jednotlive nohy                                     |
+//|  pl         - navrh vstupu                                       |
+//|  legs       - out: jednotlive nohy                               |
+//|  wantDouble - stavet dvojici noh dvojiteho vstupu. Pod automatem |
+//|               to rika jeho rezim, v rucnim rezimu se pozna podle |
+//|               toho, co uzivatel tlacitkem zadal na trh           |
 //| Vraci pocet noh; 0 znamena, ze navrh v tomto rezimu zadat nelze  |
 //| (duvod nese pl.doubleReason a ukazuje ho panel).                 |
 //+------------------------------------------------------------------+
-int PlanLegs(SEntryPlan &pl, SEntryPlan &legs[])
+int PlanLegs(SEntryPlan &pl, SEntryPlan &legs[], const bool wantDouble)
   {
-   if(!g_autoDouble)
+   if(!wantDouble)
      {
       legs[0] = pl;
       return(1);
@@ -4353,8 +4452,11 @@ int PlanLegs(SEntryPlan &pl, SEntryPlan &legs[])
 //|  want     - pozadovana noha                                      |
 //|  ord      - lezici prikaz                                        |
 //|  isDouble - noha dvojiteho vstupu (znacka v komentari prikazu)   |
+//|  manual   - prikaz pochazi z rucniho tlacitka; zmena se pak      |
+//|             ohlasi do panelu, protoze s ni uzivatel nepocita     |
 //+------------------------------------------------------------------+
-void SyncLeg(SEntryPlan &want, SPendingOrder &ord, const bool isDouble)
+void SyncLeg(SEntryPlan &want, SPendingOrder &ord, const bool isDouble,
+             const bool manual)
   {
    const bool sameVolume = (MathAbs(ord.volume - want.lots) < PUNTIKY_VOLUME_EPS);
    if(SamePrice(ord.price, want.entry) && SamePrice(ord.sl, want.sl) &&
@@ -4368,18 +4470,67 @@ void SyncLeg(SEntryPlan &want, SPendingOrder &ord, const bool isDouble)
       return;
      }
 
-   // Objem leziciho prikazu zmenit nelze - musi se zadat znovu
+   // Rucni prikaz zadal uzivatel sam a v panelu ho sleduje, takze se
+   // kazda uprava vypise i s tim, co se zmenilo - jinak by se delka
+   // obchodu, jeho objem i cena vstupu menily potichu
+   const string what = manual
+                       ? StringFormat("%s příkaz #%I64u srovnán s návrhem: "
+                                      "vstup %s → %s, SL %s → %s, PT %s → %s, "
+                                      "%.2f → %.2f lot",
+                                      want.isBuy ? "LONG" : "SHORT", ord.ticket,
+                                      DoubleToString(ord.price, _Digits),
+                                      DoubleToString(want.entry, _Digits),
+                                      DoubleToString(ord.sl, _Digits),
+                                      DoubleToString(want.sl, _Digits),
+                                      DoubleToString(ord.tp, _Digits),
+                                      DoubleToString(want.tp, _Digits),
+                                      ord.volume, want.lots)
+                       : "";
+
+   // Objem leziciho prikazu zmenit nelze - musi se zrusit a zadat
+   // znovu. Nejdriv se ale overi, ze novy prikaz na trh vubec projde:
+   // kdyby se ten stary zrusil a zadani pak selhalo, zustalo by misto
+   // obchodu prazdno (v rucnim rezimu nenavratne).
    if(!sameVolume)
      {
-      if(DeleteOrder(ord.ticket) && !PlaceStopOrder(want, isDouble))
-         Print("PUNTIKY: ", g_lastEvent);
+      string why = "";
+      if(!StopOrderPlaceable(want.isBuy, want.entry, why))
+        {
+         PrintFormat("PUNTIKY: objem příkazu #%I64u nelze srovnat - %s; "
+                     "příkaz zůstává beze změny.", ord.ticket, why);
+         return;
+        }
+
+      if(!DeleteOrder(ord.ticket))
+         return;
+
+      if(!PlaceStopOrder(want, isDouble))
+        {
+         // Zruseny prikaz uz se sam nevrati: pod automatem ho zada
+         // dalsi rekonciliace, v rucnim rezimu se ale nic nezadava,
+         // takze o tom uzivatel musi vedet i pri schovanem panelu.
+         // Duvod uz zapsal PlaceStopOrder do g_lastEvent; kopie je
+         // tam proto, aby se globalni retezec nepredaval sam sobe.
+         const string failed = g_lastEvent;
+         ReportEvent(failed, manual);
+         return;
+        }
+
+      if(manual)
+         ReportEvent(what);
       return;
      }
 
    if(!g_trade.OrderModify(ord.ticket, want.entry, want.sl, want.tp, ORDER_TIME_GTC, 0, 0.0))
+     {
       PrintFormat("PUNTIKY: úpravu příkazu #%I64u se nepodařilo provést, retcode %d (%s)",
                   ord.ticket, g_trade.ResultRetcode(),
                   g_trade.ResultRetcodeDescription());
+      return;
+     }
+
+   if(manual)
+      ReportEvent(what);
   }
 
 //+------------------------------------------------------------------+
@@ -4387,15 +4538,36 @@ void SyncLeg(SEntryPlan &want, SPendingOrder &ord, const bool isDouble)
 //| Prikazy se k noham paruji podle PT, ne podle poradi: broker je   |
 //| vraci v libovolnem poradi a dvojity vstup ma obe nohy na stejne  |
 //| cene i SL, takze PT je jedine, cim se od sebe lisi.              |
-//|  pl    - navrh vstupu tohoto smeru                               |
-//|  have  - spolecne pole lezicich prikazu obou smeru               |
-//|  base  - index, na kterem zacinaji prikazy tohoto smeru          |
-//|  count - kolik jich je                                           |
+//|                                                                  |
+//| Rucni vstup se srovnava UPLNE STEJNE jako ten automaticky - je   |
+//| to automat na jeden obchod. Lisi se jen tim, kdy se smer         |
+//| spravuje: pod automatem porad, v rucnim rezimu jen dokud bezi    |
+//| vstup z tlacitka (priznak manualLive, viz ArmManualEntry). Bez   |
+//| beziciho rucniho vstupu se smer neresi vubec - jinak by expert   |
+//| zadal prikaz, o ktery uzivatel nestoji.                          |
+//|  pl     - navrh vstupu tohoto smeru                              |
+//|  have   - spolecne pole lezicich prikazu obou smeru              |
+//|  base   - index, na kterem zacinaji prikazy tohoto smeru         |
+//|  count  - kolik jich je                                          |
+//|  manual - rucni rezim (smer se spravuje jen s bezicim vstupem)   |
 //+------------------------------------------------------------------+
-void SyncOneDirection(SEntryPlan &pl, SPendingOrder &have[], const int base, const int count)
+void SyncOneDirection(SEntryPlan &pl, SPendingOrder &have[], const int base,
+                      const int count, const bool manual)
   {
+   const int idx = DirIdx(pl.isBuy);
+
+   //--- V rucnim rezimu se smer bez beziciho vstupu z tlacitka
+   //--- nespravuje. Prikaz, ktery v nem presto lezi (napr. zalozeny
+   //--- rucne primo v terminalu se stejnym magicem), zustava netknuty.
+   if(manual && !g_dir[idx].manualLive)
+      return;
+
+   //--- Pocet noh: pod automatem podle jeho rezimu, u rucniho vstupu
+   //--- podle tlacitka, kterym ho uzivatel zadal
+   const bool wantDouble = manual ? g_dir[idx].manualDbl : g_autoDouble;
+
    SEntryPlan want[PUNTIKY_MAX_LEGS];
-   const int  n = pl.valid ? PlanLegs(pl, want) : 0;
+   const int  n = pl.valid ? PlanLegs(pl, want, wantDouble) : 0;
 
    //--- Navrh neplati (nebo ho v tomto rezimu nelze zadat) -> zadny
    //--- prikaz lezet nema.
@@ -4405,7 +4577,10 @@ void SyncOneDirection(SEntryPlan &pl, SPendingOrder &have[], const int base, con
    //--- rusit ho tesne pred vyplnenim by znamenalo propast prave ten
    //--- pruraz, kvuli kteremu prikaz lezi. Vsechny ostatni duvody
    //--- (spotrebovana nebo vymenena uroven, limit pozic, vypnuty smer)
-   //--- znamenaji, ze prikaz na trhu byt nema.
+   //--- znamenaji, ze prikaz na trhu byt nema. Rucniho vstupu se to
+   //--- tyka uplne stejne: prikaz na spotrebovane urovni zmizi a na
+   //--- te nasledujici ho zadá dalsi prepocet - sam rucni vstup bezi
+   //--- dal, dokud se nevyplni nebo ho uzivatel neodebere tlacitkem.
    if(n == 0)
      {
       for(int i = 0; i < count; i++)
@@ -4439,7 +4614,9 @@ void SyncOneDirection(SEntryPlan &pl, SPendingOrder &have[], const int base, con
            }
         }
 
-      //--- Noha chybi -> zadat novy prikaz
+      //--- Noha chybi -> zadat novy prikaz. Plati i pro rucni vstup:
+      //--- dokud bezi, ma na trhu lezet - treba na urovni, ktera tu
+      //--- spotrebovanou vystridala.
       if(best < 0)
         {
          if(!PlaceStopOrder(want[leg], n > 1))
@@ -4448,7 +4625,7 @@ void SyncOneDirection(SEntryPlan &pl, SPendingOrder &have[], const int base, con
         }
 
       used[best] = true;
-      SyncLeg(want[leg], have[base + best], n > 1);
+      SyncLeg(want[leg], have[base + best], n > 1, manual);
      }
 
    //--- Prikazy navic (napr. po prepnuti z dvojiteho automatu na bezny)
@@ -4501,6 +4678,17 @@ void CancelOppositeOrder(const bool filledIsBuy)
 //| hodinove hranici probehlo az trikrat v jedinem ticku.            |
 //| Rekonciliace se dela nejvyse jednou za tick a jen kdyz se navrhy |
 //| zmenily (priznak g_ordersDirty).                                 |
+//|                                                                  |
+//| Bezi v OBOU rezimech a v obou stejne: vstup, SL, PT i objem jdou |
+//| za navrhem, protoze se s posunem hrany kanalu a reliefni primky  |
+//| meni delka obchodu - a s ni i objem, ktery z delky SL vychazi.   |
+//| Rucni vstup je jen automat na JEDEN obchod, takze se lisi pouze  |
+//| tim, ktere smery se spravuji: pod automatem oba, v rucnim rezimu |
+//| ty, ve kterych bezi vstup z tlacitka (priznak manualLive).       |
+//| Drive rekonciliace v rucnim rezimu nebezela vubec: kdyz se hrana |
+//| kanalu odsunula a navrh se roztahl na plnou delku, lezici prikaz |
+//| si nechal puvodni (kratsi) SL i PT a s nimi objem, ktery uz      |
+//| zadanemu riziku neodpovidal.                                     |
 //+------------------------------------------------------------------+
 void SyncPendingOrders()
   {
@@ -4517,7 +4705,17 @@ void SyncPendingOrders()
    //--- (index smeru urcuje DirIdx, stejne jako u g_plan).
    SPendingOrder have[2 * PUNTIKY_MAX_LEGS];
    int           count[2] = {0, 0};
-   const int     legs     = AutoLegCount();
+   const bool    manual   = !g_autoMode;
+
+   //--- Kolik prikazu smi ve smeru lezet. Pod automatem to rika jeho
+   //--- rezim, u rucniho vstupu tlacitko, kterym ho uzivatel zadal;
+   //--- smer bez beziciho rucniho vstupu se nespravuje vubec, takze
+   //--- se jeho prikazu nikdo nedotkne (limit 0 = do prehledu nejdou).
+   int legs[2];
+   for(int d = 0; d < 2; d++)
+      legs[d] = manual
+                ? (g_dir[d].manualLive ? (g_dir[d].manualDbl ? 2 : 1) : 0)
+                : AutoLegCount();
 
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
@@ -4534,10 +4732,13 @@ void SyncPendingOrders()
 
       // Prikaz jineho typu nebo prikaz nad ramec poctu noh (pozustatek
       // po nezdarilem ruseni nebo po prepnuti rezimu) - prebytek se
-      // rusi, jinak by se vyplnilo vic obchodu, nez rezim pripousti
-      if(dir < 0 || count[dir] >= legs)
+      // rusi, jinak by se vyplnilo vic obchodu, nez rezim pripousti.
+      // Ve smeru bez beziciho rucniho vstupu se prikaz jen preskoci:
+      // takovy expert nezadal a nesmi na nej sahat.
+      if(dir < 0 || count[dir] >= legs[dir])
         {
-         DeleteOrder(t);
+         if(!manual || (dir >= 0 && g_dir[dir].manualLive))
+            DeleteOrder(t);
          continue;
         }
 
@@ -4547,11 +4748,14 @@ void SyncPendingOrders()
       have[k].sl     = OrderGetDouble(ORDER_SL);
       have[k].tp     = OrderGetDouble(ORDER_TP);
       have[k].volume = OrderGetDouble(ORDER_VOLUME_CURRENT);
+      // Znacka 2x v komentari rika, ze prikaz patri dvojitemu vstupu
+      have[k].isDouble = LooksDoubleEntry(OrderGetString(ORDER_COMMENT),
+                                          have[k].price, have[k].sl, have[k].tp);
       count[dir]++;
      }
 
    for(int d = 0; d < 2; d++)
-      SyncOneDirection(g_plan[d], have, d * PUNTIKY_MAX_LEGS, count[d]);
+      SyncOneDirection(g_plan[d], have, d * PUNTIKY_MAX_LEGS, count[d], manual);
   }
 
 //+------------------------------------------------------------------+
@@ -4616,6 +4820,36 @@ void AdjustPositionStops(const ulong ticket, const double slDistance,
   }
 
 //+------------------------------------------------------------------+
+//| Zapne ve smeru rucni vstup - "automat na jeden obchod".          |
+//| Od te chvile se prikaz srovnava s navrhem uplne stejne jako pod  |
+//| automatem: vstup, SL, PT i objem jdou za kanalem a reliefem,     |
+//| spotrebovanou uroven prikaz opousti a na te nasledujici se zada  |
+//| znovu. Jediny rozdil proti automatu je, ze po VYPLNENI uz dalsi  |
+//| obchod nevznikne.                                                |
+//|  isBuy    - smer, ve kterem uzivatel kliknul                     |
+//|  isDouble - kliknul na tlacitko 2x (vstup ma dve nohy)           |
+//+------------------------------------------------------------------+
+void ArmManualEntry(const bool isBuy, const bool isDouble)
+  {
+   const int idx = DirIdx(isBuy);
+   g_dir[idx].manualLive = true;
+   g_dir[idx].manualDbl  = isDouble;
+  }
+
+//+------------------------------------------------------------------+
+//| Vypne ve smeru rucni vstup - expert uz na jeho prikazy nesaha.   |
+//| Vola se, kdyz rucni vstup skoncil: vyplnenim (dalsi obchod uz    |
+//| nevznikne), odebranim tlacitkem, nebo prevzetim smeru automatem. |
+//|  isBuy - smer                                                    |
+//+------------------------------------------------------------------+
+void DisarmManualEntry(const bool isBuy)
+  {
+   const int idx = DirIdx(isBuy);
+   g_dir[idx].manualLive = false;
+   g_dir[idx].manualDbl  = false;
+  }
+
+//+------------------------------------------------------------------+
 //| Zada obchod podle navrhu na pokyn uzivatele (tlacitko).          |
 //| Zadava se stejny STOP prikaz jako v automatickem pending rezimu, |
 //| vcetne SL a PT s RRR 1:1 - tlacitko je tedy jen rucni schvaleni  |
@@ -4640,6 +4874,11 @@ void ManualPlace(SEntryPlan &pl)
       PrintFormat("PUNTIKY: %s tlačítkem nezadán (%s)", dir, g_lastEvent);
       return;
      }
+
+   // Od ted je smer "rucni automat na jeden obchod": prikaz se srovnava
+   // s navrhem uplne stejne jako pod automatem (viz SyncOneDirection),
+   // jen po vyplneni uz dalsi nevznikne
+   ArmManualEntry(pl.isBuy, false);
 
    ReportEvent(StringFormat("%s zadán tlačítkem @ %s  SL %s  PT %s  %.2f lot",
                             dir,
@@ -4707,6 +4946,10 @@ void ManualPlaceDouble(SEntryPlan &pl)
       return;
      }
 
+   // Uz s prvni nohou je smer "rucni automat" - kdyby druha neprosla,
+   // dopise ji tam rekonciliace pri pristim prepoctu navrhu
+   ArmManualEntry(pl.isBuy, true);
+
    // Kdyz druhy prikaz neprojde, prvni se zamerne nerusi - na trhu uz
    // lezi platny obchod s RRR 1:1 a rusit ho automaticky by znamenalo
    // sahat na uzivateluv obchod kvuli chybe, ktera se ho netyka.
@@ -4738,6 +4981,11 @@ void ManualPlaceDouble(SEntryPlan &pl)
 void ManualRemoveDirection(const bool isBuy, const string label)
   {
    const string dir = isBuy ? "LONG" : "SHORT";
+
+   // Rucni vstup konci uz tady, jeste pred samotnym odebranim: jinak by
+   // ho rekonciliace v temze ticku videla jako bezici a zrusenym
+   // prikazum by rovnou dopsala nahradu
+   DisarmManualEntry(isBuy);
 
    //--- Otevrene pozice a jeste nevyplnene prikazy tohoto smeru
    ulong posTickets[], ordTickets[];
@@ -4777,7 +5025,12 @@ void ManualRemoveDirection(const bool isBuy, const string label)
    if(deleted > 0)
       done = done + (done == "" ? "" : ", ") + StringFormat("%d příkaz(ů) zrušeno", deleted);
    if(done == "")
-      done = "nic se odebrat nepodařilo";
+      // Klik na bezici vstup, ktery zrovna zadny prikaz na trhu nema
+      // (ten predchozi zmizel se spotrebovanou urovni), neni chyba -
+      // vstup se prave vypnul, takze uz zadny dalsi nevznikne
+      done = (closeFail == 0 && deleteFail == 0)
+             ? "vstup ukončen, na trhu nic nebylo"
+             : "nic se odebrat nepodařilo";
 
    string failed = "";
    if(closeFail > 0 || deleteFail > 0)
@@ -4869,6 +5122,40 @@ void ManualDouble(const bool isBuy)
    ManualPlaceDouble(g_plan[DirIdx(isBuy)]);
   }
 
+//--- Text spinace do hlasek ("zapnuto" / "vypnuto")
+string OnOffText(const bool on)
+  {
+   return(on ? "zapnuto" : "vypnuto");
+  }
+
+//+------------------------------------------------------------------+
+//| Je zapnuta aspon jedna ze ctyr voleb Hue?                        |
+//| Pouziva to hlaska pri startu a radek panelu - ani jedno nema     |
+//| smysl vypisovat, kdyz se neblika vubec.                          |
+//+------------------------------------------------------------------+
+bool HueAnyEnabled()
+  {
+   return(InpHueNearAuto || InpHueNearManual || InpHueFillAuto || InpHueFillManual);
+  }
+
+//+------------------------------------------------------------------+
+//| Blika se v aktualnim rezimu pri PRIBLIZENI k urovni vstupu?      |
+//| Kazdy rezim ma vlastni spinac: pod automatem je bliknuti jen     |
+//| zprava "neco se chysta", v rucnim rezimu vyzva ke kliknuti.      |
+//+------------------------------------------------------------------+
+bool HueNearEnabled()
+  {
+   return(g_autoMode ? InpHueNearAuto : InpHueNearManual);
+  }
+
+//+------------------------------------------------------------------+
+//| Blika se v aktualnim rezimu pri VYPLNENI prikazu?                |
+//+------------------------------------------------------------------+
+bool HueFillEnabled()
+  {
+   return(g_autoMode ? InpHueFillAuto : InpHueFillManual);
+  }
+
 //+------------------------------------------------------------------+
 //| Hlida, jestli se cena priblizila k urovni planovaneho vstupu,    |
 //| a rozblika zarovky Hue. Sleduji se jen platne navrhy - k         |
@@ -4876,14 +5163,13 @@ void ManualDouble(const bool isBuy)
 //+------------------------------------------------------------------+
 void CheckHueAlerts()
   {
-   if(!InpHueEnabled || InpHueUrl == "" || InpHueNearPoints <= 0)
+   if(InpHueUrl == "" || InpHueNearPoints <= 0)
       return;
 
-   // V automatickem rezimu upozorneni nemaji koho upozornit - obchod
-   // zada expert sam a blikajici zarovka by jen rusila. Pamet obou
-   // smeru se drzi prazdna, aby v ni nezustala stara uroven; stav pro
-   // prvni kontrolu po vypnuti rezimu nastavi ArmHueAfterAuto.
-   if(g_autoMode)
+   // Vypnuty rezim si pamet obou smeru drzi prazdnou, aby v ni
+   // nezustala stara uroven; stav pro prvni kontrolu po prepnuti
+   // rezimu srovna ArmHueAfterAuto.
+   if(!HueNearEnabled())
      {
       g_dir[PUNTIKY_DIR_BUY].hueLevel  = 0.0;
       g_dir[PUNTIKY_DIR_SELL].hueLevel = 0.0;
@@ -4961,15 +5247,18 @@ void HueCheckDirection(const bool isBuy, const double level, const double dist,
   }
 
 //+------------------------------------------------------------------+
-//| Bliknuti zarovkou pri vstupu do pozice v automatickem rezimu.    |
-//| Vypnuto vstupem InpHueOnEntry, mimo AUTO rezim se nedela vubec.  |
+//| Bliknuti zarovkou pri vyplneni prikazu (vstupu do pozice).       |
+//| Zapina se pro kazdy rezim zvlast (InpHueFillAuto /               |
+//| InpHueFillManual) - v rucnim rezimu je to zprava "prikaz, ktery  |
+//| jsi zadal tlacitkem, se prave vyplnil", pod automatem "expert    |
+//| prave vstoupil sam".                                             |
 //| Neuspech se nikde neresi - jde o informaci navic, ne o podminku  |
 //| obchodu; duvod uz zapsal HueSend do logu i panelu.               |
 //|  isBuy - smer vznikle pozice, price - cena plneni                |
 //+------------------------------------------------------------------+
 void HueOnEntry(const bool isBuy, const double price)
   {
-   if(!InpHueOnEntry || !g_autoMode || InpHueUrl == "")
+   if(!HueFillEnabled() || InpHueUrl == "")
       return;
 
    // V testeru ani pri optimalizaci WebRequest nefunguje
@@ -5478,11 +5767,11 @@ int DrawAutoModeButton(const int x, const int y)
                       : (on
                          ? "Expert obchoduje SÁM: drží pending STOP příkazy na obou "
                            "úrovních průrazu a po uzavření obchodu zadá další. "
-                           "Upozornění Hue jsou potlačená. Klik režim vypne a "
-                           "ležící příkazy zruší."
+                           "Klik režim vypne a ležící příkazy zruší."
                          : "Expert sám neobchoduje. Klik zapne automatický režim - "
-                           "pending STOP příkazy na obou úrovních průrazu, "
-                           "bez upozornění Hue.");
+                           "pending STOP příkazy na obou úrovních průrazu. "
+                           "Obchod z tlačítka LONG / SHORT expert spravuje i tady, "
+                           "jen po vyplnění další nezadá.");
 
    const int w = g_btnAutoW;
 
@@ -5598,6 +5887,11 @@ string ManualStateText(SEntryPlan &pl, SDirectionState &st)
    if(st.orders > 0)
       state = state + (state == "" ? "" : " + ") +
               ((st.orders > 1) ? StringFormat("%d příkazy", st.orders) : "příkaz");
+
+   // Vstup bezi, ale na trhu prave nic nelezi - prikaz na spotrebovane
+   // urovni zmizel a na te nasledujici ho zada dalsi prepocet
+   if(state == "")
+      state = "čeká na úroveň";
 
    if(st.kind == PUNTIKY_MANUAL_DOUBLE)
       state += " 2x";
@@ -5915,15 +6209,20 @@ void UpdatePanel()
                                                      InpMinEntryGapMin)
                                       : ""));
 
-   //--- Stav upozorneni na zarovky Hue
-   if(InpHueEnabled)
-      PanelAdd(lines, n, g_autoMode
-                         ? "Hue: potlačeno (AUTO režim)"
-                         : StringFormat("Hue: upozornění %d b od úrovně vstupu  "
+   //--- Stav upozorneni na zarovky Hue. Kazda udalost ma vlastni spinac
+   //--- pro tento rezim, takze radek rika, co je prave ted zapnute.
+   if(HueAnyEnabled())
+     {
+      const string fill = HueFillEnabled() ? ", vyplnění" : "";
+      PanelAdd(lines, n, HueNearEnabled()
+                         ? StringFormat("Hue: přiblížení %d b od úrovně vstupu%s  "
                                         "(BUY %s / SELL %s)",
-                                        InpHueNearPoints,
+                                        InpHueNearPoints, fill,
                                         g_dir[PUNTIKY_DIR_BUY].hueLevel  > 0.0 ? "posláno" : "-",
-                                        g_dir[PUNTIKY_DIR_SELL].hueLevel > 0.0 ? "posláno" : "-"));
+                                        g_dir[PUNTIKY_DIR_SELL].hueLevel > 0.0 ? "posláno" : "-")
+                         : StringFormat("Hue: přiblížení vypnuto (%s režim)%s",
+                                        g_autoMode ? "AUTO" : "ruční", fill));
+     }
 
    //--- Rucni tlacitka - co je v jednotlivych smerech na trhu
    if(!g_autoMode)
