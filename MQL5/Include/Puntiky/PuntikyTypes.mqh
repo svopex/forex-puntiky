@@ -143,6 +143,8 @@ enum ENUM_PUNTIKY_BLOCK
 //|  taken      - na teto urovni uz strategie obchodovala            |
 //|  broken     - uroven uz byla prorazena                           |
 //|  brokenTime - cas prvniho zjisteneho prurazu                     |
+//|  lastEntry  - cas posledniho vstupu strategie v tomto smeru      |
+//|               (0 = zadny); hlida minimalni odstup dvou vstupu    |
 //|  hueLevel   - uroven vstupu, pro kterou uz odeslo upozorneni Hue |
 //|  hueTime    - cas posledniho odeslaneho upozorneni               |
 //+------------------------------------------------------------------+
@@ -154,6 +156,7 @@ struct SDirection
    bool              taken;
    bool              broken;
    datetime          brokenTime;
+   datetime          lastEntry;
    double            hueLevel;
    datetime          hueTime;
 
@@ -165,6 +168,7 @@ struct SDirection
       taken      = false;
       broken     = false;
       brokenTime = 0;
+      lastEntry  = 0;
       hueLevel   = 0.0;
       hueTime    = 0;
      }

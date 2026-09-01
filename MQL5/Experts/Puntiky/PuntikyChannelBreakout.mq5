@@ -19,7 +19,7 @@
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
-#property version   "1.22"
+#property version   "1.23"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -115,6 +115,7 @@ input double          InpInsideTolFrac    = 0.02;         // Tolerance testu "uv
 input bool            InpAllowBuy         = true;         // Povolit nakupy
 input bool            InpAllowSell        = true;         // Povolit prodeje
 input int             InpMaxPositions     = 2;            // Max. soucasnych pozic strategie
+input int             InpMinEntryGapMin   = 10;           // Min. odstup dvou vstupu v tomtez smeru - jen automat (minuty, 0 = bez omezeni)
 input int             InpSlippage         = 20;           // Maximalni skluz (body)
 input long            InpMagic            = 67205475;     // Magic number
 input long            InpAllowedAccount   = 0;            // Povoleny ucet (0 = bez omezeni)
@@ -343,6 +344,7 @@ SChannelParams g_chParams;
 SReliefParams  g_reliefParams;
 double         g_breakBuffer    = 0.0; // InpBreakoutBuffer v cene
 double         g_maxLevelOffset = 0.0; // InpMaxLevelOffset v cene
+int            g_minEntryGap    = 0;   // InpMinEntryGapMin v sekundach
 
 datetime      g_lastChannelBar[PUNTIKY_TF_SLOTS];  // posledni zpracovany bar kazdeho TF kanalu
 datetime      g_lastBreakoutBar = 0;   // cas posledniho zpracovaneho baru TF prurazu
@@ -763,6 +765,7 @@ int OnInit()
       g_dir[i].Reset();
       ResetPlan(g_plan[i], i == PUNTIKY_DIR_BUY);
      }
+   PrimeEntryTimes();       // odstup vstupu musi platit i po restartu
 
    PrintPointDiagnostics();
 
@@ -1055,6 +1058,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    const bool   isBuy = (dealType == DEAL_TYPE_BUY);
    const string dir   = isBuy ? "BUY" : "SELL";
 
+   // Cas vstupu se pamatuje bez ohledu na to, ke ktere urovni obchod
+   // patri - minimalni odstup hlida SMER, ne uroven
+   MarkEntryTime(isBuy, (datetime)HistoryDealGetInteger(trans.deal, DEAL_TIME));
+
    // Prikaz, ze ktereho obchod vznikl, se vybira jednou: jeho cena urcuje
    // uroven, ke ktere obchod patri, jeho typ rozhoduje o dorovnani stopu
    // a jeho SL / PT davaji delky, na ktere se stopy dorovnaji. Kdyz uz
@@ -1279,6 +1286,7 @@ bool ValidateInputs()
    if(InpMaxChannels < 1)        err += "InpMaxChannels >= 1; ";
    if(InpMaxReliefLines < 1)     err += "InpMaxReliefLines >= 1; ";
    if(InpMaxPositions < 1)       err += "InpMaxPositions >= 1; ";
+   if(InpMinEntryGapMin < 0)     err += "InpMinEntryGapMin >= 0; ";
    if(InpATRPeriod < 1)          err += "InpATRPeriod >= 1; ";
    if(InpDedupFrac <= 0.0)       err += "InpDedupFrac > 0; ";
    if(InpTouchTolFrac <= 0.0)    err += "InpTouchTolFrac > 0; ";
@@ -1463,6 +1471,7 @@ void InitParams()
   {
    g_breakBuffer    = InpBreakoutBuffer * _Point;
    g_maxLevelOffset = InpMaxLevelOffset * _Point;
+   g_minEntryGap    = InpMinEntryGapMin * 60;
 
    g_chParams.minSpanBars    = InpMinSpanBars;
    g_chParams.minWidthPrice  = InpMinWidthPoints * _Point;
@@ -2555,6 +2564,117 @@ bool EntryBelongsToLevel(const bool isBuy, const double entry, const double leve
   }
 
 //+------------------------------------------------------------------+
+//| Zapamatuje si cas vstupu strategie v danem smeru.                |
+//| Podle nej se hlida minimalni odstup dvou vstupu (viz             |
+//| EntryGapLeft). Starsi cas se zahazuje - obsluha vyplneni muze    |
+//| dojit i po dohledani z historie a posunout pamet zpatky.         |
+//|  isBuy - smer obchodu, when - cas vstupniho obchodu              |
+//+------------------------------------------------------------------+
+void MarkEntryTime(const bool isBuy, const datetime when)
+  {
+   const int idx = DirIdx(isBuy);
+   if(when > g_dir[idx].lastEntry)
+      g_dir[idx].lastEntry = when;
+  }
+
+//+------------------------------------------------------------------+
+//| Kolik sekund jeste zbyva do konce minimalniho odstupu vstupu.    |
+//| Vraci 0, kdyz uz smer vstupovat smi (vcetne vypnuteho omezeni).  |
+//| Cas serveru muze pri synchronizaci skocit zpatky; zaporny rozdil |
+//| by pak vysel jako obrovsky kladny zbytek, proto se osetruje.     |
+//|  isBuy - smer obchodu                                            |
+//+------------------------------------------------------------------+
+int EntryGapLeft(const bool isBuy)
+  {
+   if(g_minEntryGap <= 0)
+      return(0);
+
+   const datetime last = g_dir[DirIdx(isBuy)].lastEntry;
+   if(last <= 0)
+      return(0);
+
+   const long elapsed = (long)TimeCurrent() - (long)last;
+   if(elapsed < 0 || elapsed >= g_minEntryGap)
+      return(0);
+
+   return((int)(g_minEntryGap - elapsed));
+  }
+
+//+------------------------------------------------------------------+
+//| Zbyvajici cas odstupu vstupu pro panel a log.                    |
+//| Pod minutu se vypisuji sekundy, vys uz jen zaokrouhlene minuty - |
+//| na radku panelu jde o odhad "kdy zase muzu", ne o presny odpocet.|
+//|  seconds - zbyvajici cas v sekundach                             |
+//+------------------------------------------------------------------+
+string GapLeftText(const int seconds)
+  {
+   if(seconds < 60)
+      return(StringFormat("%d s", seconds));
+
+   return(StringFormat("%d min", (seconds + 59) / 60));
+  }
+
+//+------------------------------------------------------------------+
+//| Dohleda v historii uctu cas posledniho vstupu obou smeru.        |
+//| Pamet v promenne restart neprezije, takze by expert po restartu  |
+//| nebo po zmene parametru vstoupil znovu hned - prave to ma        |
+//| minimalni odstup zakazat. Prochazi se jen okno dlouhe jako sam   |
+//| odstup, starsi obchody uz na nej vliv nemaji.                    |
+//| Pamet se plni i v rucnim rezimu, kde odstup nic neblokuje -      |
+//| tlacitko AUTO prepina rezim za behu, takze uz musi byt hotova.   |
+//+------------------------------------------------------------------+
+void PrimeEntryTimes()
+  {
+   if(g_minEntryGap <= 0)
+      return;
+
+   const datetime now  = TimeCurrent();
+   const datetime from = (now > (datetime)g_minEntryGap) ? (now - g_minEntryGap) : 0;
+
+   // Horni mez s rezervou - historie se vybira po posledni obchod
+   if(!HistorySelect(from, now + 86400))
+      return;
+
+   for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+     {
+      const ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(HistoryDealGetString(ticket, DEAL_SYMBOL) != _Symbol)
+         continue;
+      if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != InpMagic)
+         continue;
+
+      // Zajima jen VSTUP do pozice; na nettingovem uctu je vstupem
+      // i obrat pozice (viz OnTradeTransaction)
+      const long entry = HistoryDealGetInteger(ticket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_IN && entry != DEAL_ENTRY_INOUT)
+         continue;
+
+      const long type = HistoryDealGetInteger(ticket, DEAL_TYPE);
+      if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL)
+         continue;
+
+      MarkEntryTime(type == DEAL_TYPE_BUY,
+                    (datetime)HistoryDealGetInteger(ticket, DEAL_TIME));
+     }
+
+   // V rucnim rezimu odstup nic nezdrzuje, takze by hlaseni jen matlo
+   if(EntryMode() == PUNTIKY_ENTRY_MANUAL)
+      return;
+
+   for(int i = 0; i < 2; i++)
+     {
+      const bool isBuy = (i == PUNTIKY_DIR_BUY);
+      const int  left  = EntryGapLeft(isBuy);
+      if(left > 0)
+         PrintFormat("PUNTIKY: %s se po startu otevře až za %d s - minimální odstup "
+                     "od posledního vstupu (%d min).",
+                     isBuy ? "BUY" : "SELL", left, InpMinEntryGapMin);
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| Prepocet kanalu jednoho timeframu.                               |
 //| Kanaly ostatnich timeframu zustanou ve spolecnem poli nedotcene  |
 //| (viz PuntikyReplaceSlot) - novy bar M15 nesmi zahodit kanaly H4, |
@@ -3554,6 +3674,24 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
    // Na jedne swingove urovni se obchoduje nejvyse jednou
    if(g_dir[idx].taken)
       return("tato úroveň už obchodována");
+
+   // Minimalni odstup dvou vstupu v tomtez smeru. Prudky pohyb prorazi
+   // behem jedne svicky nekolik swingovych urovni pod sebou a expert je
+   // bral jednu po druhe - po vyplneni se totiz spotrebovana uroven
+   // vymeni za dalsi swing jeste v temze ticku, ten je pod trhem (tedy
+   // hned "nabity") a jeho prikaz posbira tentyz pohyb o par sekund
+   // pozdeji. Jedinou brzdou byl pocet pozic, takze v jednom impulsu
+   // vznikly dva obchody s plnym rizikem, jejichz SL a PT se prekryvaly.
+   // Jako jedina z ochran se tyka VYHRADNE rezimu, ve kterych expert
+   // obchoduje sam: rucni tlacitko je schvaleni uzivatele, ktery vidi,
+   // co se na trhu deje, a retezeni vstupu si hlida sam.
+   if(EntryMode() != PUNTIKY_ENTRY_MANUAL)
+     {
+      const int gapLeft = EntryGapLeft(isBuy);
+      if(gapLeft > 0)
+         return(StringFormat("odstup od posledního vstupu (zbývá %s)",
+                             GapLeftText(gapLeft)));
+     }
 
    // Smer musi byt nabity, tedy cena musela byt na spravne strane
    // urovne - jinak se vstupuje do uz beziciho pohybu
@@ -5708,9 +5846,13 @@ void UpdatePanel()
    //--- Automaticky rezim: co prave dela expert sam
    if(g_autoMode)
       PanelAdd(lines, n, StringFormat("AUTO režim%s: expert obchoduje sám, %d ležící "
-                                      "příkaz(ů), max %d pozic",
+                                      "příkaz(ů), max %d pozic%s",
                                       g_autoDouble ? " 2x" : "",
-                                      CountOrders(), InpMaxPositions));
+                                      CountOrders(), InpMaxPositions,
+                                      InpMinEntryGapMin > 0
+                                      ? StringFormat(", odstup vstupů %d min",
+                                                     InpMinEntryGapMin)
+                                      : ""));
 
    //--- Stav upozorneni na zarovky Hue
    if(InpHueEnabled)

@@ -238,6 +238,21 @@ Společné pro oba režimy:
   být na správné straně úrovně). Pending režim navíc kontroluje, že úroveň ještě
   není proražená a že je STOP příkaz proveditelný; tržní vstup místo toho hlídá
   odstup od úrovně (`InpMaxLevelOffset`).
+- **Minimální odstup dvou vstupů** (`InpMinEntryGapMin`, výchozí 10 minut) brání
+  řetězení obchodů v jednom impulsu. Prudký pohyb prorazí během jediné svíčky
+  několik swingových úrovní pod sebou a expert je bral jednu po druhé: po
+  vyplnění se spotřebovaná úroveň vymění za další swing **ještě v témže ticku**,
+  ten leží pod trhem (je tedy okamžitě nabitý) a jeho příkaz posbírá tentýž pohyb
+  o pár sekund později. Jedinou brzdou byl počet pozic, takže v jednom výpadu
+  vznikly dva obchody s plným rizikem, jejichž SL a PT se navzájem překrývaly.
+  Odstup se počítá **od posledního vstupu ve stejném směru** (opačný směr
+  neblokuje) a při startu se dohledá z historie účtu, takže ho nezruší
+  rekompilace ani restart terminálu. `0` omezení vypne.
+  Jako **jediná** z ochran platí výhradně tam, kde expert obchoduje **sám**
+  (AUTO režim, AUTO 2x a `PUNTIKY_ENTRY_M1_CLOSE`) — ruční tlačítka jsou
+  schválení uživatele, který na trh kouká, a ta odstup neblokuje. Paměť času
+  se přesto vede i v ručním režimu: tlačítko `AUTO` přepíná režim za běhu,
+  takže musí být připravená.
 - Směry lze jednotlivě vypnout (`InpAllowBuy`, `InpAllowSell`) — vypnutý směr se
   přestane i kreslit a v panelu má důvod `směr vypnut`. `InpEnableTrading = false`
   nechá experta jen kreslit; taková instance **nesahá ani na cizí příkazy** se
@@ -464,6 +479,7 @@ s důvodem `čeká na návrat pod/nad úroveň`. Možné důvody:
 | `směr vypnut` | směr je vypnutý (`InpAllowBuy` / `InpAllowSell`) |
 | `pozice již otevřena` | běží pozice strategie (`InpMaxPositions`) |
 | `tato úroveň už obchodována` | na aktuálním swingu už proběhl vstup |
+| `odstup od posledního vstupu (zbývá N min)` | od posledního vstupu v tomto směru neuplynulo `InpMinEntryGapMin` minut (jen v režimech, kde expert obchoduje sám) |
 | `čeká na návrat pod úroveň` / `nad úroveň` | směr není nabitý — cena ještě nebyla na správné straně úrovně |
 | `úroveň už byla proražena` | cena úroveň prorazila (i intrabar), čeká se na nový swing |
 | `průraz už proběhl` | cena je právě za úrovní, STOP příkaz nelze zadat |
@@ -588,9 +604,10 @@ Poznámky:
 - Po vyplnění se u **každé** pozice dorovnají SL i PT na její skutečnou plnicí
   cenu, přičemž **každá větev si drží vlastní délku** — druhá pozice o svůj
   vzdálenější cíl skluzem nepřijde.
-- `InpMaxPositions` (výchozí 1) dvojitý vstup neblokuje: brání jen vzniku
+- `InpMaxPositions` (výchozí 2) dvojitý vstup neblokuje: brání jen vzniku
   *nového* návrhu, dokud je pozice otevřená. Dva příkazy se zadají, dokud žádná
-  pozice neběží.
+  pozice neběží. Totéž platí pro `InpMinEntryGapMin`: obě nohy jsou jeden návrh
+  a zadají se najednou, odstup se uplatní až na další vstup.
 
 Další vlastnosti režimu:
 
@@ -811,7 +828,8 @@ překreslila i celý reliéf.
 | `InpEdgeProjBars` | 12 | **strop** projekce hran dopředu (skutečná délka vyjde z `InpMaxEntryPoints / ATR`) |
 | `InpInsideTolFrac` | 0.02 | tolerance testu „úroveň uvnitř kanálu“ (zlomek šířky) |
 | `InpAllowBuy` / `InpAllowSell` | true / true | povolení jednotlivých směrů |
-| `InpMaxPositions` | 1 | maximální počet současných pozic |
+| `InpMaxPositions` | 2 | maximální počet současných pozic |
+| `InpMinEntryGapMin` | 10 | minimální odstup dvou vstupů v tomtéž směru; **jen když expert obchoduje sám**, ručních tlačítek se netýká (minuty, 0 = bez omezení) |
 | `InpSlippage` | 20 | maximální skluz tržního příkazu (body) |
 | `InpMagic` | 67205475 | magic number |
 | `InpAllowedAccount` | 0 | 0 = bez omezení, jinak povolený účet |
