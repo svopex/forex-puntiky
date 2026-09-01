@@ -524,6 +524,14 @@ a obnovuje se každou sekundu i bez ticků. Hlavní kanál (nejvyšší skóre) 
 silnější čarou než ostatní. Všechny objekty mají prefix `PUNTIKY_`, jsou nevybíratelné
 a mají tooltip s popisem; při odebrání experta se smažou jen tyto objekty.
 
+**Pořadí vrstev je zdola nahoru: reliéf → kanály → úrovně.** MT5 kreslí objekty
+v pořadí, v jakém vznikly, takže se každá vrstva zakládá až po té pod sebou
+(`DrawRelief` → `RedrawChannels` → `RedrawLevelsOnTop`). Úroveň průrazu i tečkované
+čáry vstupu, SL a PT jsou tak vidět i tam, kde přes ně vede šikmá hrana kanálu
+nebo reliéfní přímka — tedy právě tam, kde na tom nejvíc záleží. Dřív je
+překreslení kanálů (které je ruší a zakládá znovu) překrylo a tenká čára v místě
+křížení zmizela.
+
 ### Ruční zadání — obchodování tlačítky
 
 S **vypnutým automatem** (stav po startu experta) rozhoduje člověk. Obchody se

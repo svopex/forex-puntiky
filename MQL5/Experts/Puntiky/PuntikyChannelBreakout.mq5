@@ -19,7 +19,7 @@
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
-#property version   "1.26"
+#property version   "1.27"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -2941,10 +2941,11 @@ void CheckScreenshotRequest()
 //| kanalu a reliefni primka lezi na sobe, ma byt videt kanal.       |
 //| Pri aktualizaci na miste by nahore zustal ten, kdo vznikl        |
 //| naposledy, tedy po prepoctu reliefu prave primka.                |
+//| Ze stejneho duvodu se uplne nakonec zakladaji urovne prurazu a   |
+//| vstupu - ty maji byt videt nad vsim (viz RedrawLevelsOnTop).     |
 //| Vytvari se par desitek objektu jednou za bar TF kanalu (a po     |
 //| prepoctu reliefu), coz je proti panelu, ktery bezi kazdou        |
-//| sekundu, zanedbatelne. Vse probiha pred jedinym ChartRedraw,     |
-//| takze graf pri prekresleni neblika.                              |
+//| sekundu, zanedbatelne.                                           |
 //+------------------------------------------------------------------+
 void RedrawChannels()
   {
@@ -2998,7 +2999,34 @@ void RedrawChannels()
       PuntikyDrawLabels(items, InpColorPoint, InpPointFontSize, mergeTol);
      }
 
+   //--- Uroven prurazu a urovne planovaneho vstupu (vstup, SL, PT) se
+   //--- zakladaji uplne nakonec, aby lezely NAD kanaly i reliefem
+   RedrawLevelsOnTop();
+
    ChartRedraw();
+  }
+
+//+------------------------------------------------------------------+
+//| Znovu zalozi urovne prurazu a planovaneho vstupu.                |
+//|                                                                  |
+//| MT5 kresli objekty v poradi vzniku, takze prekresleni kanalu      |
+//| (ktere je rusi a zaklada znovu) je predtim prekrylo: tenka        |
+//| carkovana cara urovne a teckovane cary vstupu, SL a PT mizely     |
+//| pod sikmou hranou kanalu nebo pod reliefni primkou - a to prave   |
+//| tam, kde jsou nejvic potreba, tedy kde se hrana s urovni potkava. |
+//| Poradi vrstev je tedy zdola nahoru: relief, kanaly, urovne.       |
+//|                                                                  |
+//| Aktualizace na miste by poradi nezmenila, proto se objekty ruSi   |
+//| a kresli znovu - je jich nejvys osm a deje se to jen pri          |
+//| prekresleni kanalu, tedy jednou za bar jejich timeframu.          |
+//+------------------------------------------------------------------+
+void RedrawLevelsOnTop()
+  {
+   PuntikyDeleteObjects("BRK_");
+   PuntikyDeleteObjects("ENT_");
+
+   DrawBreakoutLevels();
+   DrawEntryLevels();
   }
 
 //+------------------------------------------------------------------+
