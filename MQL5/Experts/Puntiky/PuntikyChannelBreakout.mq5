@@ -19,7 +19,7 @@
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
-#property version   "1.23"
+#property version   "1.24"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -104,12 +104,12 @@ input bool            InpRequireInside    = true;         // Vyzadovat cenu uvni
 //--- Vstup a rizeni obchodu
 input group "=== Vstup ==="
 input bool            InpEnableTrading    = true;         // Povolit obchodovani (false = jen kresleni)
-input ENUM_PUNTIKY_ENTRY InpEntryMode        = PUNTIKY_ENTRY_MANUAL;   // Rezim vstupu (vychozi: rucne tlacitky)
 input int             InpMaxEntryPoints   = 300;          // Maximalni delka vstupu (body)
 input int             InpMinEntryPoints   = 150;          // Minimalni delka vstupu (body)
 input double          InpRiskReward       = 1.0;          // Pomer PT:SL (1 = 1:1, 2 = PT dvakrat dal nez SL)
-input int             InpBreakoutBuffer   = 10;           // Buffer nad/pod urovni prurazu (body)
-input int             InpMaxLevelOffset   = 30;           // Max. odstup trzniho vstupu od urovne (body)
+input int             InpBreakoutBuffer   = 10;           // Potvrzeni prurazu - buffer za urovni (body)
+input int             InpEntryOffset      = -5;           // Posun vstupu od urovne - jen pending (body, zaporne = pred urovni)
+input int             InpMaxLevelOffset   = 30;           // Tolerance pripsani vstupu k urovni (body)
 input int             InpEdgeBuffer       = 20;           // Rezerva PT pred hranou kanalu (body)
 input int             InpEdgeProjBars     = 12;           // Strop projekce hran dopredu (bary referencniho TF)
 input double          InpInsideTolFrac    = 0.02;         // Tolerance testu "uvnitr kanalu"
@@ -345,12 +345,13 @@ SReliefStats  g_reliefStats[PUNTIKY_TF_SLOTS];
 SChannelParams g_chParams;
 SReliefParams  g_reliefParams;
 double         g_breakBuffer    = 0.0; // InpBreakoutBuffer v cene
+double         g_entryOffset    = 0.0; // InpEntryOffset v cene (se znamenkem)
 double         g_maxLevelOffset = 0.0; // InpMaxLevelOffset v cene
 int            g_minEntryGap    = 0;   // InpMinEntryGapMin v sekundach
 
 datetime      g_lastChannelBar[PUNTIKY_TF_SLOTS];  // posledni zpracovany bar kazdeho TF kanalu
 datetime      g_lastBreakoutBar = 0;   // cas posledniho zpracovaneho baru TF prurazu
-datetime      g_lastEntryBar    = 0;   // cas posledniho zpracovaneho baru TF vstupu
+datetime      g_lastEntryBar    = 0;   // cas posledniho baru TF vstupu (dohledani urovne)
 int           g_barsSinceShot   = 0;   // pocitadlo baru pro periodicky snimek
 
 //--- Stav obou smeru prurazu: uroven, jeji cas, nabito / obchodovano /
@@ -384,25 +385,8 @@ int AutoLegCount()
    return(g_autoDouble ? 2 : 1);
   }
 
-//+------------------------------------------------------------------+
-//| Rezim vstupu platny PRAVE TED.                                   |
-//| Vstup InpEntryMode urcuje jen vychozi stav - tlacitko AUTO ho za |
-//| behu prepina do rezimu pending prikazu, ve kterem expert          |
-//| obchoduje sam. Vsechna rozhodnuti o rezimu proto musi chodit sem, |
-//| ne primo na vstup; jinak by cast kodu jela podle tlacitka a cast  |
-//| podle nastaveni.                                                  |
-//+------------------------------------------------------------------+
-ENUM_PUNTIKY_ENTRY EntryMode()
-  {
-   return(g_autoMode ? PUNTIKY_ENTRY_PENDING : InpEntryMode);
-  }
-
-//--- Odlozena vymena spotrebovane urovne za dalsi swing. V rezimu
-//--- M1_CLOSE se nesmi provest uvnitr svicky vstupniho TF: vstup se
-//--- potvrzuje az jejim uzavrenim a meri se proti urovni, kterou
-//--- svicka skutecne prorazila (viz OnTick).
+//--- Odlozena vymena spotrebovane urovne za dalsi swing (viz OnTick)
 bool          g_breakSwapPending = false;
-datetime      g_breakSwapBar     = 0;  // bar vstupniho TF, ve kterem pruraz nastal
 
 SEntryPlan    g_plan[2];               // aktualni navrhy obou smeru
 string        g_lastEvent = "";        // posledni udalost pro panel
@@ -420,10 +404,11 @@ bool          g_tradingAllowed = true; // vysledek kontroly uctu
 bool          g_showPanel     = false;// kreslit textovy panel pod tlacitky
                                       // (prepina se tlacitkem PANEL v grafu)
 // Automaticky rezim: expert obchoduje sam pres pending STOP prikazy na
-// obou urovnich prurazu. Prepina se tlacitkem AUTO v grafu, takze to
-// nemuze byt vstup - ten se za behu nemeni (viz EntryMode).
-// Zamerne se nikam neuklada: po restartu terminalu se expert vraci do
-// rezimu podle InpEntryMode a sam od sebe obchodovat nezacne.
+// obou urovnich prurazu. Prepina se tlacitkem AUTO v grafu a rozhoduje
+// o vsem, co expert dela sam - kdyz je vypnuty, jen kresli a obchod se
+// da zadat tlacitky LONG / SHORT.
+// Zamerne se nikam neuklada: po restartu terminalu je automat vzdy
+// vypnuty a expert sam od sebe obchodovat nezacne.
 bool          g_autoMode      = false;
 // Dvojity automat: kazdy vstup se zada jako DVE nohy s polovicnim
 // objemem - prvni s PT podle navrhu (RRR 1:1), druha s PT na nasobku
@@ -432,14 +417,6 @@ bool          g_autoMode      = false;
 bool          g_autoDouble    = false;
 bool          g_ordersDirty    = false;// navrhy se zmenily, prikazy je treba srovnat
 bool          g_needInitCalc   = true; // ceka se na data pro prvni vypocet
-
-//--- Uklid pending prikazu po prepnuti do rezimu M1_CLOSE. Pri startu
-//--- muze byt obchodovani vypnute (AutoTrading, jiny ucet), a protoze
-//--- jeho zapnuti zadny OnInit nevyvola, uklid se opakuje z timeru,
-//--- dokud neprojde - jinak by na urovni zustal lezet prikaz, ktery uz
-//--- zadny rezim neridi, a jeho plneni by pridalo druhou pozici.
-bool          g_cleanupOrders = false;
-bool          g_cleanupWarned = false; // varovani do logu jen jednou
 
 //--- Stav panelu - kolik radku je vykresleno a na jake vysce zacina
 //--- prvni radek textu (tedy uz pod radkem tlacitek)
@@ -781,22 +758,10 @@ int OnInit()
                   "Strategie > Povolit WebRequest)",
                   InpHueNearPoints, InpHueNearPoints * InpHueResetFactor, InpHueUrl);
 
-   if(EntryMode() == PUNTIKY_ENTRY_MANUAL)
-      Print("PUNTIKY: ruční režim - expert sám neobchoduje, obchody se zadávají "
-            "tlačítky LONG / SHORT (a LONG 2x / SHORT 2x) v grafu.");
-
-   // Po prepnuti z pending rezimu by na urovnich zustaly lezet GTC
-   // prikazy se starym SL/PT - jejich plneni by otevrelo pozici, kterou
-   // uz zadny rezim neridi. V rucnim rezimu se prikazy naopak nechavaji
-   // byt: zadal je uzivatel tlacitkem a nesou vlastni SL i PT, takze mu
-   // rekompilace ani zmena parametru nesmi obchod zrusit.
-   // Kdyz je obchodovani prave vypnute, uklid se odlozi a opakuje z
-   // timeru - zapnuti AutoTradingu uz zadny OnInit nevyvola.
-   if(EntryMode() == PUNTIKY_ENTRY_M1_CLOSE)
-     {
-      g_cleanupOrders = true;
-      TryCleanupOrders();
-     }
+   // Automat je po startu vzdy vypnuty, takze expert zacina jen kreslenim
+   Print("PUNTIKY: automat je vypnutý - expert sám neobchoduje. Zapni ho "
+         "tlačítkem AUTO ZAP, nebo zadej obchod tlačítky LONG / SHORT "
+         "(a LONG 2x / SHORT 2x) v grafu.");
 
    //--- Prvni vypocet hned pri startu, aby byl graf ihned popsany.
    //--- Kdyz jeste nejsou data indikatoru, odlozi se na prvni tick.
@@ -859,8 +824,8 @@ void OnDeinit(const int reason)
          // zustava. Totez pri vypnutem obchodovani, kde by OrderDelete
          // stejne skoncil chybou - at je aspon videt, ze prikazy na
          // trhu zustavaji bez dozoru.
-         if(EntryMode() == PUNTIKY_ENTRY_MANUAL)
-            PrintFormat("PUNTIKY: ruční režim - na trhu zůstává %d příkaz(ů) "
+         if(!g_autoMode)
+            PrintFormat("PUNTIKY: automat vypnutý - na trhu zůstává %d příkaz(ů) "
                         "zadaných tlačítkem.", left);
          else
             if(!TradingEnabled())
@@ -947,14 +912,7 @@ void OnTick()
    if(InpUseRelief && newReliefBar)
       RevalidateRelief(reliefDropped);
 
-   //--- 2) Vstup potvrzeny uzavrenou svickou vstupniho TF.
-   //---    Kdyby se urovne prepocitaly driv, na hodinove hranici by se
-   //---    prechod pres uroven meril proti uz jine (starsi) urovni a
-   //---    platny signal by zmizel.
-   if(EntryMode() == PUNTIKY_ENTRY_M1_CLOSE && newEntryBar)
-      CheckEntryOnEntryTF();
-
-   //--- 3) Novy bar TF kanalu -> prepocet a prekresleni kanalu.
+   //--- 2) Novy bar TF kanalu -> prepocet a prekresleni kanalu.
    //---    Hrany se posunuly, takze SL i PT navrhu uz neodpovidaji.
    if(newChannelBar)
      {
@@ -962,21 +920,21 @@ void OnTick()
       plansDirty = true;
      }
 
-   //--- 4) Novy bar nektereho TF reliefu -> prepocet jeho primek
+   //--- 3) Novy bar nektereho TF reliefu -> prepocet jeho primek
    //---    (nebo dotazeni slotu, ktery cekal na sve ATR)
    if(newReliefBar || reliefWaitsATR)
       RecalcRelief(false, reliefDropped);
    if(newReliefBar)
       plansDirty = true;
 
-   //--- 5) Novy bar TF prurazu -> nove urovne high/low
+   //--- 4) Novy bar TF prurazu -> nove urovne high/low
    if(newBreakoutBar)
      {
       RefreshBreakoutLevels();
       plansDirty = true;
      }
 
-   //--- 6) Pruraz urovne se hlida na kazdem ticku, aby se prikaz na
+   //--- 5) Pruraz urovne se hlida na kazdem ticku, aby se prikaz na
    //---    spotrebovanou uroven zrusil hned, ne az za minutu
    const bool wasBuyBroken  = g_dir[PUNTIKY_DIR_BUY].broken;
    const bool wasSellBroken = g_dir[PUNTIKY_DIR_SELL].broken;
@@ -988,34 +946,35 @@ void OnTick()
       // prave otevrene svicky TF prurazu), jinak by expert cekal az na
       // otevreni dalsi svicky TF prurazu
       g_breakSwapPending = true;
-      g_breakSwapBar     = g_lastEntryBar;
      }
 
-   //--- 7) Vymena spotrebovane urovne za dalsi swing. V rezimu
-   //---    M1_CLOSE se odklada az za PRVNI novy bar vstupniho TF po
-   //---    prurazu, tedy az za krok 2: vstup se potvrzuje uzavrenim
-   //---    svicky a musi se merit proti urovni, kterou svicka
-   //---    prorazila. Vymena uvnitr svicky znamenala, ze se close
-   //---    porovnal uz s dalsim (vyssim) swingem, takze rezim se
-   //---    swingovymi urovnemi prakticky nikdy nevstoupil.
-   if(g_breakSwapPending &&
-      (EntryMode() != PUNTIKY_ENTRY_M1_CLOSE ||
-       (newEntryBar && g_lastEntryBar != g_breakSwapBar)))
+   //--- 6) Vymena spotrebovane urovne za dalsi swing. Deje se hned na
+   //---    ticku, ktery uroven prorazil - dalsi prilezitost tak vznikne
+   //---    bez cekani na novou svicku TF prurazu.
+   //---    Kdyz vyber zadnou nastupkyni nenajde (v padu uz jsou vsechna
+   //---    starsi dna prorazena), strana zustane prazdna a zkousi se
+   //---    znovu s kazdym novym barem TF vstupu - jinak by dalsi pokus
+   //---    prisel az s novou svickou TF prurazu, tedy o desitky minut
+   //---    pozdeji.
+   const bool retryLevel = newEntryBar &&
+                           (g_dir[PUNTIKY_DIR_BUY].level  <= 0.0 ||
+                            g_dir[PUNTIKY_DIR_SELL].level <= 0.0);
+   if(g_breakSwapPending || retryLevel)
      {
       g_breakSwapPending = false;
       RefreshBreakoutLevels();
       plansDirty = true;
      }
 
-   //--- 8) Jediny prepocet navrhu za tick
+   //--- 7) Jediny prepocet navrhu za tick
    if(plansDirty)
       RebuildPlans();
 
-   //--- 9) Skutecne prikazy se srovnaji s navrhy nejvyse jednou za tick
-   if(EntryMode() == PUNTIKY_ENTRY_PENDING && g_ordersDirty)
+   //--- 8) Skutecne prikazy se srovnaji s navrhy nejvyse jednou za tick
+   if(g_autoMode && g_ordersDirty)
       SyncPendingOrders();
 
-   //--- 10) Priblizeni k urovni vstupu rozblika zarovky Hue
+   //--- 9) Priblizeni k urovni vstupu rozblika zarovky Hue
    CheckHueAlerts();
   }
 
@@ -1135,10 +1094,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    // delku (RRR by nebylo 1:1), proto se dorovnaji na skutecny vstup.
    // Delky se berou z vyplneneho prikazu, SL i PT zvlast - u druhe
    // pozice dvojiteho vstupu je PT na nasobku SL a musi mu zustat.
-   // Trzni prikaz sem NEPATRI: jeho stopy uz dorovnal OpenMarket podle
-   // delky navrhu, kdezto jeho ORDER_PRICE_OPEN nese cenu PLNENI -
-   // delky by z nej vysly vcetne skluzu (SL o skluz delsi, PT o skluz
-   // kratsi) a druhe dorovnani by je vratilo na puvodni hodnoty.
+   // Expert sam zada uz jen STOP prikazy, ale pozice se stejnym magicem
+   // muze vzniknout i rucne primo v terminalu. U takove neni z ceho
+   // delky brat (ORDER_PRICE_OPEN nese rovnou cenu plneni), proto se
+   // dorovnani tyka jen pozic z pending prikazu.
    const bool fromPending = (orderType != (long)ORDER_TYPE_BUY &&
                              orderType != (long)ORDER_TYPE_SELL);
    if(fromPending && orderPrice > 0.0 && orderSL > 0.0)
@@ -1155,7 +1114,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    // navrh druheho smeru by zustal platny a jeho prikaz by lezel dal
    // (whipsaw by ho vyplnil pres InpMaxPositions = 1).
    RebuildPlans();
-   if(EntryMode() == PUNTIKY_ENTRY_PENDING)
+   if(g_autoMode)
       CancelOppositeOrder(isBuy);
 
    // Rekonciliace se tu ZAMERNE nespousti. Bezela by nad uctem, ktery
@@ -1182,10 +1141,6 @@ void OnTimer()
    // graf bez ticku (zavreny trh) by jinak zustal prazdny
    if(g_needInitCalc)
       TryInitialCalc();
-
-   // Uklid prikazu po prepnuti do rezimu M1_CLOSE muze cekat na
-   // povoleni obchodovani (viz TryCleanupOrders)
-   TryCleanupOrders();
 
    UpdatePanel();
    CheckScreenshotRequest();
@@ -1301,6 +1256,13 @@ bool ValidateInputs()
    if(InpAnchorWindow < 0)       err += "InpAnchorWindow >= 0; ";
    if(InpMinWidthPoints < 0)     err += "InpMinWidthPoints >= 0; ";
    if(InpBreakoutBuffer < 0)     err += "InpBreakoutBuffer >= 0; ";
+   // Posun vstupu je jediny bodovy vstup, ktery smi byt zaporny (prave tim
+   // se vstup dostane pred uroven), proto se u nej hlida jen velikost:
+   // posun srovnatelny s delkou vstupu uz neni "kousek pred urovni", ale
+   // docela jiny obchod - a zaroven by rozhodil pripsani vstupu k urovni
+   // (viz EntryBelongsToLevel).
+   if(MathAbs(InpEntryOffset) >= InpMinEntryPoints)
+      err += "|InpEntryOffset| < InpMinEntryPoints; ";
    if(InpMaxLevelOffset < 0)     err += "InpMaxLevelOffset >= 0; ";
    if(InpEdgeBuffer < 0)         err += "InpEdgeBuffer >= 0; ";
    if(InpReliefBuffer < 0)       err += "InpReliefBuffer >= 0; ";
@@ -1472,6 +1434,7 @@ string TFListText(const ENUM_TIMEFRAMES &list[], const int count)
 void InitParams()
   {
    g_breakBuffer    = InpBreakoutBuffer * _Point;
+   g_entryOffset    = InpEntryOffset * _Point;
    g_maxLevelOffset = InpMaxLevelOffset * _Point;
    g_minEntryGap    = InpMinEntryGapMin * 60;
 
@@ -1531,10 +1494,11 @@ void PrintPointDiagnostics()
    PrintFormat("PUNTIKY: %s  digits=%d  point=%s", _Symbol, _Digits,
                DoubleToString(_Point, _Digits));
    PrintFormat("PUNTIKY: vstup max %d b = %s, min %d b = %s, buffer %d b = %s, "
-               "odstup trzniho vstupu %d b = %s",
+               "posun vstupu %d b = %s, odstup trzniho vstupu %d b = %s",
                InpMaxEntryPoints, DoubleToString(InpMaxEntryPoints * _Point, _Digits),
                InpMinEntryPoints, DoubleToString(InpMinEntryPoints * _Point, _Digits),
                InpBreakoutBuffer, DoubleToString(InpBreakoutBuffer * _Point, _Digits),
+               InpEntryOffset, DoubleToString(InpEntryOffset * _Point, _Digits),
                InpMaxLevelOffset, DoubleToString(InpMaxLevelOffset * _Point, _Digits));
    PrintFormat("PUNTIKY: rezerva k hraně %d b = %s, k přímce %d b = %s, "
                "min. šířka kanálu %d b = %s",
@@ -1661,55 +1625,12 @@ bool TryInitialCalc()
    IsNewBar(InpBreakoutTF, g_lastBreakoutBar);
    IsNewBar(InpEntryTF,    g_lastEntryBar);
 
-   // V pending rezimu se prikazy zadaji hned - jinak by se cekalo
+   // Pod automatem se prikazy zadaji hned - jinak by se cekalo
    // az na otevreni dalsi svicky TF prurazu
-   if(EntryMode() == PUNTIKY_ENTRY_PENDING)
+   if(g_autoMode)
       SyncPendingOrders();
 
    return(true);
-  }
-
-//+------------------------------------------------------------------+
-//| Uklidi pending prikazy, ktere v rezimu M1_CLOSE nemaji co delat. |
-//| Rezim M1_CLOSE otevira pozice na trhu a lezici prikazy vubec     |
-//| neridi - zbyly by po pending rezimu se starym SL a PT a jejich   |
-//| plneni by pridalo druhou pozici s plnym rizikem, kterou uz nikdo |
-//| nesleduje (EntryBlockReason pocita jen pozice, ne prikazy).      |
-//| Uklid se opakuje, dokud neprojde: pri startu byva obchodovani     |
-//| vypnute (AutoTrading, jiny ucet) a jeho zapnuti zadny OnInit      |
-//| nevyvola, takze jednorazovy pokus v OnInit se tise ztratil.      |
-//+------------------------------------------------------------------+
-void TryCleanupOrders()
-  {
-   if(!g_cleanupOrders)
-      return;
-
-   // Neni co uklizet - v tomto rezimu uz zadny prikaz vzniknout nemuze
-   const int left = CountOrders();
-   if(left == 0)
-     {
-      g_cleanupOrders = false;
-      return;
-     }
-
-   const string blocked = TradingDisabledReason();
-   if(blocked != "")
-     {
-      if(!g_cleanupWarned)
-        {
-         g_cleanupWarned = true;
-         PrintFormat("PUNTIKY: režim M1 - %d ležící příkaz(ů) zatím nelze zrušit "
-                     "(%s); uklidí se, jakmile bude obchodování povoleno.",
-                     left, blocked);
-        }
-      return;
-     }
-
-   if(CancelPendingOrders())
-     {
-      g_cleanupOrders = false;
-      PrintFormat("PUNTIKY: režim M1 - zrušeno %d ležících příkazů z pending režimu.", left);
-     }
   }
 
 //+------------------------------------------------------------------+
@@ -2546,12 +2467,12 @@ int LevelRecordCheck(const bool isBuy, const double level, const datetime since)
 
 //+------------------------------------------------------------------+
 //| Patri vstup na dane cene k dane urovni prurazu?                  |
-//| Vstup lezi vzdy za urovni: STOP prikaz presne o buffer, trzni    |
-//| vstup (rezim M1) nejdal o InpMaxLevelOffset (viz EntryBlockReason)|
-//| a k tomu se pripousti skluz pro pripad, ze se misto ceny prikazu |
-//| porovnava cena obchodu. Kdyz uroven lezi az za vstupem (zaporny  |
-//| odstup) nebo je dal, obchod k teto urovni nepatri - vznikl na    |
-//| jine, napr. na te, kterou uz nahradil dalsi swing.               |
+//| Okno pripustnych odstupu od urovne konci dole posunem vstupu:    |
+//| InpEntryOffset muze byt zaporny a STOP prikaz pak lezi PRED      |
+//| urovni, takze i vstup, ktery k urovni patri, ma zaporny odstup.  |
+//| Nahore konci nejdal moznym trznim vstupem plus skluz - cena      |
+//| obchodu se od ceny prikazu o skluz lisi. Odstup mimo okno patri  |
+//| jine urovni, napr. te, kterou uz nahradil dalsi swing.           |
 //|  isBuy - smer obchodu, entry - cena vstupu (prikazu nebo obchodu)|
 //|  level - uroven prurazu, proti ktere se vstup posuzuje           |
 //+------------------------------------------------------------------+
@@ -2560,9 +2481,18 @@ bool EntryBelongsToLevel(const bool isBuy, const double entry, const double leve
    if(level <= 0.0 || entry <= 0.0)
       return(false);
 
-   const double offset    = isBuy ? (entry - level) : (level - entry);
-   const double tolerance = g_breakBuffer + g_maxLevelOffset + InpSlippage * _Point;
-   return(offset >= 0.0 && offset <= tolerance);
+   const double offset = isBuy ? (entry - level) : (level - entry);
+
+   // STOP prikaz se nikdy neplni lepe nez na sve cene, takze dolni mez
+   // konci presne na posunu vstupu (u kladneho posunu na urovni same)
+   const double minOffset = MathMin(0.0, g_entryOffset);
+
+   // Nejdal lezi trzni vstup (InpMaxLevelOffset), kladny posun pendingu
+   // ho ale muze prekrocit - bere se proto vetsi z obou rezerv
+   const double maxOffset = MathMax(g_breakBuffer, g_entryOffset) + g_maxLevelOffset
+                            + InpSlippage * _Point;
+
+   return(offset >= minOffset && offset <= maxOffset);
   }
 
 //+------------------------------------------------------------------+
@@ -2661,8 +2591,8 @@ void PrimeEntryTimes()
                     (datetime)HistoryDealGetInteger(ticket, DEAL_TIME));
      }
 
-   // V rucnim rezimu odstup nic nezdrzuje, takze by hlaseni jen matlo
-   if(EntryMode() == PUNTIKY_ENTRY_MANUAL)
+   // S vypnutym automatem odstup nic nezdrzuje, takze by hlaseni jen matlo
+   if(!g_autoMode)
       return;
 
    for(int i = 0; i < 2; i++)
@@ -3489,8 +3419,11 @@ bool SwingBrokenWhy(const MqlRates &rates[], const SSwing &s, const bool isHigh,
 //|  foundHi    - out: podarilo se vrchol najit?                     |
 //|  lo, loTime - out: cena a cas posledniho platneho dna            |
 //|  foundLo    - out: podarilo se dno najit?                        |
+//| Vraci true, kdyz vyber skutecne probehl (byla data i swingy).    |
+//| Nenalezena strana pak znamena "zadna uroven neexistuje" a smi se |
+//| zahodit; pri false se o urovnich nedozvedelo nic a musi zustat.  |
 //+------------------------------------------------------------------+
-void FindBreakoutSwings(double &hi, datetime &hiTime, bool &foundHi,
+bool FindBreakoutSwings(double &hi, datetime &hiTime, bool &foundHi,
                         double &lo, datetime &loTime, bool &foundLo)
   {
    foundHi = false;
@@ -3506,7 +3439,7 @@ void FindBreakoutSwings(double &hi, datetime &hiTime, bool &foundHi,
          PrintFormat("PUNTIKY diag: úrovně průrazu - %s vrátil jen %d svíček, "
                      "potřeba aspoň %d; úrovně zůstávají beze změny.",
                      TFText(InpBreakoutTF), copied, InpBreakSwingDepth * 2 + 3);
-      return;
+      return(false);
      }
 
    SSwing sw[];
@@ -3517,7 +3450,7 @@ void FindBreakoutSwings(double &hi, datetime &hiTime, bool &foundHi,
          PrintFormat("PUNTIKY diag: úrovně průrazu - v %d svíčkách %s nenalezen "
                      "žádný swing (šířka okna %d).",
                      copied, TFText(InpBreakoutTF), InpBreakSwingDepth);
-      return;
+      return(false);
      }
 
    for(int i = ns - 1; i >= 0; i--)
@@ -3547,6 +3480,7 @@ void FindBreakoutSwings(double &hi, datetime &hiTime, bool &foundHi,
    foundLo = foundLo || legLo;
 
    DiagBreakoutSwings(rates, sw, ns, copied, foundHi, foundLo, hi, lo, legHi, legLo);
+   return(true);
   }
 
 //+------------------------------------------------------------------+
@@ -3693,24 +3627,13 @@ void DiagBreakoutSwings(const MqlRates &rates[], const SSwing &sw[], const int n
   }
 
 //+------------------------------------------------------------------+
-//| Nastavi priznak "uroven prorazena" a pri prvnim prurazu si       |
-//| zapamatuje jeho cas. Podle nej pozna rezim M1_CLOSE, jestli      |
-//| pruraz patri k prave uzavrene svicce vstupniho TF, nebo je       |
-//| starsi a uroven uz svou prilezitost mela (viz EntryBlockReason). |
+//| Nastavi priznak "uroven prorazena".                              |
 //|  isBuy  - strana urovne                                          |
 //|  broken - novy stav priznaku                                     |
 //+------------------------------------------------------------------+
 void MarkBroken(const bool isBuy, const bool broken)
   {
-   const int idx = DirIdx(isBuy);
-
-   // Cas se zapisuje jen pri PRECHODU do prorazeneho stavu, aby
-   // opakovany pruraz teze urovne nepredstiral cerstvy signal
-   if(broken && !g_dir[idx].broken)
-      g_dir[idx].brokenTime = TimeCurrent();
-   if(!broken)
-      g_dir[idx].brokenTime = 0;
-   g_dir[idx].broken = broken;
+   g_dir[DirIdx(isBuy)].broken = broken;
   }
 
 //+------------------------------------------------------------------+
@@ -3750,6 +3673,31 @@ void ApplyBreakLevel(const bool isBuy, const double price, const datetime levelT
   }
 
 //+------------------------------------------------------------------+
+//| Zahodi uroven prurazu jedne strany.                              |
+//| Pouziva se, kdyz vyber swingu probehl, ale zadnou platnou uroven |
+//| uz nenasel - typicky v trendu, ktery prorazil vsechny swingy pod |
+//| sebou. Bez toho zustala v grafu viset uz prorazena cara a navrh  |
+//| mohl mirit na uroven, kterou trh davno prosel.                   |
+//| Priznak "obchodovano" se resetovat muze: kdyz se tataz uroven     |
+//| vrati, precte si ho ApplyBreakLevel znovu z pameti terminalu.     |
+//|  isBuy - strana (true = HIGH uroven pro nakup)                   |
+//+------------------------------------------------------------------+
+void ClearBreakLevel(const bool isBuy)
+  {
+   const int idx = DirIdx(isBuy);
+
+   // Uz je prazdna - at se stav zbytecne nerozviri
+   if(g_dir[idx].level <= 0.0 && g_dir[idx].levelTime <= 0)
+      return;
+
+   g_dir[idx].level     = 0.0;
+   g_dir[idx].levelTime = 0;
+   g_dir[idx].armed     = false;
+   g_dir[idx].taken     = false;
+   MarkBroken(isBuy, false);
+  }
+
+//+------------------------------------------------------------------+
 //| Nacte urovne prurazu, srovna priznaky a prekresli je.            |
 //| Kazda strana se aktualizuje samostatne (viz FindBreakoutSwings). |
 //+------------------------------------------------------------------+
@@ -3758,11 +3706,12 @@ void RefreshBreakoutLevels()
    double   h = 0.0, l = 0.0;
    datetime th = 0, tl = 0;
    bool     foundHi = false, foundLo = false;
+   bool     searched = false;
 
    if(InpUseSwingLevels)
      {
       // Proraz se jen swingovy vrchol / dno, ne kazda hodinova svicka
-      FindBreakoutSwings(h, th, foundHi, l, tl, foundLo);
+      searched = FindBreakoutSwings(h, th, foundHi, l, tl, foundLo);
      }
    else
      {
@@ -3773,12 +3722,25 @@ void RefreshBreakoutLevels()
       tl = th;
       foundHi = (h > 0.0 && th > 0);
       foundLo = (l > 0.0 && tl > 0);
+      // Obe strany pochazi z teze svicky, takze bud jsou data, nebo nic
+      searched = (foundHi && foundLo);
      }
 
+   // Nenalezena strana se ZAHODI - drive si drzela svou starou uroven,
+   // takze v grafu zustala viset uz prorazena cara a panel k ni dal
+   // nabizel vstup. Zahazuje se ale jen po vyberu, ktery skutecne
+   // probehl: kdyz selhal uz na datech, o urovnich to nic nerika.
    if(foundHi)
       ApplyBreakLevel(true, h, th);
+   else
+      if(searched)
+         ClearBreakLevel(true);
+
    if(foundLo)
       ApplyBreakLevel(false, l, tl);
+   else
+      if(searched)
+         ClearBreakLevel(false);
 
    UpdateArming();
 
@@ -3830,6 +3792,19 @@ void UpdateArming()
   }
 
 //+------------------------------------------------------------------+
+//| Planovana cena vstupu pro danou uroven prurazu.                  |
+//| Pending STOP prikaz nemusi lezet az za urovni - zapornym         |
+//| InpEntryOffset se posune PRED ni (u BUY niz, u SELL vys), takze  |
+//| se vyplni driv, nez pruraz roztahne spread. Za to se plati tim,  |
+//| ze obchod vznikne jeste pred potvrzenim prurazu.                 |
+//|  isBuy - smer obchodu, level - uroven prurazu                    |
+//+------------------------------------------------------------------+
+double PlannedEntryPrice(const bool isBuy, const double level)
+  {
+   return(isBuy ? level + g_entryOffset : level - g_entryOffset);
+  }
+
+//+------------------------------------------------------------------+
 //| Prepocita navrhy vstupu pro oba smery a vykresli jejich urovne.  |
 //| Navrhy se pocitaji z hypotetickeho vstupu na urovni prurazu,     |
 //| takze panel ukazuje parametry obchodu jeste pred jeho vznikem.   |
@@ -3842,8 +3817,7 @@ void RebuildPlans()
       const double level = g_dir[i].level;
 
       if(level > 0.0)
-         g_plan[i] = BuildPlan(isBuy, isBuy ? level + g_breakBuffer : level - g_breakBuffer,
-                               level, false);
+         g_plan[i] = BuildPlan(isBuy, PlannedEntryPrice(isBuy, level), level);
       else
          ResetPlan(g_plan[i], isBuy);
      }
@@ -3857,25 +3831,19 @@ void RebuildPlans()
 
 //+------------------------------------------------------------------+
 //| Duvod, proc v danem smeru nelze vstoupit ("" = lze).             |
-//| Ochrany jsou na jednom miste pro oba rezimy vstupu - drive je    |
-//| kazdy rezim kontroloval jinak: pending rezim vubec necetl        |
-//| "nabito" (a zadal prikaz do uz beziciho pohybu), zatimco rezim   |
-//| M1 jedinym boolem vypinal rovnou celou sadu ochran a nakupoval   |
-//| i na urovni, kterou sam oznacil za prorazenou.                   |
+//| Ochrany jsou na jednom miste pro oba zpusoby zadani - jak pro    |
+//| automat, tak pro rucni tlacitka; oboji konci pending STOP        |
+//| prikazem, takze se navrh posuzuje uplne stejne.                  |
 //| Opravneni k obchodovani se zde zamerne netestuje - navrh se ma   |
 //| kreslit i v instanci, ktera jen kresli.                          |
 //|  isBuy    - smer obchodu                                         |
 //|  entry    - planovana cena vstupu                                |
 //|  trigger  - uroven prurazu                                       |
-//|  atMarket - vstup se otevira na trhu (rezim M1_CLOSE): pruraz    |
-//|             prave probehl, takze se netestuje dosazitelnost a    |
-//|             priznak "prorazeno" se posuzuje podle casu prurazu,  |
-//|             zato se hlida odstup od urovne                       |
 //|  block    - out: druh zamitnuti; rozhoduje o osudu uz leziciho   |
 //|             prikazu pri rekonciliaci (viz SyncOneDirection)      |
 //+------------------------------------------------------------------+
 string EntryBlockReason(const bool isBuy, const double entry, const double trigger,
-                        const bool atMarket, ENUM_PUNTIKY_BLOCK &block)
+                        ENUM_PUNTIKY_BLOCK &block)
   {
    // Vychozi je "uroven neni k dispozici" - prikaz na ni lezet nema
    block = PUNTIKY_BLOCK_LEVEL;
@@ -3903,7 +3871,7 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
    // Jako jedina z ochran se tyka VYHRADNE rezimu, ve kterych expert
    // obchoduje sam: rucni tlacitko je schvaleni uzivatele, ktery vidi,
    // co se na trhu deje, a retezeni vstupu si hlida sam.
-   if(EntryMode() != PUNTIKY_ENTRY_MANUAL)
+   if(g_autoMode)
      {
       const int gapLeft = EntryGapLeft(isBuy);
       if(gapLeft > 0)
@@ -3915,31 +3883,6 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
    // urovne - jinak se vstupuje do uz beziciho pohybu
    if(!g_dir[idx].armed)
       return(isBuy ? "čeká na návrat pod úroveň" : "čeká na návrat nad úroveň");
-
-   if(atMarket)
-     {
-      // Uroven prorazenou driv, nez se otevrela prave uzavrena svicka,
-      // uz nelze obchodovat: vstup by nevznikl z prurazu, ale z navratu
-      // ceny k urovni, ktera svou prilezitost mela. Pruraz z PRAVE
-      // uzavrene svicky se naopak propustit musi - jeho priznak nastavil
-      // nektery tick uvnitr teze svicky, takze samotny priznak
-      // "prorazeno" tu rozhodnout nemuze (drive se proto netestoval
-      // vubec a rezim vstupoval i na davno spotrebovane urovni).
-      const datetime brokenTime = g_dir[idx].brokenTime;
-      const datetime barOpen     = iTime(_Symbol, InpEntryTF, 1);
-      if(g_dir[idx].broken && brokenTime > 0 && barOpen > 0 && brokenTime < barOpen)
-         return("úroveň už byla proražena");
-
-      // Po gapu nebo dlouhe svicce muze byt trh uz stovky bodu za
-      // urovni; takovy vstup uz s prurazem nema nic spolecneho a nesl
-      // by plnou delku PT z mista, kde uz pohyb probehl
-      const double offset = isBuy ? (entry - trigger) : (trigger - entry);
-      if(offset > g_maxLevelOffset)
-         return(StringFormat("vstup %.0f b od úrovně", offset / _Point));
-
-      block = PUNTIKY_BLOCK_NONE;
-      return("");
-     }
 
    // Uroven, kterou cena uz jednou prorazila, je spotrebovana -
    // i kdyz se cena mezitim vratila zpatky
@@ -3968,8 +3911,6 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
 //|  isBuy      - smer obchodu                                       |
 //|  entryPrice - predpokladana cena vstupu                          |
 //|  trigger    - uroven prurazu (high/low svicky TF prurazu)        |
-//|  atMarket   - vstup na trhu misto pending prikazu (viz           |
-//|               EntryBlockReason)                                  |
 //| Delka vstupu je min(InpMaxEntryPoints, vzdalenost k nejblizsi    |
 //| hrane kanalu nebo reliefni primce ve smeru obchodu); SL ma vzdy  |
 //| stejnou delku jako PT (RRR 1:1).                                 |
@@ -3977,15 +3918,14 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
 //| kterakoli jina a slouzi uz jen ke zkraceni PT k hrane. Vstup     |
 //| mimo kanal (i uplna absence kanalu) je tedy legitimni.           |
 //+------------------------------------------------------------------+
-SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double trigger,
-                     const bool atMarket)
+SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double trigger)
   {
    SEntryPlan pl;
    ResetPlan(pl, isBuy);
    pl.trigger = trigger;
    pl.entry   = AlignToTick(entryPrice);
 
-   pl.reason = EntryBlockReason(isBuy, pl.entry, trigger, atMarket, pl.block);
+   pl.reason = EntryBlockReason(isBuy, pl.entry, trigger, pl.block);
    if(pl.reason != "")
       return(pl);
 
@@ -4008,20 +3948,12 @@ SEntryPlan BuildPlan(const bool isBuy, const double entryPrice, const double tri
    const double minDist = InpMinEntryPoints * _Point;
    double dist = maxDist;
 
-   //--- Referencni cena, od ktere se hledaji prekazky.
-   //--- U pending prikazu je to SPOUSTEC, tedy stejna cena, proti ktere
-   //--- se testovalo "pruraz uvnitr kanalu". Kdyz se hledalo az od
-   //--- vstupu, prekazka lezici mezi spoustecem a vstupem se povazovala
-   //--- za neexistujici a PT pak mirilo v plne delce za hranu kanalu -
-   //--- presne v pripade, kdy swing sedi na hrane.
-   //--- U trzniho vstupu je ale trh uz ZA spoustecem: prekazka mezi
-   //--- spoustecem a vstupem je prave prorazena a misto k ni vyjde vzdy
-   //--- nula ("malo mista k reliefni primce (0 b)"), takze by vstup
-   //--- zamitla prave ta prekazka, kterou prurazova svicka sama zrusila.
-   //--- Proto se v tom rezimu hleda az od vstupu.
-   const double refPrice = atMarket
-                           ? (isBuy ? MathMax(trigger, pl.entry) : MathMin(trigger, pl.entry))
-                           : trigger;
+   //--- Referencni cena, od ktere se hledaji prekazky: SPOUSTEC, tedy
+   //--- stejna cena, proti ktere se testovalo "pruraz uvnitr kanalu".
+   //--- Kdyz se hledalo az od vstupu, prekazka lezici mezi spoustecem a
+   //--- vstupem se povazovala za neexistujici a PT pak mirilo v plne
+   //--- delce za hranu kanalu - presne v pripade, kdy swing sedi na hrane.
+   const double refPrice = trigger;
 
    //--- Nejblizsi hrana ve smeru obchodu (vcetne hran vnorenych kanalu
    //--- a kanalu z ostatnich timeframu)
@@ -4684,47 +4616,6 @@ void AdjustPositionStops(const ulong ticket, const double slDistance,
   }
 
 //+------------------------------------------------------------------+
-//| Otevreni pozice podle navrhu vstupu.                             |
-//|  pl - platny navrh vstupu                                        |
-//| Vraci true, kdyz pozice vznikla.                                 |
-//+------------------------------------------------------------------+
-bool OpenMarket(SEntryPlan &pl)
-  {
-   if(!TradingEnabled())
-     {
-      ReportEvent("tržní vstup nezadán - obchodování je vypnuté", true);
-      return(false);
-     }
-
-   const string comment = "PUNTIKY " + (pl.isBuy ? "BUY" : "SELL");
-   const bool   ok = pl.isBuy
-                     ? g_trade.Buy(pl.lots, _Symbol, 0.0, pl.sl, pl.tp, comment)
-                     : g_trade.Sell(pl.lots, _Symbol, 0.0, pl.sl, pl.tp, comment);
-
-   if(!ok)
-     {
-      ReportEvent(StringFormat("Chyba vstupu %d / %d",
-                               g_trade.ResultRetcode(), GetLastError()), true);
-      return(false);
-     }
-
-   // Skutecna plnici cena se od navrhu lisi o skluz - SL i PT se
-   // dorovnaji na realny vstup, aby zadany pomer PT:SL zustal presny
-   AdjustPositionStops(ResultPositionId(), pl.distance, pl.tpDistance);
-
-   ReportEvent(StringFormat("%s %.2f lot @ %s  SL %s  PT %s  (SL %.0f b, PT %.0f b%s)",
-                            pl.isBuy ? "BUY" : "SELL", pl.lots,
-                            DoubleToString(pl.entry, _Digits),
-                            DoubleToString(pl.sl, _Digits),
-                            DoubleToString(pl.tp, _Digits),
-                            pl.distance / _Point,
-                            pl.tpDistance / _Point,
-                            pl.barrier == PUNTIKY_BARRIER_NONE
-                            ? "" : ", zkráceno k " + BarrierText(pl.barrier)));
-   return(true);
-  }
-
-//+------------------------------------------------------------------+
 //| Zada obchod podle navrhu na pokyn uzivatele (tlacitko).          |
 //| Zadava se stejny STOP prikaz jako v automatickem pending rezimu, |
 //| vcetne SL a PT s RRR 1:1 - tlacitko je tedy jen rucni schvaleni  |
@@ -4976,63 +4867,6 @@ void ManualDouble(const bool isBuy)
      }
 
    ManualPlaceDouble(g_plan[DirIdx(isBuy)]);
-  }
-
-//+------------------------------------------------------------------+
-//| Vyhodnoceni prurazu na vstupnim TF (PUNTIKY_ENTRY_M1_CLOSE).     |
-//| Pruraz je potvrzen az uzavrenim svicky vstupniho TF za urovni    |
-//| HIGH / LOW svicky TF prurazu. Vstupuje se jen na skutecnem       |
-//| prechodu pres uroven - predchozi svicka musi byt jeste pred ni.  |
-//| Bez toho by expert vstoupil i dlouho po prurazu, treba az potom, |
-//| co pominula prekazka v podobe reliefu.                           |
-//+------------------------------------------------------------------+
-void CheckEntryOnEntryTF()
-  {
-   const double closeTF = iClose(_Symbol, InpEntryTF, 1);
-   const double prevTF  = iClose(_Symbol, InpEntryTF, 2);
-   if(closeTF <= 0.0 || prevTF <= 0.0)
-      return;
-
-   //--- Obe strany se resi stejnym kodem (indexy jako v g_dir)
-   for(int dir = 0; dir < 2; dir++)
-     {
-      const bool   isBuy = (dir == PUNTIKY_DIR_BUY);
-      const double level = g_dir[dir].level;
-      if(level <= 0.0)
-         continue;
-
-      // Obe svicky uz jsou uzavrene, takze se posuzuji svym vlastnim
-      // spreadem - dnesni median na ne nepatri
-      const bool wasBefore = !PriceBeyondLevel(isBuy, prevTF,  level, g_breakBuffer,
-                                               BarSpread(InpEntryTF, 2));
-      const bool crossed   =  PriceBeyondLevel(isBuy, closeTF, level, g_breakBuffer,
-                                               BarSpread(InpEntryTF, 1));
-      if(!wasBefore || !crossed)
-         continue;
-
-      const double price = isBuy ? SymbolInfoDouble(_Symbol, SYMBOL_ASK)
-                                 : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      if(price <= 0.0)
-         continue;
-
-      SEntryPlan pl = BuildPlan(isBuy, price, level, true);
-      if(!pl.valid)
-        {
-         // Duvod patri i do logu - pri schovanem panelu je jinak
-         // zamitnuty vstup nedohledatelny
-         ReportEvent((isBuy ? "BUY" : "SELL") + " zamítnut: " + pl.reason);
-         continue;
-        }
-
-      if(!OpenMarket(pl))
-         continue;
-
-      // Po vstupu je uroven spotrebovana - dalsi prilezitost prijde
-      // az s novym swingem
-      g_dir[dir].armed = false;
-      g_dir[dir].taken = true;
-      MarkLevelTaken(isBuy, level);
-     }
   }
 
 //+------------------------------------------------------------------+
@@ -5311,12 +5145,13 @@ void InitPanelMetrics()
 
 //+------------------------------------------------------------------+
 //| Kolik rad tlacitek se nad panelem kresli.                        |
-//| Prvni rada (test Hue a prepinac panelu) je vzdy, dalsi dve jen v |
-//| rucnim rezimu - jinde obchodni tlacitka nedavaji smysl.          |
+//| Prvni rada (test Hue, prepinac panelu a oba automaty) je vzdy,   |
+//| dalsi dve jen s vypnutym automatem - pod nim si prikazy ridi     |
+//| expert sam a rucni zasah by mu lezl do rekonciliace.             |
 //+------------------------------------------------------------------+
 int ButtonRowCount()
   {
-   return(EntryMode() == PUNTIKY_ENTRY_MANUAL ? 3 : 1);
+   return(g_autoMode ? 1 : 3);
   }
 
 //+------------------------------------------------------------------+
@@ -5573,9 +5408,9 @@ int DrawManualButtons(const int x, const int y, SMarketState &ms)
    const string nameLong2  = PUNTIKY_PREFIX + "BTN_LONG2";
    const string nameShort2 = PUNTIKY_PREFIX + "BTN_SHORT2";
 
-   if(EntryMode() != PUNTIKY_ENTRY_MANUAL)
+   if(g_autoMode)
      {
-      // Mimo rucni rezim tlacitka nikdy nevzniknou, takze staci smazat
+      // Pod automatem tlacitka nikdy nevzniknou, takze staci smazat
       // je jednou - ne ctyrikrat za sekundu po celou dobu behu
       if(!g_tradeBtnCleared)
         {
@@ -5588,10 +5423,10 @@ int DrawManualButtons(const int x, const int y, SMarketState &ms)
       return(0);
      }
 
-   // Priznak "uz smazano" plati jen pro rezim, ve kterem vzniknul.
-   // Tlacitko AUTO prepina rezim za behu, takze se pri navratu do
-   // rucniho rezimu musi uvolnit - jinak by pristi prepnuti do AUTO
-   // tlacitka nesmazalo a hlaska pod nimi by se kreslila pres ne.
+   // Priznak "uz smazano" plati jen pro beh s vypnutym automatem.
+   // Tlacitko AUTO prepina stav za behu, takze se po jeho vypnuti musi
+   // uvolnit - jinak by pristi zapnuti automatu tlacitka nesmazalo a
+   // hlaska pod nimi by se kreslila pres ne.
    g_tradeBtnCleared = false;
 
    // Vsechna ctyri tlacitka maji stejnou sirku, takze dvojite varianty
@@ -5980,10 +5815,10 @@ void UpdatePanel()
   {
    // Prehled trhu se ziska JEDINYM pruchodem pozicemi a prikazy; ctou
    // ho texty tlacitek, jejich bubliny i radky panelu. Sken je potreba
-   // jen tam, kde ho nekdo cte: v rucnim rezimu kvuli tlacitkum a pri
-   // zobrazenem panelu kvuli radku s pozici.
+   // jen tam, kde ho nekdo cte: s vypnutym automatem kvuli rucnim
+   // tlacitkum a pri zobrazenem panelu kvuli radku s pozici.
    SMarketState ms;
-   if(EntryMode() == PUNTIKY_ENTRY_MANUAL || g_showPanel)
+   if(!g_autoMode || g_showPanel)
       ScanBothDirections(ms);
    else
       ms.Reset();
@@ -6090,9 +5925,9 @@ void UpdatePanel()
                                         g_dir[PUNTIKY_DIR_BUY].hueLevel  > 0.0 ? "posláno" : "-",
                                         g_dir[PUNTIKY_DIR_SELL].hueLevel > 0.0 ? "posláno" : "-"));
 
-   //--- Rucni rezim - co je v jednotlivych smerech na trhu
-   if(EntryMode() == PUNTIKY_ENTRY_MANUAL)
-      PanelAdd(lines, n, "ruční režim: LONG " + ManualStateText(g_plan[PUNTIKY_DIR_BUY], ms.buy) +
+   //--- Rucni tlacitka - co je v jednotlivych smerech na trhu
+   if(!g_autoMode)
+      PanelAdd(lines, n, "ručně: LONG " + ManualStateText(g_plan[PUNTIKY_DIR_BUY], ms.buy) +
                          "   SHORT " + ManualStateText(g_plan[PUNTIKY_DIR_SELL], ms.sell));
 
    // Kazdy smer na vlastnim radku - duvody zamitnuti byvaji dlouhe a

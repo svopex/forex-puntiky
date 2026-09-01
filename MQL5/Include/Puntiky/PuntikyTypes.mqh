@@ -9,14 +9,6 @@
 #ifndef __PUNTIKY_TYPES_MQH__
 #define __PUNTIKY_TYPES_MQH__
 
-//--- Rezim vstupu do obchodu
-enum ENUM_PUNTIKY_ENTRY
-  {
-   PUNTIKY_ENTRY_M1_CLOSE = 0, // Potvrzeni uzavrenim svicky vstupniho TF (M1)
-   PUNTIKY_ENTRY_PENDING  = 1, // Pending STOP prikazy na urovnich TF prurazu (H1)
-   PUNTIKY_ENTRY_MANUAL   = 2  // Rucne tlacitky LONG / SHORT (expert sam neobchoduje)
-  };
-
 //--- Co delat, kdyz prurazu stoji v ceste reliefni primka
 enum ENUM_PUNTIKY_RELIEF
   {
@@ -142,7 +134,6 @@ enum ENUM_PUNTIKY_BLOCK
 //|  armed      - smer je nabity (cena je na spravne strane urovne)  |
 //|  taken      - na teto urovni uz strategie obchodovala            |
 //|  broken     - uroven uz byla prorazena                           |
-//|  brokenTime - cas prvniho zjisteneho prurazu                     |
 //|  lastEntry  - cas posledniho vstupu strategie v tomto smeru      |
 //|               (0 = zadny); hlida minimalni odstup dvou vstupu    |
 //|  hueLevel   - uroven vstupu, pro kterou uz odeslo upozorneni Hue |
@@ -155,7 +146,6 @@ struct SDirection
    bool              armed;
    bool              taken;
    bool              broken;
-   datetime          brokenTime;
    datetime          lastEntry;
    double            hueLevel;
    datetime          hueTime;
@@ -167,7 +157,6 @@ struct SDirection
       armed      = false;
       taken      = false;
       broken     = false;
-      brokenTime = 0;
       lastEntry  = 0;
       hueLevel   = 0.0;
       hueTime    = 0;
