@@ -108,7 +108,7 @@ input int             InpMaxEntryPoints   = 300;          // Maximalni delka vst
 input int             InpMinEntryPoints   = 150;          // Minimalni delka vstupu (body)
 input double          InpRiskReward       = 1.0;          // Pomer PT:SL (1 = 1:1, 2 = PT dvakrat dal nez SL)
 input int             InpBreakoutBuffer   = 10;           // Potvrzeni prurazu - buffer za urovni (body)
-input int             InpEntryOffset      = -10;           // Posun vstupu od urovne - jen pending (body, zaporne = pred urovni)
+input int             InpEntryOffset      = -20;          // Posun vstupu od urovne - jen pending (body, zaporne = pred urovni)
 input int             InpMaxLevelOffset   = 30;           // Tolerance pripsani vstupu k urovni (body)
 input int             InpEdgeBuffer       = 20;           // Rezerva PT pred hranou kanalu (body)
 input int             InpEdgeProjBars     = 12;           // Strop projekce hran dopredu (bary referencniho TF)
