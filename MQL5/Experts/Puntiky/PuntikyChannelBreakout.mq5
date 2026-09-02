@@ -19,7 +19,7 @@
 //|     urovne planovaneho vstupu a informacni panel                 |
 //+------------------------------------------------------------------+
 #property copyright "Puntiky"
-#property version   "1.27"
+#property version   "1.28"
 #property description "Prurazy swingovych H1 urovni uvnitr ABCD kanalu (kanaly M15, vstup M1)"
 
 #include <Trade\Trade.mqh>
@@ -120,6 +120,17 @@ input int             InpMinEntryGapMin   = 10;           // Min. odstup dvou vs
 input int             InpSlippage         = 20;           // Maximalni skluz (body)
 input long            InpMagic            = 67205475;     // Magic number
 input long            InpAllowedAccount   = 0;            // Povoleny ucet (0 = bez omezeni)
+
+//--- Obchodni hodiny automatu. Zadavaji se v CASE POCITACE (TimeLocal),
+//--- ne v case serveru: cas platformy byva proti mistnimu posunuty a
+//--- uzivatel si hodiny nastavuje podle svych hodin, ne podle brokera.
+//--- Tyka se jen rezimu, ve kterych expert obchoduje sam (AUTO a
+//--- AUTO 2x) - rucni tlacitka jsou schvaleni uzivatele a hodiny je
+//--- neomezuji. Mimo okno automat prikazy nezadava a lezici rusi.
+input group "=== Obchodni hodiny automatu (cas pocitace) ==="
+input bool            InpAutoHoursUse     = true;         // Omezit automat na obchodni hodiny
+input string          InpAutoHoursFrom    = "08:00";      // Zacatek obchodnich hodin (HH:MM, cas pocitace)
+input string          InpAutoHoursTo      = "18:00";      // Konec obchodnich hodin (HH:MM, cas pocitace)
 
 //--- Reliefni primky. Timeframy se zadavaji ve skupine
 //--- "Timeframy reliefu", zde jsou uz jen prahy detekce - ty plati
@@ -254,6 +265,10 @@ input string          InpShotRequestFile  = "PuntikyShot.request";  // Soubor po
 // znamena, ze expert obchoduje sam, a to musi byt videt na prvni pohled
 #define PUNTIKY_BTN_BG_AUTO_ON   C'0,120,60'   // expert obchoduje sam
 #define PUNTIKY_BTN_BG_AUTO_OFF  C'35,60,45'   // automaticky rezim vypnuty
+// Automat je zapnuty, ale prave ceka mimo obchodni hodiny - zadny prikaz
+// nelezi a zadny se nezada. Vlastni (olivova) barva, aby se tenhle stav
+// nepletl ani se zelenym "obchoduje", ani s vypnutym rezimem.
+#define PUNTIKY_BTN_BG_AUTO_IDLE C'110,105,20' // automat ceka mimo obchodni hodiny
 
 // Parametry dvojiteho vstupu (tlacitka LONG 2x / SHORT 2x).
 // Prvni obchod ma PT presne podle navrhu (RRR 1:1), druhy ho ma na
@@ -427,6 +442,15 @@ bool          g_autoMode      = false;
 // delky vstupu. Totez, co delaji tlacitka LONG 2x / SHORT 2x, jen
 // automaticky a pres pending prikazy.
 bool          g_autoDouble    = false;
+// Obchodni hodiny automatu prevedene na minuty od pulnoci (viz
+// ResolveAutoHours); -1 = vstup se nepodarilo precist. Hodnota "do"
+// muze byt 1440 (zadano "24:00" = do pulnoci).
+int           g_autoHoursFrom = -1;
+int           g_autoHoursTo   = -1;
+// Posledni znamy stav "ted jsme uvnitr obchodnich hodin". Z jeho zmeny
+// se pozna prechod pres hranici okna, ktery si vynuti prepocet navrhu
+// bez ohledu na bary a ticky (viz CheckAutoHours).
+bool          g_autoHoursInside = true;
 bool          g_ordersDirty    = false;// navrhy se zmenily, prikazy je treba srovnat
 bool          g_needInitCalc   = true; // ceka se na data pro prvni vypocet
 
@@ -564,7 +588,12 @@ void ToggleAutoMode()
 
       g_autoMode   = true;
       g_autoDouble = false;
-      ReportEvent("AUTO režim ZAPNUT - expert obchoduje sám");
+      // Mimo obchodni hodiny se rezim zapne taky - automat pak sam
+      // zacne s jejich zacatkem. Hlaska o tom je blokujici (zobrazi se
+      // i pod tlacitky): jinak by uzivatel cekal na prikazy, ktere se
+      // hned nezadaji, a nevedel proc.
+      ReportEvent("AUTO režim ZAPNUT - expert obchoduje sám" + AutoHoursNote(),
+                  !AutoHoursOpen());
 
       // Prikazy se zadaji hned, ne az s dalsim barem
       RebuildPlans();
@@ -620,7 +649,10 @@ void ToggleAutoDouble()
 
       g_autoMode   = true;
       g_autoDouble = true;
-      ReportEvent("AUTO 2x ZAPNUT - expert obchoduje sám, dvojitý vstup");
+      // Mimo obchodni hodiny stejne jako u bezneho automatu: zapne se
+      // a ceka, hlaska je blokujici (viz ToggleAutoMode)
+      ReportEvent("AUTO 2x ZAPNUT - expert obchoduje sám, dvojitý vstup" + AutoHoursNote(),
+                  !AutoHoursOpen());
 
       RebuildPlans();
       SyncPendingOrders();
@@ -695,6 +727,10 @@ int OnInit()
    //--- Seznamy zapnutych timeframu musi byt hotove jako prvni: cte je
    //--- uz kontrola vstupu i vyber timeframu pro ATR
    ResolveTFSlots();
+
+   //--- Obchodni hodiny automatu se z textu "HH:MM" prevedou jeste
+   //--- pred kontrolou vstupu - ta uz hlasi jen vysledek prevodu
+   ResolveAutoHours();
 
    //--- Nesmyslne zadany vstup se ma projevit hlaskou pri startu, ne
    //--- tichym nefunkcnim chovanim za behu
@@ -788,6 +824,19 @@ int OnInit()
    Print("PUNTIKY: automat je vypnutý - expert sám neobchoduje. Zapni ho "
          "tlačítkem AUTO ZAP, nebo zadej obchod tlačítky LONG / SHORT "
          "(a LONG 2x / SHORT 2x) v grafu.");
+
+   // Vychozi stav okna se zapise hned, aby prvni kontrola z timeru
+   // nehlasila prechod, ktery se nestal. Hodiny jdou do logu i s
+   // aktualnim mistnim casem - at je videt, ze se zadavaji v case
+   // pocitace a ne v (posunutem) case grafu.
+   g_autoHoursInside = AutoHoursOpen();
+   if(InpAutoHoursUse)
+      PrintFormat("PUNTIKY: obchodní hodiny automatu %s (čas počítače, teď %s - %s). "
+                  "Ručních tlačítek se netýkají.",
+                  AutoHoursText(), ClockText(LocalMinuteOfDay()),
+                  g_autoHoursInside ? "uvnitř" : "mimo");
+   else
+      Print("PUNTIKY: obchodní hodiny automatu nejsou omezené (InpAutoHoursUse = false).");
 
    //--- Prvni vypocet hned pri startu, aby byl graf ihned popsany.
    //--- Kdyz jeste nejsou data indikatoru, odlozi se na prvni tick.
@@ -992,18 +1041,24 @@ void OnTick()
       plansDirty = true;
      }
 
-   //--- 7) Jediny prepocet navrhu za tick
+   //--- 7) Prechod pres hranici obchodnich hodin automatu meni
+   //---    platnost navrhu stejne jako novy bar - navrhy se prepocitaji
+   //---    (a prikazy srovnaji) hned, ne az s dalsi svickou
+   if(CheckAutoHours())
+      plansDirty = true;
+
+   //--- 8) Jediny prepocet navrhu za tick
    if(plansDirty)
       RebuildPlans();
 
-   //--- 8) Skutecne prikazy se srovnaji s navrhy nejvyse jednou za tick.
+   //--- 9) Skutecne prikazy se srovnaji s navrhy nejvyse jednou za tick.
    //---    Bezi to i v rucnim rezimu - prikaz zadany tlacitkem se tam
    //---    jen upravuje (nezadava ani nerusi), aby se s posunutou hranou
    //---    kanalu roztahl stejne jako kreslene urovne vstupu.
    if(g_ordersDirty)
       SyncPendingOrders();
 
-   //--- 9) Priblizeni k urovni vstupu rozblika zarovky Hue
+   //--- 10) Priblizeni k urovni vstupu rozblika zarovky Hue
    CheckHueAlerts();
   }
 
@@ -1173,6 +1228,18 @@ void OnTimer()
    if(g_needInitCalc)
       TryInitialCalc();
 
+   // Hranice obchodnich hodin automatu na zadny tick necekaji: o
+   // vikendu nebo na klidnem trhu by prikaz lezici pres konec okna
+   // cekal na srovnani az do prvniho ticku. Timer ho zrusi (nebo po
+   // zacatku okna zada) do sekundy. Stav se sleduje vzdy, prepocet ma
+   // smysl jen pod automatem a az po prvnim vypoctu - drive zadne
+   // navrhy nejsou.
+   if(CheckAutoHours() && g_autoMode && !g_needInitCalc)
+     {
+      RebuildPlans();
+      SyncPendingOrders();
+     }
+
    UpdatePanel();
    CheckScreenshotRequest();
   }
@@ -1275,6 +1342,21 @@ bool ValidateInputs()
    if(InpMaxReliefLines < 1)     err += "InpMaxReliefLines >= 1; ";
    if(InpMaxPositions < 1)       err += "InpMaxPositions >= 1; ";
    if(InpMinEntryGapMin < 0)     err += "InpMinEntryGapMin >= 0; ";
+
+   // Obchodni hodiny automatu - text "HH:MM" uz prevedl ResolveAutoHours,
+   // tady se hlasi jen to, co se prevest nedalo. Stejny zacatek a konec
+   // by byl bud prazdny, nebo celodenni interval a nikdo by nepoznal
+   // ktery; cely den se zada jako 00:00-24:00.
+   if(InpAutoHoursUse)
+     {
+      if(g_autoHoursFrom < 0)
+         err += "InpAutoHoursFrom ve tvaru HH:MM; ";
+      if(g_autoHoursTo < 0)
+         err += "InpAutoHoursTo ve tvaru HH:MM; ";
+      if(g_autoHoursFrom >= 0 && g_autoHoursFrom == g_autoHoursTo)
+         err += "InpAutoHoursFrom != InpAutoHoursTo; ";
+     }
+
    if(InpATRPeriod < 1)          err += "InpATRPeriod >= 1; ";
    if(InpDedupFrac <= 0.0)       err += "InpDedupFrac > 0; ";
    if(InpTouchTolFrac <= 0.0)    err += "InpTouchTolFrac > 0; ";
@@ -1367,6 +1449,59 @@ bool ValidateInputs()
 
    Print("PUNTIKY: chybné vstupní parametry - ", err);
    return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Prevede cas "HH:MM" na minuty od pulnoci.                        |
+//| Prijima i "H:MM" a mezery kolem cisel; "24:00" znamena pulnoc na |
+//| konci dne (1440). Cokoliv jineho - chybejici dvojtecka, pismena, |
+//| hodina nad 24, minuta nad 59 - vraci -1, aby kontrola vstupu     |
+//| mohla chybu ohlasit uz pri startu. Ciselnost se hlida rucne:     |
+//| StringToInteger by "8x" tise precetl jako 8.                     |
+//|  text - zadany cas                                               |
+//+------------------------------------------------------------------+
+int ParseClock(const string text)
+  {
+   string parts[];
+   if(StringSplit(text, ':', parts) != 2)
+      return(-1);
+
+   int value[2];
+   for(int p = 0; p < 2; p++)
+     {
+      StringTrimLeft(parts[p]);
+      StringTrimRight(parts[p]);
+      const int len = StringLen(parts[p]);
+      if(len < 1 || len > 2)
+         return(-1);
+
+      // Jen cislice - jinak by "8x" proslo jako 8
+      for(int i = 0; i < len; i++)
+        {
+         const ushort c = StringGetCharacter(parts[p], i);
+         if(c < '0' || c > '9')
+            return(-1);
+        }
+      value[p] = (int)StringToInteger(parts[p]);
+     }
+
+   const int hour   = value[0];
+   const int minute = value[1];
+   if(hour > 24 || minute > 59 || (hour == 24 && minute != 0))
+      return(-1);
+
+   return(hour * 60 + minute);
+  }
+
+//+------------------------------------------------------------------+
+//| Prevede oba vstupy obchodnich hodin automatu na minuty od        |
+//| pulnoci. Vola se v OnInit pred kontrolou vstupu, ktera uz jen    |
+//| hlasi, co se prevest nedalo (viz ValidateInputs).                |
+//+------------------------------------------------------------------+
+void ResolveAutoHours()
+  {
+   g_autoHoursFrom = ParseClock(InpAutoHoursFrom);
+   g_autoHoursTo   = ParseClock(InpAutoHoursTo);
   }
 
 //+------------------------------------------------------------------+
@@ -2616,6 +2751,110 @@ string GapLeftText(const int seconds)
       return(StringFormat("%d s", seconds));
 
    return(StringFormat("%d min", (seconds + 59) / 60));
+  }
+
+//+------------------------------------------------------------------+
+//| Cas "HH:MM" z minut od pulnoci (1440 se vypise jako 24:00).      |
+//|  minutes - minuty od pulnoci                                     |
+//+------------------------------------------------------------------+
+string ClockText(const int minutes)
+  {
+   return(StringFormat("%02d:%02d", minutes / 60, minutes % 60));
+  }
+
+//+------------------------------------------------------------------+
+//| Obchodni hodiny automatu jako text "08:00-18:00" pro panel a log.|
+//+------------------------------------------------------------------+
+string AutoHoursText()
+  {
+   return(ClockText(g_autoHoursFrom) + "-" + ClockText(g_autoHoursTo));
+  }
+
+//+------------------------------------------------------------------+
+//| Aktualni cas POCITACE v minutach od pulnoci.                     |
+//| Zamerne TimeLocal, ne TimeCurrent: cas serveru brokera byva      |
+//| proti mistnimu posunuty (typicky o hodinu i dve) a obchodni      |
+//| hodiny si uzivatel zadava podle vlastnich hodin. V testeru       |
+//| strategii TimeLocal odpovida modelovanemu casu serveru.          |
+//+------------------------------------------------------------------+
+int LocalMinuteOfDay()
+  {
+   MqlDateTime dt;
+   TimeToStruct(TimeLocal(), dt);
+   return(dt.hour * 60 + dt.min);
+  }
+
+//+------------------------------------------------------------------+
+//| Je prave ted uvnitr obchodnich hodin automatu?                   |
+//| S vypnutym omezenim vzdy ano. Zacatek do okna patri, konec uz    |
+//| ne (08:00-18:00 = od 8:00:00 do 17:59:59). Okno pres pulnoc      |
+//| (napr. 22:00-06:00) se pozna podle zacatku za koncem.            |
+//+------------------------------------------------------------------+
+bool AutoHoursOpen()
+  {
+   if(!InpAutoHoursUse)
+      return(true);
+
+   const int now = LocalMinuteOfDay();
+   if(g_autoHoursFrom < g_autoHoursTo)
+      return(now >= g_autoHoursFrom && now < g_autoHoursTo);
+
+   // Okno pres pulnoc: uvnitr je vecer po zacatku i rano pred koncem
+   return(now >= g_autoHoursFrom || now < g_autoHoursTo);
+  }
+
+//+------------------------------------------------------------------+
+//| Dovetek hlasky o zapnuti automatu mimo obchodni hodiny.          |
+//| Uvnitr okna (nebo s vypnutym omezenim) je prazdny.               |
+//+------------------------------------------------------------------+
+string AutoHoursNote()
+  {
+   if(AutoHoursOpen())
+      return("");
+   return(StringFormat(" - mimo obchodní hodiny (%s, čas počítače), příkazy se "
+                       "zadají až od %s", AutoHoursText(), ClockText(g_autoHoursFrom)));
+  }
+
+//+------------------------------------------------------------------+
+//| Dovetek bubliny tlacitek AUTO o obchodnich hodinach.             |
+//| S vypnutym omezenim je prazdny.                                  |
+//+------------------------------------------------------------------+
+string AutoHoursTip()
+  {
+   if(!InpAutoHoursUse)
+      return("");
+   return(StringFormat(" Obchodní hodiny %s (čas počítače)%s.", AutoHoursText(),
+                       AutoHoursOpen() ? "" : " - teď MIMO, automat čeká"));
+  }
+
+//+------------------------------------------------------------------+
+//| Hlida prechod pres hranici obchodnich hodin automatu.            |
+//| Navrhy se jinak prepocitavaji jen s novym barem nebo zmenou      |
+//| urovni, jenze konec okna na zadny bar nemusi cekat: STOP prikaz  |
+//| lezici pres hranici by se vyplnil presne v dobe, kterou uzivatel |
+//| obchodovat nechce. Vola se z ticku i z timeru - na klidnem trhu  |
+//| tick nemusi dlouho prijit. Stav se vede i s vypnutym automatem,  |
+//| aby po jeho zapnuti nehlasil prechod, ktery se stal davno.       |
+//| Vraci true, kdyz se stav (uvnitr / mimo) prave zmenil a navrhy   |
+//| je treba prepocitat.                                             |
+//+------------------------------------------------------------------+
+bool CheckAutoHours()
+  {
+   const bool inside = AutoHoursOpen();
+   if(inside == g_autoHoursInside)
+      return(false);
+   g_autoHoursInside = inside;
+
+   // Hlaska jen pod automatem - v rucnim rezimu okno nic neomezuje.
+   // Samotne ruseni a zadani prikazu dela rekonciliace nad novymi
+   // navrhy (viz EntryBlockReason a SyncOneDirection).
+   if(g_autoMode)
+      ReportEvent(inside
+                  ? StringFormat("obchodní hodiny automatu začaly (%s) - příkazy se zadají",
+                                 AutoHoursText())
+                  : StringFormat("obchodní hodiny automatu skončily (%s) - ležící "
+                                 "příkazy se ruší", AutoHoursText()));
+   return(true);
   }
 
 //+------------------------------------------------------------------+
@@ -3968,11 +4207,19 @@ string EntryBlockReason(const bool isBuy, const double entry, const double trigg
    // hned "nabity") a jeho prikaz posbira tentyz pohyb o par sekund
    // pozdeji. Jedinou brzdou byl pocet pozic, takze v jednom impulsu
    // vznikly dva obchody s plnym rizikem, jejichz SL a PT se prekryvaly.
-   // Jako jedina z ochran se tyka VYHRADNE rezimu, ve kterych expert
-   // obchoduje sam: rucni tlacitko je schvaleni uzivatele, ktery vidi,
-   // co se na trhu deje, a retezeni vstupu si hlida sam.
+   // Odstup i obchodni hodiny (nize) se jako jedine z ochran tykaji
+   // VYHRADNE rezimu, ve kterych expert obchoduje sam: rucni tlacitko
+   // je schvaleni uzivatele, ktery vidi, co se na trhu deje, a
+   // retezeni vstupu i denni dobu si hlida sam.
    if(g_autoMode)
      {
+      // Obchodni hodiny automatu (cas pocitace). Mimo okno se navrh
+      // zamita s vychozim druhem blokace, takze rekonciliace lezici
+      // prikaz zrusi - STOP prikaz ponechany pres noc by se vyplnil
+      // presne v dobe, kterou uzivatel obchodovat nechce.
+      if(!AutoHoursOpen())
+         return(StringFormat("mimo obchodní hodiny (%s)", AutoHoursText()));
+
       const int gapLeft = EntryGapLeft(isBuy);
       if(gapLeft > 0)
          return(StringFormat("odstup od posledního vstupu (zbývá %s)",
@@ -5784,22 +6031,26 @@ int DrawAutoModeButton(const int x, const int y)
    // stejne jako tlacitko LONG neodebira dvojity vstup
    const bool   busy = (g_autoMode && g_autoDouble);
    const bool   on   = (g_autoMode && !g_autoDouble);
+   // Zapnuty automat mimo obchodni hodiny jen ceka - ma vlastni barvu,
+   // aby bylo od pohledu videt, ze ted zadny prikaz nelezi
+   const bool   idle = (on && !AutoHoursOpen());
 
    // Popisek rika, co klik UDELA (viz DrawPanelToggleButton)
    const string text = on ? "AUTO VYP" : "AUTO ZAP";
    const color  bg   = busy ? PUNTIKY_BTN_BG_OFF
-                            : (on ? PUNTIKY_BTN_BG_AUTO_ON : PUNTIKY_BTN_BG_AUTO_OFF);
+                            : (idle ? PUNTIKY_BTN_BG_AUTO_IDLE
+                               : (on ? PUNTIKY_BTN_BG_AUTO_ON : PUNTIKY_BTN_BG_AUTO_OFF));
 
    const string tip = busy
                       ? "Běží dvojitý automat - vypni ho tlačítkem AUTO VYP 2x."
                       : (on
                          ? "Expert obchoduje SÁM: drží pending STOP příkazy na obou "
                            "úrovních průrazu a po uzavření obchodu zadá další. "
-                           "Klik režim vypne a ležící příkazy zruší."
+                           "Klik režim vypne a ležící příkazy zruší." + AutoHoursTip()
                          : "Expert sám neobchoduje. Klik zapne automatický režim - "
                            "pending STOP příkazy na obou úrovních průrazu. "
                            "Obchod z tlačítka LONG / SHORT expert spravuje i tady, "
-                           "jen po vyplnění další nezadá.");
+                           "jen po vyplnění další nezadá." + AutoHoursTip());
 
    const int w = g_btnAutoW;
 
@@ -5823,10 +6074,13 @@ int DrawAutoDoubleButton(const int x, const int y)
 
    const bool   busy = (g_autoMode && !g_autoDouble);
    const bool   on   = (g_autoMode && g_autoDouble);
+   // Mimo obchodni hodiny automat jen ceka (viz DrawAutoModeButton)
+   const bool   idle = (on && !AutoHoursOpen());
 
    const string text = on ? "AUTO VYP 2x" : "AUTO ZAP 2x";
    const color  bg   = busy ? PUNTIKY_BTN_BG_OFF
-                            : (on ? PUNTIKY_BTN_BG_AUTO_ON : PUNTIKY_BTN_BG_AUTO_OFF);
+                            : (idle ? PUNTIKY_BTN_BG_AUTO_IDLE
+                               : (on ? PUNTIKY_BTN_BG_AUTO_ON : PUNTIKY_BTN_BG_AUTO_OFF));
 
    const string tip = busy
                       ? "Běží běžný automat - vypni ho tlačítkem AUTO VYP."
@@ -5834,11 +6088,11 @@ int DrawAutoDoubleButton(const int x, const int y)
                          ? StringFormat("Expert obchoduje SÁM dvojitým vstupem: dvě nohy "
                                         "s polovičním objemem, PT 1:1 a %.0fx. "
                                         "Klik režim vypne a ležící příkazy zruší.",
-                                        PUNTIKY_DOUBLE_PT_MULT)
+                                        PUNTIKY_DOUBLE_PT_MULT) + AutoHoursTip()
                          : StringFormat("Klik zapne automatický režim s dvojitým vstupem - "
                                         "dvě nohy s polovičním objemem, PT 1:1 a %.0fx. "
                                         "Vyžaduje hedgovací účet a InpMaxPositions >= 2.",
-                                        PUNTIKY_DOUBLE_PT_MULT));
+                                        PUNTIKY_DOUBLE_PT_MULT) + AutoHoursTip());
 
    const int w = g_btnAuto2W;
 
@@ -6236,6 +6490,14 @@ void UpdatePanel()
                                       ? StringFormat(", odstup vstupů %d min",
                                                      InpMinEntryGapMin)
                                       : ""));
+
+   //--- Obchodni hodiny automatu. Jsou v case POCITACE, ktery se od
+   //--- casu v grafu lisi, proto se vedle nich vypisuje i aktualni
+   //--- mistni cas - jinak by nesedelo, proc je 17:30 v grafu "mimo".
+   if(g_autoMode && InpAutoHoursUse)
+      PanelAdd(lines, n, StringFormat("obchodní hodiny %s, čas PC %s - %s",
+                                      AutoHoursText(), ClockText(LocalMinuteOfDay()),
+                                      AutoHoursOpen() ? "uvnitř" : "MIMO, automat čeká"));
 
    //--- Stav upozorneni na zarovky Hue. Kazda udalost ma vlastni spinac
    //--- pro tento rezim, takze radek rika, co je prave ted zapnute.

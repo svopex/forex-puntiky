@@ -1,6 +1,6 @@
 # Puntiky Channel Breakout — strategie pro MetaTrader 5
 
-Expert Advisor pro MT5 (verze 1.22), který detekuje ABCD kanály na M15, kreslí je
+Expert Advisor pro MT5 (verze 1.28), který detekuje ABCD kanály na M15, kreslí je
 do grafu a obchoduje průrazy swingových H1 úrovní. Vstup se
 vyhodnocuje na M1. Do grafu vykresluje **pouze kanály, reliéfní přímky
 a informace o vstupu** — žádné jiné indikátory ani pomocnou grafiku.
@@ -9,7 +9,9 @@ a informace o vstupu** — žádné jiné indikátory ani pomocnou grafiku.
 blikáním, na trh je posílá až člověk tlačítky `LONG` / `SHORT` (jeden obchod)
 nebo `LONG 2x` / `SHORT 2x` (dva obchody se společným SL a odstupňovanými cíli) —
 viz [Ruční zadání](#ruční-zadání--obchodování-tlačítky). Tlačítkem `AUTO ZAP`
-(nebo `AUTO ZAP 2x`) se expert přepne do automatu a drží si příkazy sám.
+(nebo `AUTO ZAP 2x`) se expert přepne do automatu a drží si příkazy sám — jen
+v **obchodních hodinách automatu** (výchozí 08:00–18:00 podle času počítače,
+viz [Obchodní hodiny automatu](#obchodní-hodiny-automatu)).
 
 Testovací prostředí: RoboForex MT5, demo účet `67205475`, ticker `XAUUSD`.
 Cílem jsou **forexové páry a XAUUSD**, tedy nástroje, kde se krok kotace rovná
@@ -269,6 +271,10 @@ Společné:
   (AUTO režim a AUTO 2x) — ruční tlačítka jsou schválení uživatele, který na
   trh kouká, a ta odstup neblokuje. Paměť času se přesto vede i s vypnutým
   automatem: tlačítko `AUTO` ho přepíná za běhu, takže musí být připravená.
+- **Obchodní hodiny automatu** (`InpAutoHoursUse`, `InpAutoHoursFrom`,
+  `InpAutoHoursTo`; výchozí 08:00–18:00) — viz samostatná kapitola
+  [Obchodní hodiny automatu](#obchodní-hodiny-automatu). Stejně jako odstup
+  vstupů platí **jen pod automatem**; ruční tlačítka neomezují.
 - Směry lze jednotlivě vypnout (`InpAllowBuy`, `InpAllowSell`) — vypnutý směr se
   přestane i kreslit a v panelu má důvod `směr vypnut`. `InpEnableTrading = false`
   nechá experta jen kreslit; taková instance **nesahá ani na cizí příkazy** se
@@ -286,6 +292,39 @@ Společné:
   S vypnutým automatem se příkazy nikdy neruší (zadal je uživatel a nesou vlastní
   SL i PT) — do logu se jen napíše, kolik jich na trhu zůstává. Totéž při vypnutém
   obchodování, kde by zrušení stejně skončilo chybou.
+
+#### Obchodní hodiny automatu
+
+Expert obchoduje sám jen v zadaném denním okně (`InpAutoHoursFrom` –
+`InpAutoHoursTo`, výchozí **08:00–18:00**; `InpAutoHoursUse = false` omezení
+vypne). Časy se zadávají jako text `HH:MM` a platí **v čase počítače**
+(`TimeLocal`), ne v čase serveru brokera, který je v grafu — ten bývá proti
+místnímu posunutý o hodinu i dvě a uživatel si hodiny nastavuje podle vlastních
+hodin. Panel proto vedle okna vypisuje i aktuální čas počítače (`čas PC`), aby
+bylo vidět, proč je 17:30 v grafu už „mimo“. Ve strategy testeru odpovídá
+`TimeLocal` modelovanému času serveru.
+
+- Začátek do okna patří, konec už ne: `08:00–18:00` znamená od 8:00:00 do
+  17:59:59. Okno přes půlnoc (`22:00–06:00`) se pozná podle začátku za koncem;
+  celý den se zadá jako `00:00–24:00`. Stejný začátek a konec je chyba vstupu.
+- **Mimo okno automat žádný příkaz nezadá a ležící příkazy zruší** — STOP příkaz
+  ponechaný přes noc by se vyplnil přesně v době, kterou uživatel obchodovat
+  nechce. V panelu má směr důvod `mimo obchodní hodiny (08:00-18:00)`. Už
+  **otevřené pozice se nezavírají** — nesou vlastní SL a PT a hodiny omezují jen
+  vstupy.
+- Hranice okna se hlídá z ticku i z timeru (každou sekundu), takže se příkazy
+  zruší (a po začátku okna zadají) do sekundy i bez ticku — na klidném trhu nebo
+  o víkendu by jinak čekaly na první tick. Přechod se zapíše do logu a na řádek
+  `poslední:` v panelu.
+- Automat lze zapnout i mimo okno: zapne se, ohlásí `mimo obchodní hodiny …,
+  příkazy se zadají až od 08:00` a s jeho začátkem začne sám. Tlačítko
+  `AUTO VYP` (resp. `AUTO VYP 2x`) je v té době **olivové** místo zelené — od
+  pohledu je tak vidět, že automat běží, ale právě čeká; bublina tlačítka okno
+  vypisuje.
+- Hodiny se týkají **jen režimů, kde expert obchoduje sám** (AUTO režim
+  a AUTO 2x). Ruční tlačítka `LONG` / `SHORT` / `LONG 2x` / `SHORT 2x` jsou
+  schválení uživatele a fungují kdykoli; ručně zadaný příkaz mimo okno nikdo
+  neruší.
 
 ### Reliéfní přímky (výchozí timeframe M1)
 
@@ -491,6 +530,7 @@ s důvodem `čeká na návrat pod/nad úroveň`. Možné důvody:
 | `pozice již otevřena` | běží pozice strategie (`InpMaxPositions`) |
 | `tato úroveň už obchodována` | na aktuálním swingu už proběhl vstup |
 | `odstup od posledního vstupu (zbývá N min)` | od posledního vstupu v tomto směru neuplynulo `InpMinEntryGapMin` minut (jen pod automatem) |
+| `mimo obchodní hodiny (08:00-18:00)` | čas počítače je mimo okno `InpAutoHoursFrom`–`InpAutoHoursTo`; automat čeká, ležící příkazy zrušil (jen pod automatem) |
 | `čeká na návrat pod úroveň` / `nad úroveň` | směr není nabitý — cena ještě nebyla na správné straně úrovně |
 | `úroveň už byla proražena` | cena úroveň prorazila (i intrabar), čeká se na nový swing |
 | `průraz už proběhl` | cena je právě za úrovní, STOP příkaz nelze zadat |
@@ -515,7 +555,7 @@ s důvodem `čeká na návrat pod/nad úroveň`. Možné důvody:
 | Tečkované čáry (`InpColorRelief`, MediumOrchid) | reliéfní přímky ze všech zapnutých TF reliéfu |
 | Panel vlevo nahoře | hlavička, přehled kanálů, úrovně průrazu, reliéf, stav upozornění Hue, stav směrů, návrhy vstupu, pozice / pending, poslední událost |
 | Hláška pod tlačítky (`InpColorPanel`) | poslední událost při **vypnutém** panelu; po 10 s zmizí |
-| Tlačítko `AUTO ZAP/VYP` | automatický režim — expert obchoduje sám (pending STOP na obou úrovních), Hue potlačeno |
+| Tlačítko `AUTO ZAP/VYP` | automatický režim — expert obchoduje sám (pending STOP na obou úrovních), Hue potlačeno; zapnutý je zelený, mimo obchodní hodiny olivový (automat čeká) |
 | Tlačítko `AUTO ZAP/VYP 2x` | totéž s dvojitým vstupem — dvě nohy s polovičním objemem, PT 1:1 a 2×; vyžaduje hedgovací účet a `InpMaxPositions >= 2` |
 | Tři řady tlačítek nad panelem | 1. řada obslužná (`TEST Hue`, `PANEL`), 2. řada `LONG` / `SHORT`, 3. řada `LONG 2x` / `SHORT 2x` přesně pod nimi (2. a 3. jen v ručním režimu); text panelu začíná až pod nimi |
 
@@ -919,6 +959,13 @@ překreslila i celý reliéf.
 | `InpMagic` | 67205475 | magic number |
 | `InpAllowedAccount` | 0 | 0 = bez omezení, jinak povolený účet |
 
+### Obchodní hodiny automatu (čas počítače)
+| Parametr | Výchozí | Význam |
+|---|---|---|
+| `InpAutoHoursUse` | true | omezit automat (AUTO režim a AUTO 2x) na obchodní hodiny; ručních tlačítek se netýká |
+| `InpAutoHoursFrom` | `08:00` | začátek obchodních hodin (`HH:MM`, **čas počítače**, ne čas serveru v grafu) |
+| `InpAutoHoursTo` | `18:00` | konec obchodních hodin (`HH:MM`, čas počítače); konec do okna nepatří, `24:00` = do půlnoci, začátek za koncem = okno přes půlnoc |
+
 ### Reliéfní přímky
 | Parametr | Výchozí | Význam |
 |---|---|---|
@@ -1070,5 +1117,7 @@ v timeru), uloží `MQL5\Files\PuntikyShot.png` a požadavek smaže.
   terminálu). Po starší verzi můžou v terminálu zůstat globální proměnné
   `SVED_…` — jsou neškodné, jen se v nich ztratí paměť „na téhle úrovni už bylo
   obchodováno“. Objekty `SVED_*` v grafu smaže starý expert sám při odebrání.
-- Strategie nemá časový filtr obchodních hodin ani filtr zpráv — pokud jsou
-  potřeba, je to samostatné rozšíření.
+- Časový filtr má jen automat (obchodní hodiny v čase počítače, viz
+  [Obchodní hodiny automatu](#obchodní-hodiny-automatu)); ruční tlačítka
+  neomezuje. Filtr zpráv strategie nemá — pokud je potřeba, je to samostatné
+  rozšíření.
