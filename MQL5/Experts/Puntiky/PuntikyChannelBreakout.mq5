@@ -118,7 +118,7 @@ input bool            InpAllowSell        = true;         // Povolit prodeje
 input int             InpMaxPositions     = 2;            // Max. soucasnych pozic strategie
 input int             InpMinEntryGapMin   = 10;           // Min. odstup dvou vstupu v tomtez smeru - jen automat (minuty, 0 = bez omezeni)
 input int             InpSlippage         = 20;           // Maximalni skluz (body)
-input long            InpMagic            = 67205475;     // Magic number
+input long            InpMagic            = 202608281525; // Magic number
 input long            InpAllowedAccount   = 0;            // Povoleny ucet (0 = bez omezeni)
 
 //--- Obchodni hodiny automatu. Zadavaji se v CASE POCITACE (TimeLocal),
